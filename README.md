@@ -105,7 +105,7 @@ python -m src.app
 
 ## Packaging & Distribution
 
-Pre-built packages are available on the [Releases](https://github.com/nicolauda/gemgraph/releases) page:
+Pre-built packages are available on the [Releases](https://github.com/Horus-choncho/gemgraph/releases) page:
 - **Portable Linux (`.tar.gz`):** Extract and run `./GemGraph` in unprivileged user-space (no root required).
 - **Debian / Ubuntu (`.deb`):** Install via `apt install ./gemgraph_0.1.0-alpha_amd64.deb` or extract in user space without sudo via `dpkg -x gemgraph_0.1.0-alpha_amd64.deb ./gemgraph_local`.
 - **Windows Portable (`.zip`):** Unzip and execute `GemGraph.exe`.
