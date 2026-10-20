@@ -3,3 +3,5 @@
 4a77fc5f11d5fa838bbeaae6a51f6271459390b19573b62443fd2eb4fe93e669  dist/gemgraph-0.1.0-alpha.x86_64.rpm
 d4fb9b00caeeb58d9138f072e96ca31fe34c42a3afa47dee50f3c1a6ae108ce7  dist/gemgraph_0.1.0-alpha.flatpak
 6107c8fafcf99e14d0310685193146ce016e8a12e25378d0209f831f2fec7915  dist/GemGraph-0.1.0-alpha-x86_64.AppImage
+8e03cc61ee2a5a04b09240f0d751fa73655576b161e43f56071f0acf39f5fd27  GemGraph-0.1.0-alpha-Windows-Portable.zip
+23b61b2c725554d4121a8a1c4bb3035463082e7a6c27194710603cee1f77c26f  GemGraph-0.1.0-alpha-macOS.dmg
