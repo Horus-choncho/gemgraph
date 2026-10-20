@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=GemGraph
+Comment=Scientific Data Analysis, Non-linear Regression & Graphing
+Exec=/usr/bin/gemgraph
+Icon=utilities-terminal
+Terminal=false
+Categories=Science;Math;Education;

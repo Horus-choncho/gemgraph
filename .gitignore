@@ -7,6 +7,7 @@ dist/
 *.tar.gz
 *.zip
 *.spec
+!packaging/*.spec
 
 # Test visual artifacts
 tests/*.png

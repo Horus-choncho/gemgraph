@@ -1,0 +1,38 @@
+app-id: org.gemgraph.GemGraph
+runtime: org.freedesktop.Platform
+runtime-version: '23.08'
+sdk: org.freedesktop.Sdk
+command: gemgraph
+
+finish-args:
+  # Display and GUI sockets
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  # Filesystem access for user datasets and project files (.prism, .csv)
+  - --filesystem=host
+  - --filesystem=home
+
+modules:
+  - name: python3-dependencies
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+    build-commands:
+      # Install required scientific wheels into Flatpak /app prefix (user-space, non-root)
+      - pip3 install --no-cache-dir --prefix=/app numpy scipy pandas statsmodels PyQt6 pyqtgraph
+    sources: []
+
+  - name: gemgraph
+    buildsystem: simple
+    build-commands:
+      # Install GemGraph package into /app prefix
+      - pip3 install --no-cache-dir --no-deps --prefix=/app .
+      # Install desktop file and binary wrapper
+      - install -Dm755 packaging/gemgraph-flatpak.sh /app/bin/gemgraph
+      - install -Dm644 packaging/gemgraph.desktop /app/share/applications/org.gemgraph.GemGraph.desktop
+    sources:
+      - type: dir
+        path: ..
