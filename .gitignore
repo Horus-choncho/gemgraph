@@ -11,3 +11,7 @@ dist/
 
 # Test visual artifacts
 tests/*.png
+
+# Build staging directories
+flatpak-repo/
+rpmbuild/

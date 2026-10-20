@@ -27,9 +27,12 @@ modules:
 
   - name: gemgraph
     buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
     build-commands:
-      # Install GemGraph package into /app prefix
-      - pip3 install --no-cache-dir --no-deps --prefix=/app .
+      # Install GemGraph package using existing SDK setuptools without querying PyPI
+      - pip3 install --no-cache-dir --no-deps --no-build-isolation --prefix=/app .
       # Install desktop file and binary wrapper
       - install -Dm755 packaging/gemgraph-flatpak.sh /app/bin/gemgraph
       - install -Dm644 packaging/gemgraph.desktop /app/share/applications/org.gemgraph.GemGraph.desktop

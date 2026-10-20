@@ -6,6 +6,15 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Security Policy: No-Sudo-Strict-Local](https://img.shields.io/badge/Security-No--Sudo--Strict--Local-green.svg)](specs/prism10_cleanroom_spec.md)
 
+
+## Run from Source !!! ##
+
+git clone https://github.com/Horus-choncho/gemgraph.git
+cd gemgraph
+pip install -r requirements.txt
+python -m src.app
+
+
 ---
 
 ## Overview
