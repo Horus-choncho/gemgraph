@@ -5,6 +5,7 @@ Derived from BridgeCLR 3-Pane desktop presentation contracts (REA-CLR-VM-102).
 
 from __future__ import annotations
 import os
+from urllib.parse import unquote
 from typing import Optional, List, Dict, Any
 import numpy as np
 import scipy.stats
@@ -733,7 +734,7 @@ class MainWindow(QMainWindow):
         mime = event.mimeData()
         if mime and mime.hasUrls():
             for url in mime.urls():
-                filepath = url.toLocalFile() or url.path()
+                filepath = unquote(url.toLocalFile() or url.path())
                 if any(filepath.lower().endswith(ext) for ext in (".prism", ".pzfx", ".csv")):
                     event.acceptProposedAction()
                     return
@@ -743,7 +744,7 @@ class MainWindow(QMainWindow):
         mime = event.mimeData()
         if mime and mime.hasUrls():
             for url in mime.urls():
-                filepath = url.toLocalFile() or url.path()
+                filepath = unquote(url.toLocalFile() or url.path())
                 if any(filepath.lower().endswith(ext) for ext in (".prism", ".pzfx", ".csv")):
                     event.acceptProposedAction()
                     return
@@ -754,7 +755,20 @@ class MainWindow(QMainWindow):
         if mime and mime.hasUrls():
             urls = mime.urls()
             if urls:
-                filepath = urls[0].toLocalFile() or urls[0].path()
+                # Find the first URL ending in supported extensions; default to urls[0]
+                target_url = urls[0]
+                for u in urls:
+                    fp = unquote(u.toLocalFile() or u.path())
+                    if any(fp.lower().endswith(ext) for ext in (".prism", ".pzfx", ".csv")):
+                        target_url = u
+                        break
+
+                filepath = target_url.toLocalFile()
+                if not filepath:
+                    filepath = unquote(target_url.path())
+                else:
+                    filepath = unquote(filepath)
+
                 if filepath:
                     try:
                         self.open_project(filepath)

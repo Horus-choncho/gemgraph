@@ -378,7 +378,13 @@ class TestMainWindowAndActions(unittest.TestCase):
             res = MainWindow.get_smart_initial_dir()
             self.assertTrue(res.endswith("samples"))
 
-        # 3. Neither exists: falls back to QDir.homePath() or cwd
+        # 3. Neither exists: falls back to QDir.homePath() if valid
+        with unittest.mock.patch("os.path.exists", side_effect=lambda p: p == "/test/home"), \
+             unittest.mock.patch("os.path.isdir", side_effect=lambda p: p == "/test/home"), \
+             unittest.mock.patch("PyQt6.QtCore.QDir.homePath", return_value="/test/home"):
+            self.assertEqual(MainWindow.get_smart_initial_dir(), "/test/home")
+
+        # 4. Neither exists and home does not exist: falls back to cwd
         with unittest.mock.patch("os.path.exists", return_value=False), \
              unittest.mock.patch("os.path.isdir", return_value=False):
             res = MainWindow.get_smart_initial_dir()
@@ -504,6 +510,165 @@ class TestMainWindowAndActions(unittest.TestCase):
         """Verifies open_project exception handling and format loading."""
         with self.assertRaises(FileNotFoundError):
             self.window.open_project("/path/to/non_existent_file.prism")
+
+    def test_drop_event_loads_empty_csv(self) -> None:
+        """Verifies dropping an empty CSV file does not crash and creates a blank sheet."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            csv_path = f.name
+
+        try:
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(csv_path)])
+            drop_evt = QDropEvent(
+                QPointF(10, 10),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.dropEvent(drop_evt)
+            self.assertTrue(drop_evt.isAccepted())
+            self.assertGreaterEqual(len(self.window.document.sheets), 1)
+        finally:
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+
+    def test_drop_event_loads_semicolon_csv(self) -> None:
+        """Verifies dropping a European semicolon-delimited CSV parses XY table with correct groups."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("X;Control;Treated\n1.0;10.0;20.0\n2.0;15.0;25.0\n3.0;30.0;45.0\n")
+            csv_path = f.name
+
+        try:
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(csv_path)])
+            drop_evt = QDropEvent(
+                QPointF(10, 10),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.dropEvent(drop_evt)
+            self.assertTrue(drop_evt.isAccepted())
+
+            active_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+            self.assertIsInstance(active_sheet, DataSheet)
+            self.assertEqual(active_sheet.table.table_type, TableType.XY)
+            self.assertEqual(active_sheet.table.y_group_titles, ["Control", "Treated"])
+            self.assertEqual(active_sheet.table.get_cell_value(0, "X", 0, 0), 1.0)
+            self.assertEqual(active_sheet.table.get_cell_value(0, "Y", 0, 0), 10.0)
+            self.assertEqual(active_sheet.table.get_cell_value(0, "Y", 1, 0), 20.0)
+        finally:
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+
+    def test_drop_event_loads_tab_delimited_csv(self) -> None:
+        """Verifies dropping a tab-delimited CSV parses XY table."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("X\tControl\tTreated\n1.0\t10.0\t20.0\n2.0\t15.0\t25.0\n")
+            csv_path = f.name
+
+        try:
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(csv_path)])
+            drop_evt = QDropEvent(
+                QPointF(10, 10),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.dropEvent(drop_evt)
+            self.assertTrue(drop_evt.isAccepted())
+
+            active_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+            self.assertIsInstance(active_sheet, DataSheet)
+            self.assertEqual(active_sheet.table.table_type, TableType.XY)
+            self.assertEqual(active_sheet.table.y_group_titles, ["Control", "Treated"])
+        finally:
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+
+    def test_drop_event_multi_file_fallback(self) -> None:
+        """Verifies dropping multiple files selects the supported file even if urls[0] is unsupported."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("X,GroupA\n1.0,5.0\n2.0,10.0\n")
+            csv_path = f.name
+
+        try:
+            mime = QMimeData()
+            mime.setUrls([
+                QUrl.fromLocalFile("/tmp/unsupported_readme.txt"),
+                QUrl.fromLocalFile(csv_path),
+            ])
+
+            evt_enter = QDragEnterEvent(
+                QPointF(10, 10).toPoint(),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.dragEnterEvent(evt_enter)
+            self.assertTrue(evt_enter.isAccepted())
+
+            drop_evt = QDropEvent(
+                QPointF(10, 10),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.dropEvent(drop_evt)
+            self.assertTrue(drop_evt.isAccepted())
+
+            active_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+            self.assertIsInstance(active_sheet, DataSheet)
+            self.assertEqual(active_sheet.table.get_cell_value(0, "X", 0, 0), 1.0)
+        finally:
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+
+    def test_drop_event_url_with_spaces_and_encoding(self) -> None:
+        """Verifies file paths with spaces and percent encoding are resolved and loaded properly."""
+        temp_dir = tempfile.mkdtemp()
+        spaced_path = os.path.join(temp_dir, "my spaced dataset.csv")
+        with open(spaced_path, "w") as f:
+            f.write("X,SpacedCol\n10.0,20.0\n")
+
+        try:
+            # Test QUrl representation with encoded spaces
+            mime = QMimeData()
+            mime.setUrls([QUrl(f"file://{spaced_path.replace(' ', '%20')}")])
+            evt_enter = QDragEnterEvent(
+                QPointF(10, 10).toPoint(),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.dragEnterEvent(evt_enter)
+            self.assertTrue(evt_enter.isAccepted())
+
+            drop_evt = QDropEvent(
+                QPointF(10, 10),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.dropEvent(drop_evt)
+            self.assertTrue(drop_evt.isAccepted())
+
+            active_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+            self.assertIsInstance(active_sheet, DataSheet)
+            self.assertEqual(active_sheet.table.get_cell_value(0, "X", 0, 0), 10.0)
+        finally:
+            if os.path.exists(spaced_path):
+                os.remove(spaced_path)
+            if os.path.exists(temp_dir):
+                os.rmdir(temp_dir)
 
 
 if __name__ == "__main__":

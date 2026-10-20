@@ -129,8 +129,28 @@ class PrismIO:
         doc_title = base_name if base_name else "CSV Project"
         doc = PrismDocument(title=doc_title)
 
-        df = pd.read_csv(file_path)
-        if df.empty:
+        delimiter = ","
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                sample = f.read(4096)
+            if not sample.strip():
+                df = pd.DataFrame()
+            else:
+                try:
+                    dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+                    delimiter = dialect.delimiter
+                except Exception:
+                    delimiter = ","
+                df = pd.read_csv(file_path, sep=delimiter)
+        except pd.errors.EmptyDataError:
+            df = pd.DataFrame()
+        except Exception as e:
+            try:
+                df = pd.read_csv(file_path)
+            except Exception:
+                raise ValueError(f"Could not parse CSV file: {e}") from e
+
+        if len(df.columns) == 0:
             sheet = doc.create_data_sheet(
                 title=base_name or "Data 1",
                 table_type=TableType.XY,
