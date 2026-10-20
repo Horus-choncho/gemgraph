@@ -64,6 +64,45 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m src.app
 ```
+### 4. Fedora / RHEL (.rpm):
+- Download `gemgraph-0.1.0-alpha.x86_64.rpm` and install via:
+`sudo dnf install ./gemgraph-0.1.0-alpha.x86_64.rpm`
+
+### 5. Flatpak (.flatpak):
+- Standard Flatpak installation:
+Download `gemgraph_0.1.0-alpha.flatpak` and install:
+```
+flatpak install --user gemgraph_0.1.0-alpha.flatpak
+flatpak run org.gemgraph.GemGraph
+```
+- Note to Flatpak users: 
+You may need to run GemGraph from the terminal after installation if the app does not launch on normal click (should be working, though):
+`flatpak run org.gemgraph.GemGraph`
+
+### 6. Windows 
+- Windows Portable (.zip):
+Download `GemGraph-0.1.0-alpha-Windows-Portable.zip`, unzip to a folder, and double-click `GemGraph.exe` (no administrator privileges required).
+
+### 7. macOS Users 🍎🍎🍏🍏
+
+- macOS 15 Sequoia and later:
+
+1. Double-click `GemGraph-0.1.0-alpha-macOS.dmg` to mount the disk image.
+2. Drag GemGraph.app into the Applications folder shortcut.
+3. Attempt to open GemGraph.app from Applications. macOS will display a warning that the app cannot be opened because the developer cannot be verified. Click Done (or Cancel).
+4. Open System Settings > Privacy & Security.
+5. Scroll down to the Security section. You will see: `"GemGraph.app was blocked to protect your Mac."`
+6. Click the Open Anyway button next to it, enter your Mac user password or Touch ID, and confirm by clicking Open. macOS will permanently whitelist the app for all subsequent launches.
+
+
+- macOS 14 Sonoma or older:
+1. Drag `GemGraph.app` into Applications.
+2. Do not double-click it directly on first launch.
+3. Right-click (or Control-click) on `GemGraph.app` and select Open.
+4. In the dialog that appears, click the Open button. macOS will whitelist the application for all future double-clicks.
+
+
+- (Alternative for all macOS via Terminal): Run `xattr -cr /Applications/GemGraph.app` to clear the quarantine flag.
 
 ---
 
