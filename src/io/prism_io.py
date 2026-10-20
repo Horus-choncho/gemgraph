@@ -1,0 +1,537 @@
+"""
+PK-ZIP Container Parser & Serializer for .prism files.
+Derived from Core.dll storage format analysis (REA-CORE-STORAGE-204).
+Supports both GemGraph cleanroom archives and official GraphPad Prism 10 packages.
+"""
+
+from __future__ import annotations
+import csv
+import io
+import json
+import os
+import struct
+import zipfile
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import numpy as np
+import pandas as pd
+
+from src.core.document import PrismDocument
+from src.core.sheet import BaseSheet, DataSheet, GraphSheet, InfoSheet, ResultSheet, SheetType
+from src.core.table import DataTable, TableType, XFormat, YFormat
+
+
+class PrismIO:
+    """
+    Handles saving and loading of .prism ZIP packages.
+    """
+
+    FORMAT_VERSION = "10.0"
+
+    @classmethod
+    def save(cls, document: PrismDocument, file_path: str) -> None:
+        """Serializes PrismDocument into a .prism PK-ZIP archive."""
+        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+
+        with zipfile.ZipFile(file_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            # 1. document.json manifest
+            manifest = {
+                "format_version": cls.FORMAT_VERSION,
+                "generator": "GemGraph Clean-Room 1.0",
+                "doc_id": document.doc_id,
+                "title": document.title,
+                "active_sheet_id": document.active_sheet_id,
+                "sheet_order": document.sheet_order,
+                "sheets_manifest": [],
+            }
+
+            for sheet_id in document.sheet_order:
+                sheet = document.sheets[sheet_id]
+                manifest["sheets_manifest"].append({
+                    "sheet_id": sheet.sheet_id,
+                    "title": sheet.title,
+                    "sheet_type": sheet.sheet_type.value,
+                    "sheet_file": f"data/sheets/{sheet.sheet_id}.json",
+                })
+
+                # Write sheet json
+                sheet_dict = sheet.to_dict()
+                zf.writestr(
+                    f"data/sheets/{sheet.sheet_id}.json",
+                    json.dumps(sheet_dict, indent=2),
+                )
+
+                # If DataSheet, also export data.csv
+                if isinstance(sheet, DataSheet):
+                    table = sheet.table
+                    zf.writestr(
+                        f"data/tables/{table.table_id}.json",
+                        json.dumps(table.to_dict(), indent=2),
+                    )
+                    # Create readable CSV
+                    csv_buf = io.StringIO()
+                    col_names = []
+                    if table.x_data is not None:
+                        col_names.append(table.x_title or "X")
+                    for g_idx, g_title in enumerate(table.y_group_titles):
+                        for s_idx in range(table.num_replicates):
+                            col_names.append(f"{g_title}:Y{s_idx + 1}")
+
+                    # Build rows
+                    rows_data = []
+                    for r in range(table.num_rows):
+                        row_vals = []
+                        if table.x_data is not None:
+                            row_vals.append(table.x_data[r])
+                        for g_idx in range(len(table.y_group_titles)):
+                            for s_idx in range(table.num_replicates):
+                                row_vals.append(table.y_data[g_idx, r, s_idx])
+                        rows_data.append(row_vals)
+
+                    df = pd.DataFrame(rows_data, columns=col_names)
+                    df.to_csv(csv_buf, index=False)
+                    zf.writestr(f"data/tables/{table.table_id}.csv", csv_buf.getvalue())
+
+            zf.writestr("document.json", json.dumps(manifest, indent=2))
+
+    @classmethod
+    def load(cls, file_path: str) -> PrismDocument:
+        """Parses a .prism PK-ZIP archive into a PrismDocument."""
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        with zipfile.ZipFile(file_path, mode="r") as zf:
+            if "document.json" not in zf.namelist():
+                raise ValueError("Invalid .prism archive: missing document.json")
+
+            manifest = json.loads(zf.read("document.json").decode("utf-8"))
+
+            if "sheets_manifest" in manifest:
+                return cls._load_cleanroom(zf, manifest)
+            else:
+                return cls._load_prism10(zf, manifest)
+
+    @classmethod
+    def _load_cleanroom(cls, zf: zipfile.ZipFile, manifest: Dict[str, Any]) -> PrismDocument:
+        """Loads GemGraph native cleanroom .prism archive."""
+        doc = PrismDocument(title=manifest.get("title", "Untitled Project"))
+        doc.doc_id = manifest.get("doc_id", doc.doc_id)
+        doc.active_sheet_id = manifest.get("active_sheet_id")
+
+        for item in manifest.get("sheets_manifest", []):
+            sheet_file = item["sheet_file"]
+            if sheet_file in zf.namelist():
+                s_data = json.loads(zf.read(sheet_file).decode("utf-8"))
+                stype = s_data.get("sheet_type")
+                if stype == SheetType.DATA.value:
+                    table_file = f"data/tables/{item['sheet_id']}.json"
+                    if "table" not in s_data and table_file in zf.namelist():
+                        t_data = json.loads(zf.read(table_file).decode("utf-8"))
+                        s_data["table"] = t_data
+                    sheet = DataSheet.from_dict(s_data)
+                elif stype == SheetType.INFO.value:
+                    sheet = InfoSheet.from_dict(s_data)
+                elif stype == SheetType.RESULTS.value:
+                    sheet = ResultSheet.from_dict(s_data)
+                elif stype == SheetType.GRAPH.value:
+                    sheet = GraphSheet.from_dict(s_data)
+                else:
+                    continue
+                doc.sheets[sheet.sheet_id] = sheet
+
+        doc.sheet_order = [
+            sid for sid in manifest.get("sheet_order", []) if sid in doc.sheets
+        ]
+        if not doc.sheet_order and doc.sheets:
+            doc.sheet_order = list(doc.sheets.keys())
+        if doc.active_sheet_id not in doc.sheets and doc.sheet_order:
+            doc.active_sheet_id = doc.sheet_order[0]
+
+        return doc
+
+    @classmethod
+    def _parse_row_range(cls, rows_spec: Any) -> List[int]:
+        """Parses Prism row range strings like '0~2', '3', '1-5', integers, or lists."""
+        if rows_spec is None:
+            return []
+        if isinstance(rows_spec, (list, tuple, set)):
+            rows: List[int] = []
+            for item in rows_spec:
+                rows.extend(cls._parse_row_range(item))
+            return rows
+        if isinstance(rows_spec, int):
+            return [rows_spec]
+        rows = []
+        for part in str(rows_spec).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "~" in part:
+                sub = part.split("~")
+                try:
+                    start, end = int(sub[0].strip()), int(sub[1].strip())
+                    rows.extend(range(start, end + 1))
+                except ValueError:
+                    pass
+            elif "-" in part and not part.startswith("-"):
+                sub = part.split("-")
+                try:
+                    start, end = int(sub[0].strip()), int(sub[1].strip())
+                    rows.extend(range(start, end + 1))
+                except ValueError:
+                    pass
+            elif part.isdigit():
+                rows.append(int(part))
+        return rows
+
+    @staticmethod
+    def _is_excluded_attribute(ca: Dict[str, Any]) -> bool:
+        """Determines if a cellAttribute object flags cell exclusion."""
+        attrs = ca.get("attributes", [])
+        if isinstance(attrs, list):
+            for attr in attrs:
+                if str(attr).upper() in ("EXCLUDED", "EXCLUDE", "1", "TRUE"):
+                    return True
+        for key in ("excluded", "Excluded", "isExcluded", "is_excluded"):
+            if key in ca:
+                val = ca[key]
+                if val is True or str(val).lower() in ("1", "true", "yes"):
+                    return True
+        return False
+
+    @staticmethod
+    def _is_md5_hash(b: bytes) -> bool:
+        """Checks if a 32-byte buffer is an ASCII hex MD5 checksum."""
+        if len(b) == 32:
+            try:
+                s = b.decode("ascii")
+                return all(c in "0123456789abcdefABCDEF" for c in s)
+            except UnicodeDecodeError:
+                return False
+        return False
+
+    @classmethod
+    def _parse_binary_table(
+        cls, dt_bytes: bytes, num_cols: int
+    ) -> List[List[float]]:
+        """Decodes binary float/double array buffer into rows of floats."""
+        if not dt_bytes or num_cols <= 0:
+            return []
+        if cls._is_md5_hash(dt_bytes):
+            return []
+
+        # Try double precision (<d, 8 bytes per value)
+        if len(dt_bytes) % 8 == 0:
+            try:
+                count = len(dt_bytes) // 8
+                floats = list(struct.unpack(f"<{count}d", dt_bytes))
+                return [floats[i : i + num_cols] for i in range(0, len(floats), num_cols)]
+            except Exception:
+                pass
+
+        # Try single precision (<f, 4 bytes per value)
+        if len(dt_bytes) % 4 == 0:
+            try:
+                count = len(dt_bytes) // 4
+                floats = list(struct.unpack(f"<{count}f", dt_bytes))
+                return [floats[i : i + num_cols] for i in range(0, len(floats), num_cols)]
+            except Exception:
+                pass
+
+        return []
+
+
+    @classmethod
+    def _load_prism10(cls, zf: zipfile.ZipFile, manifest: Dict[str, Any]) -> PrismDocument:
+        """Parses official GraphPad Prism 10 PK-ZIP archives."""
+        title = manifest.get("title", "Prism Project")
+        doc = PrismDocument(title=title)
+
+        sheet_attrs = manifest.get("sheetAttributesMap", {})
+        sheets_dict = manifest.get("sheets", {})
+
+        data_sheet_uids = sheets_dict.get("data", []) if isinstance(sheets_dict, dict) else []
+        info_sheet_uids = sheets_dict.get("info", []) if isinstance(sheets_dict, dict) else []
+        graph_sheet_uids = sheets_dict.get("graphs", []) if isinstance(sheets_dict, dict) else []
+
+        dataset_to_sheet: Dict[str, str] = {}
+
+        # 1. Load Data Sheets
+        for s_uid in data_sheet_uids:
+            sheet_json_path = f"data/sheets/{s_uid}/sheet.json"
+            if sheet_json_path not in zf.namelist():
+                sheet_json_path = f"data/sheets/{s_uid}.json"
+            if sheet_json_path not in zf.namelist():
+                continue
+
+            s_data = json.loads(zf.read(sheet_json_path).decode("utf-8"))
+            s_title = (
+                s_data.get("title")
+                or sheet_attrs.get(s_uid, {}).get("title")
+                or f"Data {len(doc.sheets) + 1}"
+            )
+
+            table_meta = s_data.get("table", {})
+            t_uid = table_meta.get("uid", s_uid)
+
+            raw_fmt = str(table_meta.get("format", "xy")).lower()
+            if "column" in raw_fmt or "one_way" in raw_fmt:
+                t_type = TableType.COLUMN
+            elif "grouped" in raw_fmt or "two_way" in raw_fmt:
+                t_type = TableType.GROUPED
+            elif "contingency" in raw_fmt:
+                t_type = TableType.CONTINGENCY
+            elif "survival" in raw_fmt:
+                t_type = TableType.SURVIVAL
+            else:
+                t_type = TableType.XY
+
+            # X Dataset inspection
+            x_dataset_id = table_meta.get("xDataSet")
+            x_title = "X"
+            x_exclusions: Set[int] = set()
+
+            if x_dataset_id:
+                x_ds_path = f"data/sets/{x_dataset_id}.json"
+                if x_ds_path in zf.namelist():
+                    x_ds_data = json.loads(zf.read(x_ds_path).decode("utf-8"))
+                    xt = x_ds_data.get("title")
+                    if isinstance(xt, dict):
+                        x_title = xt.get("string", "X")
+                    elif xt:
+                        x_title = str(xt)
+                    for r_obj in x_ds_data.get("replicates", []):
+                        for ca in r_obj.get("cellAttributes", []):
+                            if cls._is_excluded_attribute(ca):
+                                for r_idx in cls._parse_row_range(ca.get("rows", "")):
+                                    x_exclusions.add(r_idx)
+
+            # Y Datasets inspection
+            y_dataset_ids = table_meta.get("dataSets", [])
+            y_group_titles: List[str] = []
+            group_replicate_counts: List[int] = []
+            y_exclusions: Set[Tuple[int, int, int]] = set()  # (row, group_idx, subcol_idx)
+
+            for g_idx, ds_id in enumerate(y_dataset_ids):
+                dataset_to_sheet[ds_id] = s_uid
+                ds_path = f"data/sets/{ds_id}.json"
+                g_title = f"Group {g_idx + 1}"
+                num_reps = 1
+
+                if ds_path in zf.namelist():
+                    ds_data = json.loads(zf.read(ds_path).decode("utf-8"))
+                    yt = ds_data.get("title")
+                    if isinstance(yt, dict):
+                        g_title = yt.get("string", g_title)
+                    elif yt:
+                        g_title = str(yt)
+
+                    reps = ds_data.get("replicates", [])
+                    if reps:
+                        num_reps = len(reps)
+                        for s_idx, rep in enumerate(reps):
+                            for ca in rep.get("cellAttributes", []):
+                                if cls._is_excluded_attribute(ca):
+                                    for r_idx in cls._parse_row_range(ca.get("rows", "")):
+                                        y_exclusions.add((r_idx, g_idx, s_idx))
+
+                y_group_titles.append(g_title)
+                group_replicate_counts.append(num_reps)
+
+            max_reps = max(group_replicate_counts) if group_replicate_counts else 1
+            if not y_group_titles:
+                y_group_titles = ["Group A"]
+                group_replicate_counts = [1]
+
+            # Read CSV table data
+            csv_path = f"data/tables/{t_uid}/data.csv"
+            if csv_path not in zf.namelist():
+                csv_path = f"data/tables/{t_uid}.csv"
+
+            rows_data: List[List[float]] = []
+            if csv_path in zf.namelist():
+                csv_raw = zf.read(csv_path).decode("utf-8", errors="replace")
+                reader = csv.reader(io.StringIO(csv_raw))
+                for row_idx, row in enumerate(reader):
+                    if not row or not any(cell.strip() for cell in row):
+                        continue
+                    # Check if first row is header row
+                    if row_idx == 0:
+                        has_str = False
+                        for c in row:
+                            c_str = c.strip()
+                            if c_str:
+                                try:
+                                    float(c_str)
+                                except ValueError:
+                                    has_str = True
+                                    break
+                        if has_str:
+                            continue
+
+                    parsed_row: List[float] = []
+                    for c in row:
+                        c_str = c.strip()
+                        if c_str == "" or c_str.lower() == "nan":
+                            parsed_row.append(np.nan)
+                        else:
+                            try:
+                                parsed_row.append(float(c_str))
+                            except ValueError:
+                                parsed_row.append(np.nan)
+                    rows_data.append(parsed_row)
+
+            # Fallback for binary data.dt buffer if CSV is absent
+            dt_path = f"data/tables/{t_uid}/data.dt"
+            if not rows_data and dt_path in zf.namelist():
+                dt_bytes = zf.read(dt_path)
+                content_json_path = f"data/tables/{t_uid}/content.json"
+                n_cols = len(y_group_titles) + (1 if t_type in (TableType.XY, TableType.SURVIVAL) else 0)
+                if content_json_path in zf.namelist():
+                    try:
+                        cj = json.loads(zf.read(content_json_path).decode("utf-8"))
+                        n_cols = cj.get("numberOfColumns", n_cols)
+                    except Exception:
+                        pass
+                rows_data = cls._parse_binary_table(dt_bytes, n_cols)
+
+
+            num_rows = len(rows_data) if rows_data else 20
+            if num_rows == 0:
+                num_rows = 20
+
+            table = DataTable(
+                table_id=t_uid,
+                title=s_title,
+                table_type=t_type,
+                num_rows=num_rows,
+                num_replicates=max_reps,
+                y_group_titles=y_group_titles,
+            )
+            table.x_title = x_title
+
+            # Populate table cells from rows_data
+            for r, row in enumerate(rows_data):
+                col_idx = 0
+                if table.x_data is not None:
+                    if col_idx < len(row):
+                        table.set_cell_value(r, "X", 0, 0, row[col_idx])
+                        col_idx += 1
+                for g_idx in range(len(y_group_titles)):
+                    g_reps = group_replicate_counts[g_idx] if g_idx < len(group_replicate_counts) else max_reps
+                    for s_idx in range(g_reps):
+                        if col_idx < len(row):
+                            table.set_cell_value(r, "Y", g_idx, s_idx, row[col_idx])
+                            col_idx += 1
+
+            # Apply cell exclusions
+            for r_idx in x_exclusions:
+                table.set_excluded(r_idx, "X", 0, 0, True)
+            for r_idx, g_idx, s_idx in y_exclusions:
+                table.set_excluded(r_idx, "Y", g_idx, s_idx, True)
+
+            data_sheet = DataSheet(sheet_id=s_uid, title=s_title, table=table)
+            doc.sheets[s_uid] = data_sheet
+            doc.sheet_order.append(s_uid)
+
+        # 2. Load Info Sheets
+        for i_uid in info_sheet_uids:
+            sheet_json_path = f"info/{i_uid}/sheet.json"
+            if sheet_json_path not in zf.namelist():
+                sheet_json_path = f"data/sheets/{i_uid}.json"
+            if sheet_json_path not in zf.namelist():
+                continue
+
+            i_data = json.loads(zf.read(sheet_json_path).decode("utf-8"))
+            i_title = (
+                i_data.get("title")
+                or sheet_attrs.get(i_uid, {}).get("title")
+                or f"Info {len(doc.sheets) + 1}"
+            )
+            notes = i_data.get("notesText", "") or i_data.get("notes", "")
+
+            raw_consts = i_data.get("constants", {})
+            consts_dict: Dict[str, str] = {}
+            if isinstance(raw_consts, list):
+                for c in raw_consts:
+                    if isinstance(c, dict) and c.get("name"):
+                        consts_dict[c["name"]] = c.get("value", "")
+            elif isinstance(raw_consts, dict):
+                consts_dict = raw_consts
+
+            info_sheet = InfoSheet(sheet_id=i_uid, title=i_title, notes=notes, constants=consts_dict)
+            doc.sheets[i_uid] = info_sheet
+            doc.sheet_order.append(i_uid)
+
+        # 3. Load Graph Sheets
+        for g_uid in graph_sheet_uids:
+            sheet_json_path = f"graphs/{g_uid}/sheet.json"
+            if sheet_json_path not in zf.namelist():
+                sheet_json_path = f"data/sheets/{g_uid}.json"
+            if sheet_json_path not in zf.namelist():
+                continue
+
+            g_data = json.loads(zf.read(sheet_json_path).decode("utf-8"))
+            g_title = (
+                g_data.get("title")
+                or sheet_attrs.get(g_uid, {}).get("title")
+                or f"Graph {len(doc.sheets) + 1}"
+            )
+
+            input_datasets = g_data.get("inputDataSets", [])
+            source_sheet_id = ""
+            for ds_id in input_datasets:
+                if ds_id in dataset_to_sheet:
+                    source_sheet_id = dataset_to_sheet[ds_id]
+                    break
+            if not source_sheet_id and data_sheet_uids:
+                source_sheet_id = data_sheet_uids[0]
+
+            graph_sheet = GraphSheet(sheet_id=g_uid, title=g_title, source_sheet_id=source_sheet_id)
+            doc.sheets[g_uid] = graph_sheet
+            doc.sheet_order.append(g_uid)
+
+        # 4. Load Result Sheets (if present)
+        result_sheet_uids = sheets_dict.get("results", []) if isinstance(sheets_dict, dict) else []
+        for r_uid in result_sheet_uids:
+            sheet_json_path = f"results/{r_uid}/sheet.json"
+            if sheet_json_path not in zf.namelist():
+                sheet_json_path = f"data/sheets/{r_uid}.json"
+            if sheet_json_path not in zf.namelist():
+                continue
+
+            r_data = json.loads(zf.read(sheet_json_path).decode("utf-8"))
+            r_title = (
+                r_data.get("title")
+                or sheet_attrs.get(r_uid, {}).get("title")
+                or f"Results {len(doc.sheets) + 1}"
+            )
+            res_sheet = ResultSheet(
+                sheet_id=r_uid,
+                title=r_title,
+                analysis_type=r_data.get("analysis_type", "Analysis"),
+                source_sheet_id=r_data.get("source_sheet_id", ""),
+                summary_tables=r_data.get("summary_tables", []),
+                raw_result_data=r_data.get("raw_result_data", {}),
+            )
+            doc.sheets[r_uid] = res_sheet
+            doc.sheet_order.append(r_uid)
+
+        # Respect explicit sheet order if provided in manifest
+        explicit_order = manifest.get("sheetOrder") or manifest.get("sheetsOrder")
+        if isinstance(explicit_order, list) and explicit_order:
+            ordered = [sid for sid in explicit_order if sid in doc.sheets]
+            for sid in doc.sheet_order:
+                if sid not in ordered:
+                    ordered.append(sid)
+            doc.sheet_order = ordered
+
+        # Determine active sheet
+        current_data = manifest.get("uiSettings", {}).get("currentSheets", {}).get("data")
+        if current_data and current_data in doc.sheets:
+            doc.active_sheet_id = current_data
+        elif doc.sheet_order:
+            doc.active_sheet_id = doc.sheet_order[0]
+
+        return doc
+

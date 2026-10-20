@@ -1,0 +1,363 @@
+"""
+UI and Analysis Action Integration Tests for GemGraph.
+Tests MainWindow navigation, contextual toolbars, analysis actions, and DAG recalculation.
+"""
+
+from __future__ import annotations
+import unittest
+import numpy as np
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt
+
+from src.core.document import PrismDocument
+from src.core.sheet import DataSheet, ResultSheet, SheetType
+from src.core.table import TableType, DataTable, VariableType
+from src.core.hooking import GLOBAL_REGISTRY
+from src.ui.main_window import MainWindow
+
+app = QApplication.instance()
+if app is None:
+    app = QApplication([])
+
+
+class TestMainWindowAndActions(unittest.TestCase):
+    def setUp(self) -> None:
+        GLOBAL_REGISTRY.clear()
+        self.window = MainWindow()
+
+    def tearDown(self) -> None:
+        self.window.close()
+
+    def test_initial_state_and_contextual_toolbar(self) -> None:
+        """Verifies initial window state and contextual toolbar configuration."""
+        self.assertIsNotNone(self.window.document)
+        self.assertGreaterEqual(len(self.window.document.sheets), 1)
+
+        # XY contextual toolbar has linear, nonlin, etc.
+        self.window._update_contextual_toolbar(TableType.XY)
+        actions = [a.text() for a in self.window.context_toolbar.actions()]
+        self.assertIn("Linear Reg", actions)
+        self.assertIn("Nonlin Reg", actions)
+
+        # Column toolbar
+        self.window._update_contextual_toolbar(TableType.COLUMN)
+        actions = [a.text() for a in self.window.context_toolbar.actions()]
+        self.assertIn("1-Way ANOVA", actions)
+        self.assertIn("t-test", actions)
+
+        # Grouped toolbar
+        self.window._update_contextual_toolbar(TableType.GROUPED)
+        actions = [a.text() for a in self.window.context_toolbar.actions()]
+        self.assertIn("2-Way ANOVA", actions)
+
+    def test_linear_regression_action(self) -> None:
+        """Tests action_run_linear generating a valid ResultSheet with parameters and curve tab."""
+        active_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(active_sheet, DataSheet)
+        table = active_sheet.table
+        table.x_data = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        # Y = 2X + 1
+        for r, x in enumerate(table.x_data):
+            table.set_cell_value(r, "Y", 0, 0, float(2.0 * x + 1.0))
+
+        self.window.action_run_linear()
+
+        current_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(current_sheet, ResultSheet)
+        self.assertEqual(current_sheet.analysis_type, "Linear Regression")
+        self.assertEqual(len(current_sheet.tabs), 2)
+        self.assertEqual(current_sheet.tabs[0]["name"], "Parameters")
+        self.assertEqual(current_sheet.tabs[1]["name"], "Curve Coordinates")
+
+        # Slope should be approximately 2.0
+        raw = current_sheet.raw_result_data
+        slope = raw["parameters"][0]["best_fit"]
+        self.assertAlmostEqual(slope, 2.0, places=3)
+
+    def test_descriptive_stats_and_correlation_actions(self) -> None:
+        """Tests descriptive statistics and correlation matrix actions."""
+        # Create column data sheet
+        sheet = self.window.document.create_data_sheet(
+            title="ColData",
+            table_type=TableType.COLUMN,
+            num_rows=5,
+            num_replicates=1,
+            y_group_titles=["Control", "Treated"],
+        )
+        self.window.on_sheet_selected(sheet.sheet_id)
+        for r in range(5):
+            sheet.table.set_cell_value(r, "Y", 0, 0, float(10 + r))
+            sheet.table.set_cell_value(r, "Y", 1, 0, float(20 + 2 * r))
+
+        self.window.action_run_descriptive_stats()
+        res_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(res_sheet, ResultSheet)
+        self.assertEqual(res_sheet.analysis_type, "Column Statistics")
+        self.assertEqual(res_sheet.tabs[0]["grid_type"], "green")
+
+        # Test correlation
+        self.window.on_sheet_selected(sheet.sheet_id)
+        self.window.action_run_correlation()
+        corr_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(corr_sheet, ResultSheet)
+        self.assertEqual(corr_sheet.analysis_type, "Correlation")
+        # Perfect correlation between 10+r and 20+2r -> r = 1.0
+        r_rows = corr_sheet.tabs[0]["rows"]
+        self.assertAlmostEqual(float(r_rows[0][2]), 1.0, places=3)
+
+    def test_table_transform_and_manipulation_actions(self) -> None:
+        """Tests transform, normalize, prune, and transpose actions creating child sheets in DAG."""
+        sheet = self.window.document.create_data_sheet(
+            title="RawData",
+            table_type=TableType.COLUMN,
+            num_rows=6,
+            num_replicates=1,
+            y_group_titles=["Values"],
+        )
+        self.window.on_sheet_selected(sheet.sheet_id)
+        for r in range(6):
+            sheet.table.set_cell_value(r, "Y", 0, 0, float((r + 1) * 10))
+
+        # 1. Transform log10
+        self.window.action_run_transform()
+        tf_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(tf_sheet, DataSheet)
+        self.assertIn(tf_sheet.sheet_id, sheet.child_sheet_ids)
+        # log10(10) = 1.0, log10(100) = 2.0
+        self.assertAlmostEqual(tf_sheet.table.get_cell_value(0, "Y", 0, 0), 1.0, places=3)
+
+        # 2. Normalize
+        self.window.on_sheet_selected(sheet.sheet_id)
+        self.window.action_run_normalize()
+        norm_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(norm_sheet, DataSheet)
+        # Min=10 -> 0%, Max=60 -> 100%
+        self.assertAlmostEqual(norm_sheet.table.get_cell_value(0, "Y", 0, 0), 0.0, places=3)
+        self.assertAlmostEqual(norm_sheet.table.get_cell_value(5, "Y", 0, 0), 100.0, places=3)
+
+        # 3. Prune rows
+        self.window.on_sheet_selected(sheet.sheet_id)
+        self.window.action_run_prune()
+        prune_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(prune_sheet, DataSheet)
+        self.assertEqual(prune_sheet.table.num_rows, 3)
+
+        # 4. Transpose
+        self.window.on_sheet_selected(sheet.sheet_id)
+        self.window.action_run_transpose()
+        tp_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(tp_sheet, DataSheet)
+        self.assertEqual(len(tp_sheet.table.y_group_titles), 6)
+
+    def test_survival_and_contingency_actions(self) -> None:
+        """Tests Kaplan-Meier survival analysis and Contingency Chi-Square actions."""
+        # Survival
+        surv_sheet = self.window.document.create_data_sheet(
+            title="Survival",
+            table_type=TableType.SURVIVAL,
+            num_rows=4,
+            num_replicates=1,
+            y_group_titles=["Status"],
+        )
+        self.window.on_sheet_selected(surv_sheet.sheet_id)
+        surv_sheet.table.x_data = np.array([5.0, 10.0, 15.0, 20.0])
+        # 3 events, 1 censored
+        surv_sheet.table.set_cell_value(0, "Y", 0, 0, 1.0)
+        surv_sheet.table.set_cell_value(1, "Y", 0, 0, 1.0)
+        surv_sheet.table.set_cell_value(2, "Y", 0, 0, 0.0)
+        surv_sheet.table.set_cell_value(3, "Y", 0, 0, 1.0)
+
+        self.window.action_run_survival()
+        res_surv = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(res_surv, ResultSheet)
+        self.assertEqual(res_surv.analysis_type, "Survival Analysis")
+
+        # Contingency (2x2)
+        cont_sheet = self.window.document.create_data_sheet(
+            title="Contingency",
+            table_type=TableType.CONTINGENCY,
+            num_rows=2,
+            num_replicates=1,
+            y_group_titles=["Success", "Failure"],
+        )
+        self.window.on_sheet_selected(cont_sheet.sheet_id)
+        cont_sheet.table.set_cell_value(0, "Y", 0, 0, 20.0)
+        cont_sheet.table.set_cell_value(0, "Y", 1, 0, 10.0)
+        cont_sheet.table.set_cell_value(1, "Y", 0, 0, 5.0)
+        cont_sheet.table.set_cell_value(1, "Y", 1, 0, 25.0)
+
+        self.window.action_run_contingency_test()
+        res_cont = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(res_cont, ResultSheet)
+        self.assertEqual(res_cont.analysis_type, "Contingency Test")
+
+    def test_simulation_actions(self) -> None:
+        """Tests simulate XY and simulate column actions."""
+        self.window.action_run_simulate_xy()
+        xy_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(xy_sheet, DataSheet)
+        self.assertEqual(xy_sheet.table.table_type, TableType.XY)
+        self.assertEqual(xy_sheet.table.num_rows, 8)
+
+        self.window.action_run_simulate_column()
+        col_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(col_sheet, DataSheet)
+        self.assertEqual(col_sheet.table.table_type, TableType.COLUMN)
+        self.assertEqual(len(col_sheet.table.y_group_titles), 3)
+
+    def test_statistical_testing_suite(self) -> None:
+        """Tests t-test, multiple t-tests, nested analysis, and goodness of fit."""
+        # 1. t-test
+        t_sheet = self.window.document.create_data_sheet(
+            title="TTestSheet",
+            table_type=TableType.COLUMN,
+            num_rows=4,
+            num_replicates=1,
+            y_group_titles=["Group1", "Group2"],
+        )
+        self.window.on_sheet_selected(t_sheet.sheet_id)
+        for r in range(4):
+            t_sheet.table.set_cell_value(r, "Y", 0, 0, float(10 + r))
+            t_sheet.table.set_cell_value(r, "Y", 1, 0, float(20 + r))
+
+        self.window.action_run_t_test()
+        res_t = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(res_t, ResultSheet)
+        self.assertEqual(res_t.analysis_type, "t-test")
+
+        # 2. Multiple t-tests
+        mt_sheet = self.window.document.create_data_sheet(
+            title="MultTTest",
+            table_type=TableType.GROUPED,
+            num_rows=3,
+            num_replicates=2,
+            y_group_titles=["Ctrl", "Trt"],
+        )
+        self.window.on_sheet_selected(mt_sheet.sheet_id)
+        for r in range(3):
+            mt_sheet.table.set_cell_value(r, "Y", 0, 0, 10.0 + r)
+            mt_sheet.table.set_cell_value(r, "Y", 0, 1, 11.0 + r)
+            mt_sheet.table.set_cell_value(r, "Y", 1, 0, 20.0 + r)
+            mt_sheet.table.set_cell_value(r, "Y", 1, 1, 22.0 + r)
+
+        self.window.action_run_multiple_t_tests()
+        res_mt = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(res_mt, ResultSheet)
+        self.assertEqual(res_mt.analysis_type, "Multiple t-tests")
+
+        # 3. Goodness of Fit
+        gof_sheet = self.window.document.create_data_sheet(
+            title="GOF",
+            table_type=TableType.PARTS_OF_WHOLE,
+            num_rows=3,
+            num_replicates=1,
+            y_group_titles=["Observed"],
+        )
+        self.window.on_sheet_selected(gof_sheet.sheet_id)
+        gof_sheet.table.set_cell_value(0, "Y", 0, 0, 50.0)
+        gof_sheet.table.set_cell_value(1, "Y", 0, 0, 30.0)
+        gof_sheet.table.set_cell_value(2, "Y", 0, 0, 20.0)
+
+        self.window.action_run_goodness_of_fit()
+        res_gof = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(res_gof, ResultSheet)
+        self.assertEqual(res_gof.analysis_type, "Goodness-of-Fit")
+
+    def test_multivariate_and_regression_suite(self) -> None:
+        """Tests multiple linear regression, PCA, and interpolation actions."""
+        # 1. Multiple regression
+        reg_sheet = self.window.document.create_data_sheet(
+            title="MultReg",
+            table_type=TableType.COLUMN,
+            num_rows=6,
+            num_replicates=1,
+            y_group_titles=["Y", "X1", "X2"],
+        )
+        self.window.on_sheet_selected(reg_sheet.sheet_id)
+        for r in range(6):
+            x1 = float(r)
+            x2 = float(r * 2)
+            y = 3.0 + 2.0 * x1 + 1.5 * x2
+            reg_sheet.table.set_cell_value(r, "Y", 0, 0, y)
+            reg_sheet.table.set_cell_value(r, "Y", 1, 0, x1)
+            reg_sheet.table.set_cell_value(r, "Y", 2, 0, x2)
+
+        self.window.action_run_multiple_reg()
+        res_reg = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(res_reg, ResultSheet)
+        self.assertEqual(res_reg.analysis_type, "Multiple Regression")
+
+        # 2. PCA
+        pca_sheet = self.window.document.create_data_sheet(
+            title="PCASheet",
+            table_type=TableType.COLUMN,
+            num_rows=5,
+            num_replicates=1,
+            y_group_titles=["Var1", "Var2", "Var3"],
+        )
+        self.window.on_sheet_selected(pca_sheet.sheet_id)
+        for r in range(5):
+            pca_sheet.table.set_cell_value(r, "Y", 0, 0, float(r * 3))
+            pca_sheet.table.set_cell_value(r, "Y", 1, 0, float(r * 2 + 1))
+            pca_sheet.table.set_cell_value(r, "Y", 2, 0, float(r * 5 - 2))
+
+        self.window.action_run_pca()
+        res_pca = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(res_pca, ResultSheet)
+        self.assertEqual(res_pca.analysis_type, "PCA")
+
+        # 3. Interpolate
+        interp_sheet = self.window.document.create_data_sheet(
+            title="InterpSheet",
+            table_type=TableType.XY,
+            num_rows=5,
+            num_replicates=1,
+            y_group_titles=["Standard"],
+        )
+        self.window.on_sheet_selected(interp_sheet.sheet_id)
+        interp_sheet.table.x_data = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        for r, x in enumerate(interp_sheet.table.x_data):
+            interp_sheet.table.set_cell_value(r, "Y", 0, 0, float(x * 10))
+
+        self.window.action_run_interpolate()
+        res_interp = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(res_interp, ResultSheet)
+        self.assertEqual(res_interp.analysis_type, "Interpolate")
+
+    def test_dag_recalculation_on_cell_modification(self) -> None:
+        """Verifies modifying a data cell recalculates downstream result sheets."""
+        active_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(active_sheet, DataSheet)
+        table = active_sheet.table
+        table.x_data = np.array([-9.0, -8.0, -7.0, -6.0, -5.0])
+        for r, x in enumerate(table.x_data):
+            y_val = 10.0 + 90.0 / (1.0 + 10.0 ** (-6.0 - x))
+            table.set_cell_value(r, "Y", 0, 0, y_val)
+
+        # Create child result sheet with calc_spec
+        res = self.window.document.create_result_sheet(
+            title="Dose Response Curve",
+            analysis_type="Nonlinear Regression",
+            source_sheet_id=active_sheet.sheet_id,
+            calc_spec={
+                "type": "nonlinear",
+                "model_name": "Sigmoidal Dose-Response (4PL)",
+                "group_idx": 0,
+            },
+        )
+        self.assertIn(res.sheet_id, active_sheet.child_sheet_ids)
+
+        # Trigger table modification
+        table.set_cell_value(0, "Y", 0, 0, 11.5)
+        self.window._on_table_data_modified()
+
+        # Recalculated parameters should exist in result sheet
+        updated_res = self.window.document.get_sheet(res.sheet_id)
+        self.assertIsInstance(updated_res, ResultSheet)
+        self.assertIn("params", updated_res.raw_result_data)
+        self.assertIn("LogEC50", updated_res.raw_result_data["params"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+

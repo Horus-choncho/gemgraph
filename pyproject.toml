@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gemgraph"
+version = "0.1.0"
+description = "Clean-Room Production-Grade GraphPad Prism 10 Alternative"
+authors = [
+    { name = "GemGraph Contributors" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "pandas>=2.0.0",
+    "statsmodels>=0.14.0",
+    "PyQt6>=6.5.0",
+    "pyqtgraph>=0.13.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pefile>=2023.2.7",
+    "dnfile>=0.15.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
