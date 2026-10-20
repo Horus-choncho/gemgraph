@@ -41,7 +41,7 @@ jobs:
 
   build-macos:
     name: Build macOS Application Bundle (.dmg)
-    runs-on: macos-13
+    runs-on: macos-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
