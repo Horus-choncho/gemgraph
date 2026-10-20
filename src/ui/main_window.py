@@ -8,8 +8,8 @@ import os
 from typing import Optional, List, Dict, Any
 import numpy as np
 import scipy.stats
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtCore import Qt, QDir, QUrl
+from PyQt6.QtGui import QAction, QKeySequence, QDragEnterEvent, QDropEvent, QDragMoveEvent
 from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("GemGraph — Clean-Room Edition")
         self.resize(1300, 800)
+        self.setAcceptDrops(True)
 
         self.document = PrismDocument("Untitled Project")
         self.undo_stack = UndoStack()
@@ -556,24 +557,126 @@ class MainWindow(QMainWindow):
             self.on_sheet_selected(self.document.active_sheet_id)
         self.status.showMessage("Loaded sample dose-response dataset.")
 
-    def action_open_project(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open Prism Project", "", "Prism Files (*.prism);;All Files (*)"
+    @staticmethod
+    def get_smart_initial_dir() -> str:
+        """
+        Determines smart initial path for file dialogs.
+        1. If /uploads exists on system, default to /uploads.
+        2. Else if samples/ exists in workspace, default to samples/.
+        3. Otherwise fallback to QDir.homePath() or cwd.
+        """
+        if os.path.exists("/uploads") and os.path.isdir("/uploads"):
+            return "/uploads"
+
+        workspace_samples = os.path.abspath("samples")
+        if os.path.exists(workspace_samples) and os.path.isdir(workspace_samples):
+            return workspace_samples
+
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        root_samples = os.path.join(project_root, "samples")
+        if os.path.exists(root_samples) and os.path.isdir(root_samples):
+            return root_samples
+
+        home = QDir.homePath()
+        if home and os.path.exists(home) and os.path.isdir(home):
+            return home
+
+        return os.getcwd()
+
+    @classmethod
+    def get_preset_paths(cls) -> List[str]:
+        """Returns standard pre-set paths for sidebar shortcuts (/uploads, samples/, and project directories)."""
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        samples_path = os.path.abspath("samples")
+        if not os.path.isdir(samples_path):
+            samples_path = os.path.join(project_root, "samples")
+
+        candidates = ["/uploads", samples_path, project_root, os.getcwd()]
+        result: List[str] = []
+        for p in candidates:
+            norm = os.path.abspath(p) if p != "/uploads" else "/uploads"
+            if norm not in result:
+                result.append(norm)
+        return result
+
+    def create_open_project_dialog(self) -> QFileDialog:
+        """Creates an Open Project file dialog with smart initial path and pre-set sidebar shortcuts."""
+        initial_dir = self.get_smart_initial_dir()
+        dialog = QFileDialog(
+            self,
+            "Open Prism Project",
+            initial_dir,
+            "Prism Files (*.prism *.pzfx *.csv);;Prism Native (*.prism);;Prism XML (*.pzfx *.xml *.pzm);;CSV Data (*.csv);;All Files (*)",
         )
-        if file_path:
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+        sidebar_urls = list(dialog.sidebarUrls())
+        for p in self.get_preset_paths():
+            if os.path.exists(p) or p == "/uploads":
+                u = QUrl.fromLocalFile(p)
+                if u not in sidebar_urls:
+                    sidebar_urls.append(u)
+        dialog.setSidebarUrls(sidebar_urls)
+        return dialog
+
+    def open_project(self, filepath: str) -> None:
+        """
+        Loads dataset from filepath (.prism, .pzfx/.xml, .csv),
+        populates the spreadsheet, and renders the initial plot.
+        """
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"File not found: {filepath}")
+
+        ext = os.path.splitext(filepath)[1].lower()
+        if ext == ".prism":
+            self.document = PrismIO.load(filepath)
+        elif ext in (".pzfx", ".xml", ".pzm"):
+            self.document = PrismXMLIO.import_xml(filepath)
+        elif ext == ".csv":
+            self.document = PrismIO.load_csv(filepath)
+        else:
             try:
-                self.document = PrismIO.load(file_path)
-                self.undo_stack.clear()
-                self.navigator.populate(self.document)
-                if self.document.active_sheet_id:
-                    self.on_sheet_selected(self.document.active_sheet_id)
-                self.status.showMessage(f"Opened: {file_path}")
-            except Exception as e:
-                QMessageBox.critical(self, "Error Loading Project", str(e))
+                self.document = PrismIO.load(filepath)
+            except Exception:
+                try:
+                    self.document = PrismXMLIO.import_xml(filepath)
+                except Exception:
+                    self.document = PrismIO.load_csv(filepath)
+
+        self.undo_stack.clear()
+        self.navigator.populate(self.document)
+
+        # Select appropriate sheet: prioritize active_sheet_id or first data sheet
+        target_sheet_id = self.document.active_sheet_id
+        data_sheets = self.document.get_sheets_by_type(SheetType.DATA)
+        if not target_sheet_id or target_sheet_id not in self.document.sheets:
+            if data_sheets:
+                target_sheet_id = data_sheets[0].sheet_id
+            elif self.document.sheet_order:
+                target_sheet_id = self.document.sheet_order[0]
+
+        if target_sheet_id:
+            self.on_sheet_selected(target_sheet_id)
+            if data_sheets and not isinstance(self.document.get_sheet(target_sheet_id), DataSheet):
+                self.spreadsheet_model.set_table(data_sheets[0].table)
+                self.center_stack.setCurrentWidget(self.spreadsheet_view)
+
+        self.status.showMessage(f"Opened: {filepath}")
+
+    def action_open_project(self, dialog: Optional[QFileDialog] = None) -> None:
+        dlg = dialog or self.create_open_project_dialog()
+        if dlg.exec():
+            selected = dlg.selectedFiles()
+            if selected:
+                try:
+                    self.open_project(selected[0])
+                except Exception as e:
+                    QMessageBox.critical(self, "Error Loading Project", str(e))
 
     def action_save_project(self) -> None:
+        initial_dir = self.get_smart_initial_dir()
+        default_path = os.path.join(initial_dir, f"{self.document.title}.prism")
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Prism Project", f"{self.document.title}.prism", "Prism Files (*.prism)"
+            self, "Save Prism Project", default_path, "Prism Files (*.prism)"
         )
         if file_path:
             try:
@@ -583,23 +686,21 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error Saving Project", str(e))
 
     def action_import_xml(self) -> None:
+        initial_dir = self.get_smart_initial_dir()
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Import Prism XML", "", "Prism XML (*.xml *.pzm);;All Files (*)"
+            self, "Import Prism XML", initial_dir, "Prism XML (*.xml *.pzm);;All Files (*)"
         )
         if file_path:
             try:
-                self.document = PrismXMLIO.import_xml(file_path)
-                self.undo_stack.clear()
-                self.navigator.populate(self.document)
-                if self.document.active_sheet_id:
-                    self.on_sheet_selected(self.document.active_sheet_id)
-                self.status.showMessage(f"Imported XML: {file_path}")
+                self.open_project(file_path)
             except Exception as e:
                 QMessageBox.critical(self, "Error Importing XML", str(e))
 
     def action_export_xml(self) -> None:
+        initial_dir = self.get_smart_initial_dir()
+        default_path = os.path.join(initial_dir, f"{self.document.title}.xml")
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Prism XML", f"{self.document.title}.xml", "Prism XML (*.xml)"
+            self, "Export Prism XML", default_path, "Prism XML (*.xml)"
         )
         if file_path:
             try:
@@ -609,20 +710,59 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error Exporting XML", str(e))
 
     def action_export_png(self) -> None:
+        initial_dir = self.get_smart_initial_dir()
+        default_path = os.path.join(initial_dir, "graph.png")
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export PNG", "graph.png", "PNG Images (*.png)"
+            self, "Export PNG", default_path, "PNG Images (*.png)"
         )
         if file_path:
             self.graph_canvas.export_png(file_path)
             self.status.showMessage(f"Exported PNG: {file_path}")
 
     def action_export_svg(self) -> None:
+        initial_dir = self.get_smart_initial_dir()
+        default_path = os.path.join(initial_dir, "graph.svg")
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export SVG", "graph.svg", "Vector SVG (*.svg)"
+            self, "Export SVG", default_path, "Vector SVG (*.svg)"
         )
         if file_path:
             self.graph_canvas.export_svg(file_path)
             self.status.showMessage(f"Exported SVG: {file_path}")
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        mime = event.mimeData()
+        if mime and mime.hasUrls():
+            for url in mime.urls():
+                filepath = url.toLocalFile() or url.path()
+                if any(filepath.lower().endswith(ext) for ext in (".prism", ".pzfx", ".csv")):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        mime = event.mimeData()
+        if mime and mime.hasUrls():
+            for url in mime.urls():
+                filepath = url.toLocalFile() or url.path()
+                if any(filepath.lower().endswith(ext) for ext in (".prism", ".pzfx", ".csv")):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        mime = event.mimeData()
+        if mime and mime.hasUrls():
+            urls = mime.urls()
+            if urls:
+                filepath = urls[0].toLocalFile() or urls[0].path()
+                if filepath:
+                    try:
+                        self.open_project(filepath)
+                        event.acceptProposedAction()
+                        return
+                    except Exception as e:
+                        QMessageBox.critical(self, "Error Loading Project", str(e))
+        event.ignore()
 
     def action_add_table(self, table_type: TableType) -> None:
         if table_type == TableType.XY:

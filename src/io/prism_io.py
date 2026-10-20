@@ -9,6 +9,7 @@ import csv
 import io
 import json
 import os
+import re
 import struct
 import zipfile
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -96,9 +97,16 @@ class PrismIO:
 
     @classmethod
     def load(cls, file_path: str) -> PrismDocument:
-        """Parses a .prism PK-ZIP archive into a PrismDocument."""
+        """Parses a project archive or data file (.prism, .pzfx, .xml, .csv) into a PrismDocument."""
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
+
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext == ".csv":
+            return cls.load_csv(file_path)
+        if ext in (".pzfx", ".xml", ".pzm"):
+            from src.io.xml_io import PrismXMLIO
+            return PrismXMLIO.import_xml(file_path)
 
         with zipfile.ZipFile(file_path, mode="r") as zf:
             if "document.json" not in zf.namelist():
@@ -110,6 +118,126 @@ class PrismIO:
                 return cls._load_cleanroom(zf, manifest)
             else:
                 return cls._load_prism10(zf, manifest)
+
+    @classmethod
+    def load_csv(cls, file_path: str) -> PrismDocument:
+        """Parses a CSV file into a PrismDocument with a populated DataSheet and GraphSheet."""
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        doc_title = base_name if base_name else "CSV Project"
+        doc = PrismDocument(title=doc_title)
+
+        df = pd.read_csv(file_path)
+        if df.empty:
+            sheet = doc.create_data_sheet(
+                title=base_name or "Data 1",
+                table_type=TableType.XY,
+                num_rows=10,
+                num_replicates=1,
+                y_group_titles=["Group A"],
+            )
+            doc.create_graph_sheet(title=f"{sheet.title} Graph", source_sheet_id=sheet.sheet_id)
+            return doc
+
+        cols = [str(c).strip() for c in df.columns]
+        df.columns = cols
+
+        rep_matches = [re.match(r"^(.*?):Y(\d+)$", col) for col in cols]
+        has_reps = any(m is not None for m in rep_matches)
+
+        if has_reps:
+            first_col = cols[0]
+            first_is_x = re.match(r"^(.*?):Y(\d+)$", first_col) is None
+
+            x_title = first_col if first_is_x else "X"
+            x_vals = pd.to_numeric(df.iloc[:, 0], errors="coerce").to_numpy() if first_is_x else None
+            y_cols = cols[1:] if first_is_x else cols
+
+            groups: Dict[str, List[Tuple[int, str]]] = {}
+            for c in y_cols:
+                m = re.match(r"^(.*?):Y(\d+)$", c)
+                if m:
+                    g_name, rep_idx = m.group(1), int(m.group(2))
+                    groups.setdefault(g_name, []).append((rep_idx, c))
+                else:
+                    groups.setdefault(c, []).append((1, c))
+
+            y_group_titles = list(groups.keys())
+            max_reps = max(len(v) for v in groups.values()) if groups else 1
+            num_rows = max(len(df), 10)
+
+            table_type = TableType.XY if first_is_x else TableType.COLUMN
+            sheet = doc.create_data_sheet(
+                title=base_name or "Data 1",
+                table_type=table_type,
+                num_rows=num_rows,
+                num_replicates=max_reps,
+                y_group_titles=y_group_titles,
+            )
+            table = sheet.table
+            if first_is_x and x_vals is not None:
+                table.x_title = x_title
+                table.x_data[:len(df)] = x_vals
+
+            for g_idx, g_name in enumerate(y_group_titles):
+                for s_idx, (_, c_name) in enumerate(groups[g_name]):
+                    if s_idx < max_reps:
+                        table.y_data[g_idx, :len(df), s_idx] = pd.to_numeric(
+                            df[c_name], errors="coerce"
+                        ).to_numpy()
+
+            doc.create_graph_sheet(title=f"{sheet.title} Graph", source_sheet_id=sheet.sheet_id)
+            return doc
+
+        first_col = cols[0]
+        first_is_x = (
+            first_col.upper() == "X"
+            or any(term in first_col.lower() for term in ("time", "dose", "conc", "hour", "day", "min", "sec"))
+            or (len(cols) >= 2 and pd.to_numeric(df.iloc[:, 0], errors="coerce").notna().sum() > 0)
+        )
+
+        num_rows = max(len(df), 10)
+        if first_is_x and len(cols) >= 2:
+            table_type = TableType.XY
+            x_title = first_col
+            x_vals = pd.to_numeric(df.iloc[:, 0], errors="coerce").to_numpy()
+            y_group_titles = cols[1:]
+            num_replicates = 1
+
+            sheet = doc.create_data_sheet(
+                title=base_name or "Data 1",
+                table_type=table_type,
+                num_rows=num_rows,
+                num_replicates=num_replicates,
+                y_group_titles=y_group_titles,
+            )
+            table = sheet.table
+            table.x_title = x_title
+            table.x_data[:len(df)] = x_vals
+            for g_idx, col_name in enumerate(y_group_titles):
+                table.y_data[g_idx, :len(df), 0] = pd.to_numeric(
+                    df[col_name], errors="coerce"
+                ).to_numpy()
+        else:
+            table_type = TableType.COLUMN
+            y_group_titles = cols
+            sheet = doc.create_data_sheet(
+                title=base_name or "Data 1",
+                table_type=table_type,
+                num_rows=num_rows,
+                num_replicates=1,
+                y_group_titles=y_group_titles,
+            )
+            table = sheet.table
+            for g_idx, col_name in enumerate(y_group_titles):
+                table.y_data[g_idx, :len(df), 0] = pd.to_numeric(
+                    df[col_name], errors="coerce"
+                ).to_numpy()
+
+        doc.create_graph_sheet(title=f"{sheet.title} Graph", source_sheet_id=sheet.sheet_id)
+        return doc
 
     @classmethod
     def _load_cleanroom(cls, zf: zipfile.ZipFile, manifest: Dict[str, Any]) -> PrismDocument:

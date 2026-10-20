@@ -4,10 +4,14 @@ Tests MainWindow navigation, contextual toolbars, analysis actions, and DAG reca
 """
 
 from __future__ import annotations
+import os
+import tempfile
 import unittest
+import unittest.mock
 import numpy as np
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QApplication, QFileDialog
+from PyQt6.QtCore import Qt, QDir, QUrl, QMimeData, QPointF
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QDragMoveEvent
 
 from src.core.document import PrismDocument
 from src.core.sheet import DataSheet, ResultSheet, SheetType
@@ -356,6 +360,150 @@ class TestMainWindowAndActions(unittest.TestCase):
         self.assertIsInstance(updated_res, ResultSheet)
         self.assertIn("params", updated_res.raw_result_data)
         self.assertIn("LogEC50", updated_res.raw_result_data["params"])
+
+    def test_window_accept_drops_enabled(self) -> None:
+        """Verifies MainWindow accepts window-level drops."""
+        self.assertTrue(self.window.acceptDrops())
+
+    def test_smart_initial_dir_priority(self) -> None:
+        """Verifies hierarchy: /uploads -> samples/ -> home/cwd."""
+        # 1. /uploads exists
+        with unittest.mock.patch("os.path.exists", side_effect=lambda p: p == "/uploads"), \
+             unittest.mock.patch("os.path.isdir", side_effect=lambda p: p == "/uploads"):
+            self.assertEqual(MainWindow.get_smart_initial_dir(), "/uploads")
+
+        # 2. samples exists in workspace
+        with unittest.mock.patch("os.path.exists", side_effect=lambda p: "samples" in str(p)), \
+             unittest.mock.patch("os.path.isdir", side_effect=lambda p: "samples" in str(p)):
+            res = MainWindow.get_smart_initial_dir()
+            self.assertTrue(res.endswith("samples"))
+
+        # 3. Neither exists: falls back to QDir.homePath() or cwd
+        with unittest.mock.patch("os.path.exists", return_value=False), \
+             unittest.mock.patch("os.path.isdir", return_value=False):
+            res = MainWindow.get_smart_initial_dir()
+            self.assertEqual(res, os.getcwd())
+
+    def test_open_project_dialog_sidebar_shortcuts_and_preset_paths(self) -> None:
+        """Verifies open project dialog contains pre-set sidebar shortcuts."""
+        dialog = self.window.create_open_project_dialog()
+        self.assertEqual(dialog.fileMode(), QFileDialog.FileMode.ExistingFile)
+        sidebar_urls = [u.toLocalFile() for u in dialog.sidebarUrls()]
+        self.assertTrue(any("/uploads" in u for u in sidebar_urls))
+        self.assertTrue(any("samples" in u for u in sidebar_urls))
+
+        preset_paths = MainWindow.get_preset_paths()
+        self.assertIn("/uploads", preset_paths)
+        self.assertTrue(any("samples" in p for p in preset_paths))
+
+    def test_drag_enter_and_move_events(self) -> None:
+        """Verifies dragEnter and dragMove accept .prism, .pzfx, and .csv while rejecting others."""
+        for ext in (".prism", ".pzfx", ".csv"):
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(f"/tmp/test_file{ext}")])
+            evt = QDragEnterEvent(
+                QPointF(10, 10).toPoint(),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.dragEnterEvent(evt)
+            self.assertTrue(evt.isAccepted(), f"Failed to accept {ext}")
+
+            evt_move = QDragMoveEvent(
+                QPointF(10, 10).toPoint(),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.dragMoveEvent(evt_move)
+            self.assertTrue(evt_move.isAccepted(), f"Failed to accept {ext} on move")
+
+        # Rejections
+        for invalid_ext in (".txt", ".exe", ".pdf", ".png"):
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(f"/tmp/test_file{invalid_ext}")])
+            evt = QDragEnterEvent(
+                QPointF(10, 10).toPoint(),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.dragEnterEvent(evt)
+            self.assertFalse(evt.isAccepted(), f"Should reject {invalid_ext}")
+
+        # Empty mime data
+        empty_mime = QMimeData()
+        evt_empty = QDragEnterEvent(
+            QPointF(10, 10).toPoint(),
+            Qt.DropAction.CopyAction,
+            empty_mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        self.window.dragEnterEvent(evt_empty)
+        self.assertFalse(evt_empty.isAccepted())
+
+    def test_drop_event_loads_prism_file(self) -> None:
+        """Verifies dropping a .prism project triggers open_project, updates spreadsheet and canvas."""
+        sample_path = os.path.join(os.path.dirname(__file__), "..", "samples", "test_sample.prism")
+        self.assertTrue(os.path.exists(sample_path))
+
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(os.path.abspath(sample_path))])
+        drop_evt = QDropEvent(
+            QPointF(10, 10),
+            Qt.DropAction.CopyAction,
+            mime,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        self.window.dropEvent(drop_evt)
+        self.assertTrue(drop_evt.isAccepted())
+
+        # Check document, spreadsheet model, and plot canvas
+        self.assertGreater(len(self.window.document.sheets), 1)
+        self.assertGreater(self.window.spreadsheet_model.rowCount(), 0)
+        self.assertGreater(len(self.window.graph_canvas.plot_widget.plotItem.items), 0)
+
+    def test_drop_event_loads_csv_file(self) -> None:
+        """Verifies dropping a CSV file parses table, populates spreadsheet, and plots data."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("X,Control,Treated\n1.0,10.0,20.0\n2.0,15.0,25.0\n3.0,30.0,45.0\n")
+            csv_path = f.name
+
+        try:
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(csv_path)])
+            drop_evt = QDropEvent(
+                QPointF(10, 10),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.dropEvent(drop_evt)
+            self.assertTrue(drop_evt.isAccepted())
+
+            self.assertGreaterEqual(len(self.window.document.sheets), 1)
+            active_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+            self.assertIsInstance(active_sheet, DataSheet)
+            self.assertEqual(active_sheet.table.table_type, TableType.XY)
+            self.assertEqual(active_sheet.table.get_cell_value(0, "X", 0, 0), 1.0)
+            self.assertEqual(active_sheet.table.get_cell_value(0, "Y", 0, 0), 10.0)
+            self.assertGreater(self.window.spreadsheet_model.rowCount(), 0)
+            self.assertGreater(len(self.window.graph_canvas.plot_widget.plotItem.items), 0)
+        finally:
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+
+    def test_open_project_errors_and_formats(self) -> None:
+        """Verifies open_project exception handling and format loading."""
+        with self.assertRaises(FileNotFoundError):
+            self.window.open_project("/path/to/non_existent_file.prism")
 
 
 if __name__ == "__main__":
