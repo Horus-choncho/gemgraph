@@ -40,7 +40,7 @@ jobs:
           path: dist/GemGraph-Windows-Portable.zip
 
   build-macos:
-    name: Build macOS Application Bundle
+    name: Build macOS Application Bundle (.dmg)
     runs-on: macos-13
     steps:
       - name: Checkout Repository
@@ -59,12 +59,21 @@ jobs:
 
       - name: Freeze macOS Bundle
         run: |
-          pyinstaller --name GemGraph --windowed --noconfirm --clean --collect-submodules scipy --hidden-import scipy.special.cython_special --hidden-import statsmodels.stats.anova src/app.py
-          cd dist
-          tar -czvf GemGraph-macOS-Portable.tar.gz GemGraph.app/
+          pyinstaller --name GemGraph --windowed --noconfirm --clean \
+            --collect-submodules scipy \
+            --hidden-import scipy.special.cython_special \
+            --hidden-import statsmodels.stats.anova \
+            src/app.py
 
-      - name: Upload macOS Artifact
+      - name: Create Native macOS DMG
+        run: |
+          mkdir -p dist/dmg_staging
+          cp -r dist/GemGraph.app dist/dmg_staging/
+          ln -s /Applications dist/dmg_staging/Applications
+          hdiutil create -volname "GemGraph" -srcfolder dist/dmg_staging -ov -format UDZO dist/GemGraph-macOS.dmg
+
+      - name: Upload macOS DMG Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GemGraph-macOS-Portable
-          path: dist/GemGraph-macOS-Portable.tar.gz
+          name: GemGraph-macOS-DMG
+          path: dist/GemGraph-macOS.dmg
