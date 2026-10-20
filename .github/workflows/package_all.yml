@@ -1,0 +1,70 @@
+name: Build Cross-Platform Release Packages
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows Portable (.zip)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Tooling & Dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install pyinstaller numpy pandas scipy statsmodels PyQt6 pyqtgraph
+
+      - name: Freeze Executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller --name GemGraph --onedir --windowed --noconfirm --clean --collect-submodules scipy --hidden-import scipy.special.cython_special --hidden-import statsmodels.stats.anova src/app.py
+
+      - name: Compress Directory into Portable ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/GemGraph -DestinationPath dist/GemGraph-Windows-Portable.zip -Force
+
+      - name: Upload Windows Portable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GemGraph-Windows-Portable
+          path: dist/GemGraph-Windows-Portable.zip
+
+  build-macos:
+    name: Build macOS Application Bundle
+    runs-on: macos-13
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Tooling & Dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install pyinstaller numpy pandas scipy statsmodels PyQt6 pyqtgraph
+
+      - name: Freeze macOS Bundle
+        run: |
+          pyinstaller --name GemGraph --windowed --noconfirm --clean --collect-submodules scipy --hidden-import scipy.special.cython_special --hidden-import statsmodels.stats.anova src/app.py
+          cd dist
+          tar -czvf GemGraph-macOS-Portable.tar.gz GemGraph.app/
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GemGraph-macOS-Portable
+          path: dist/GemGraph-macOS-Portable.tar.gz
