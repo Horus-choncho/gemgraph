@@ -117,6 +117,10 @@ class InfoSheetView(QWidget):
         splitter.setStretchFactor(1, 1)
         main_layout.addWidget(splitter)
 
+    @property
+    def editor(self):
+        return self.notes_editor.editor
+
     def display_info(self, sheet: InfoSheet) -> None:
         """Populates the view from an InfoSheet instance."""
         self.current_sheet = sheet

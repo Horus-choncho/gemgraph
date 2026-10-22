@@ -32,12 +32,49 @@ class PrismNavigator(QTreeWidget):
 
         self.current_doc: Optional[PrismDocument] = None
 
+    @property
+    def root_tables(self) -> Optional[QTreeWidgetItem]:
+        return self.folder_items.get(SheetType.DATA)
+
+    @root_tables.setter
+    def root_tables(self, item: QTreeWidgetItem) -> None:
+        self.folder_items[SheetType.DATA] = item
+
+    @property
+    def root_info(self) -> Optional[QTreeWidgetItem]:
+        return self.folder_items.get(SheetType.INFO)
+
+    @root_info.setter
+    def root_info(self, item: QTreeWidgetItem) -> None:
+        self.folder_items[SheetType.INFO] = item
+
+    @property
+    def root_results(self) -> Optional[QTreeWidgetItem]:
+        return self.folder_items.get(SheetType.RESULTS)
+
+    @root_results.setter
+    def root_results(self, item: QTreeWidgetItem) -> None:
+        self.folder_items[SheetType.RESULTS] = item
+
+    @property
+    def root_graphs(self) -> Optional[QTreeWidgetItem]:
+        return self.folder_items.get(SheetType.GRAPH)
+
+    @root_graphs.setter
+    def root_graphs(self, item: QTreeWidgetItem) -> None:
+        self.folder_items[SheetType.GRAPH] = item
+
     def _init_folders(self) -> None:
         self.clear()
-        self.folder_items[SheetType.DATA] = QTreeWidgetItem(self, ["📁 Data Tables"])
-        self.folder_items[SheetType.INFO] = QTreeWidgetItem(self, ["📁 Info Sheets"])
-        self.folder_items[SheetType.RESULTS] = QTreeWidgetItem(self, ["📁 Results"])
-        self.folder_items[SheetType.GRAPH] = QTreeWidgetItem(self, ["📁 Graphs"])
+        t_root = QTreeWidgetItem(self, ["📁 Data Tables"])
+        i_root = QTreeWidgetItem(self, ["📁 Info Sheets"])
+        r_root = QTreeWidgetItem(self, ["📁 Results"])
+        g_root = QTreeWidgetItem(self, ["📈 Graphs"])
+
+        self.folder_items[SheetType.DATA] = t_root
+        self.folder_items[SheetType.INFO] = i_root
+        self.folder_items[SheetType.RESULTS] = r_root
+        self.folder_items[SheetType.GRAPH] = g_root
 
         for item in self.folder_items.values():
             item.setExpanded(True)

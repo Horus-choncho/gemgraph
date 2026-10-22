@@ -1286,3 +1286,7 @@ class DataTable:
         if "multi_var_data" in data and data["multi_var_data"]:
             tbl.multi_var_data = data["multi_var_data"]
         return tbl
+
+    def clone(self) -> DataTable:
+        """Returns an independent deep copy of the DataTable."""
+        return DataTable.from_dict(self.to_dict())

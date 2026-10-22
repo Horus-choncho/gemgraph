@@ -20,14 +20,22 @@ class SheetType(enum.Enum):
 class BaseSheet:
     """Base class for all sheets in a GemGraph project."""
 
-    def __init__(self, sheet_id: str, title: str, sheet_type: SheetType) -> None:
+    def __init__(
+        self,
+        sheet_id: str,
+        title: str,
+        sheet_type: SheetType,
+        plot_config: Optional[Dict[str, Any]] = None,
+    ) -> None:
         self.sheet_id = sheet_id
         self.title = title
         self.sheet_type = sheet_type
         self.is_frozen: bool = False
         self.is_orphaned: bool = False
+        self.is_pinned: bool = False
         self.parent_sheet_ids: List[str] = []
         self.child_sheet_ids: List[str] = []
+        self.plot_config: Dict[str, Any] = dict(plot_config or {})
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -36,8 +44,10 @@ class BaseSheet:
             "sheet_type": self.sheet_type.value,
             "is_frozen": self.is_frozen,
             "is_orphaned": self.is_orphaned,
+            "is_pinned": self.is_pinned,
             "parent_sheet_ids": self.parent_sheet_ids,
             "child_sheet_ids": self.child_sheet_ids,
+            "plot_config": dict(self.plot_config),
         }
 
 
@@ -51,8 +61,9 @@ class DataSheet(BaseSheet):
         table: Optional[DataTable] = None,
         table_type: TableType = TableType.XY,
         calc_spec: Optional[Dict[str, Any]] = None,
+        plot_config: Optional[Dict[str, Any]] = None,
     ) -> None:
-        super().__init__(sheet_id, title, SheetType.DATA)
+        super().__init__(sheet_id, title, SheetType.DATA, plot_config=plot_config)
         self.table = table or DataTable(table_id=sheet_id, title=title, table_type=table_type)
         self.calc_spec: Dict[str, Any] = calc_spec or {}
 
@@ -76,9 +87,11 @@ class DataSheet(BaseSheet):
             title=data.get("title", table.title),
             table=table,
             calc_spec=data.get("calc_spec", {}),
+            plot_config=data.get("plot_config", {}),
         )
         sheet.is_frozen = data.get("is_frozen", False)
         sheet.is_orphaned = data.get("is_orphaned", False)
+        sheet.is_pinned = data.get("is_pinned", False)
         sheet.parent_sheet_ids = data.get("parent_sheet_ids", [])
         sheet.child_sheet_ids = data.get("child_sheet_ids", [])
         return sheet
@@ -319,8 +332,11 @@ class GraphSheet(BaseSheet):
         show_error_bars: bool = True,
         error_style: str = "SEM",  # "SD" or "SEM"
         plot_config: Optional[Dict[str, Any]] = None,
+        is_pinned: bool = False,
+        snapshot_table: Optional[DataTable] = None,
+        snapshot_result_data: Optional[Dict[str, Any]] = None,
     ) -> None:
-        super().__init__(sheet_id, title, SheetType.GRAPH)
+        super().__init__(sheet_id, title, SheetType.GRAPH, plot_config=plot_config)
         self.graph_type = graph_type
         self.source_sheet_id = source_sheet_id
         self.result_sheet_id = result_sheet_id
@@ -328,7 +344,9 @@ class GraphSheet(BaseSheet):
         self.y_label = y_label
         self.show_error_bars = show_error_bars
         self.error_style = error_style
-        self.plot_config: Dict[str, Any] = dict(plot_config or {})
+        self.is_pinned: bool = is_pinned
+        self.snapshot_table: Optional[DataTable] = snapshot_table
+        self.snapshot_result_data: Optional[Dict[str, Any]] = snapshot_result_data
 
     def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
@@ -339,12 +357,20 @@ class GraphSheet(BaseSheet):
         d["y_label"] = self.y_label
         d["show_error_bars"] = self.show_error_bars
         d["error_style"] = self.error_style
-        d["plot_config"] = dict(self.plot_config)
+        d["is_pinned"] = self.is_pinned
+        if self.snapshot_table is not None:
+            d["snapshot_table"] = self.snapshot_table.to_dict()
+        if self.snapshot_result_data is not None:
+            d["snapshot_result_data"] = self.snapshot_result_data
         return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> GraphSheet:
-        return cls(
+        snapshot_table = None
+        if "snapshot_table" in data and data["snapshot_table"]:
+            snapshot_table = DataTable.from_dict(data["snapshot_table"])
+
+        sheet = cls(
             sheet_id=data["sheet_id"],
             title=data.get("title", "Graph"),
             graph_type=GraphType(data.get("graph_type", GraphType.XY_SCATTER_CURVE.value)),
@@ -355,4 +381,41 @@ class GraphSheet(BaseSheet):
             show_error_bars=data.get("show_error_bars", True),
             error_style=data.get("error_style", "SEM"),
             plot_config=data.get("plot_config", {}),
+            is_pinned=data.get("is_pinned", False),
+            snapshot_table=snapshot_table,
+            snapshot_result_data=data.get("snapshot_result_data"),
         )
+        sheet.is_frozen = data.get("is_frozen", False)
+        sheet.is_orphaned = data.get("is_orphaned", False)
+        sheet.parent_sheet_ids = data.get("parent_sheet_ids", [])
+        sheet.child_sheet_ids = data.get("child_sheet_ids", [])
+        return sheet
+
+
+def format_pinned_graph_name(
+    table_or_results_name: str,
+    analysis_model_name: Optional[str] = None,
+    graph_type: Any = "XY Scatter & Curve",
+) -> str:
+    """
+    Formats the name of a pinned graph snapshot using the standard convention:
+    f"{table_or_results_name} - {analysis_model_name or 'Raw'} ({graph_type})"
+    """
+    gt_str = graph_type.value if hasattr(graph_type, "value") else str(graph_type)
+    clean_gt = {
+        "XY Scatter & Fitted Curve": "XY Scatter & Curve",
+        "Column Bars (Mean ± SEM/SD)": "Column Bars",
+        "Bars + Individual Points": "Bars + Points",
+        "Superimposed Bars & Points": "Superimposed Bars & Points",
+        "Grouped Bars + Replicate Points": "Grouped Bars",
+        "Columns/Spikes + Curve Fit": "Columns/Spikes + Curve Fit",
+        "Box & Whisker": "Box & Whisker",
+        "Kaplan-Meier Survival": "Survival",
+    }.get(gt_str, gt_str)
+
+    if analysis_model_name:
+        return f"{table_or_results_name} - {analysis_model_name} ({clean_gt})"
+    elif analysis_model_name == "":
+        return f"{table_or_results_name} ({clean_gt})"
+    else:
+        return f"{table_or_results_name} - Raw ({clean_gt})"

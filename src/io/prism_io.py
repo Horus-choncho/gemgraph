@@ -254,9 +254,16 @@ class PrismIO:
                         "title": sheet.title,
                         "graph_type": sheet.graph_type.value,
                         "source_sheet_id": sheet.source_sheet_id,
+                        "result_sheet_id": getattr(sheet, "result_sheet_id", None),
                         "inputDataSets": [f"Y_{sheet.source_sheet_id}_0"] if sheet.source_sheet_id else [],
                         "plot_config": getattr(sheet, "plot_config", {}),
+                        "is_pinned": getattr(sheet, "is_pinned", False),
+                        "is_frozen": getattr(sheet, "is_frozen", False),
                     }
+                    if getattr(sheet, "snapshot_table", None) is not None:
+                        graph_meta["snapshot_table"] = sheet.snapshot_table.to_dict()
+                    if getattr(sheet, "snapshot_result_data", None) is not None:
+                        graph_meta["snapshot_result_data"] = sheet.snapshot_result_data
                     zf.writestr(f"graphs/{sheet.sheet_id}/sheet.json", json.dumps(graph_meta, indent=2))
 
                 elif isinstance(sheet, ResultSheet):
@@ -979,13 +986,22 @@ class PrismIO:
                 g_type = GraphType(raw_gt) if raw_gt else GraphType.XY_SCATTER_CURVE
             except Exception:
                 g_type = GraphType.XY_SCATTER_CURVE
+            snapshot_table = None
+            if "snapshot_table" in g_data and g_data["snapshot_table"]:
+                snapshot_table = DataTable.from_dict(g_data["snapshot_table"])
+
             graph_sheet = GraphSheet(
                 sheet_id=g_uid,
                 title=g_title,
                 graph_type=g_type,
                 source_sheet_id=source_sheet_id,
+                result_sheet_id=g_data.get("result_sheet_id"),
                 plot_config=plot_config,
+                is_pinned=g_data.get("is_pinned", False),
+                snapshot_table=snapshot_table,
+                snapshot_result_data=g_data.get("snapshot_result_data"),
             )
+            graph_sheet.is_frozen = g_data.get("is_frozen", False)
             doc.sheets[g_uid] = graph_sheet
             doc.sheet_order.append(g_uid)
 

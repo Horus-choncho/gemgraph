@@ -3,21 +3,23 @@ Undo/Redo Command Architecture for GemGraph.
 Derived from BridgeCLR command execution hierarchy (REA-CLR-BRIDGE-091).
 """
 
-from __future__ import annotations
-from abc import ABC, abstractmethod
-from typing import List, Optional
+from PyQt6.QtGui import QUndoStack, QUndoCommand
 from src.core.table import DataTable
 
 
-class Command(ABC):
-    """Abstract base command for undoable actions."""
+class Command(QUndoCommand):
+    """Abstract base command for undoable actions, inheriting from QUndoCommand."""
 
-    @abstractmethod
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+
+    def redo(self) -> None:
+        self.execute()
+
     def execute(self) -> None:
         """Executes the command."""
         pass
 
-    @abstractmethod
     def undo(self) -> None:
         """Reverses the command."""
         pass
@@ -36,6 +38,7 @@ class CellEditCommand(Command):
         old_val: float,
         new_val: float,
     ) -> None:
+        super().__init__("Edit Cell")
         self.table = table
         self.row = row
         self.col_type = col_type
@@ -68,6 +71,7 @@ class CellExcludeCommand(Command):
         old_excluded: bool,
         new_excluded: bool,
     ) -> None:
+        super().__init__("Toggle Exclude Cell")
         self.table = table
         self.row = row
         self.col_type = col_type
@@ -87,48 +91,41 @@ class CellExcludeCommand(Command):
         )
 
 
-class UndoStack:
-    """Manages undo and redo stacks for a document or view."""
+class UndoStack(QUndoStack):
+    """Manages undo and redo stacks for a document or view, wrapping Qt QUndoStack."""
 
-    def __init__(self, limit: int = 100) -> None:
-        self.limit = limit
-        self._undo_stack: List[Command] = []
-        self._redo_stack: List[Command] = []
+    def __init__(self, parent=None, limit: int = 100) -> None:
+        super().__init__(parent)
+        self.setUndoLimit(limit)
 
-    def push(self, command: Command) -> None:
+    def push(self, command: QUndoCommand) -> None:
         """Executes a command and pushes it onto the undo stack."""
-        command.execute()
-        self._undo_stack.append(command)
-        if len(self._undo_stack) > self.limit:
-            self._undo_stack.pop(0)
-        self._redo_stack.clear()
+        super().push(command)
 
     def undo(self) -> bool:
         """Pops and reverses the most recent command."""
-        if not self._undo_stack:
+        if not self.canUndo():
             return False
-        cmd = self._undo_stack.pop()
-        cmd.undo()
-        self._redo_stack.append(cmd)
+        super().undo()
         return True
 
     def redo(self) -> bool:
         """Re-executes the most recently undone command."""
-        if not self._redo_stack:
+        if not self.canRedo():
             return False
-        cmd = self._redo_stack.pop()
-        cmd.execute()
-        self._undo_stack.append(cmd)
+        super().redo()
         return True
 
     @property
     def can_undo(self) -> bool:
-        return len(self._undo_stack) > 0
+        return self.canUndo()
 
     @property
     def can_redo(self) -> bool:
-        return len(self._redo_stack) > 0
+        return self.canRedo()
 
     def clear(self) -> None:
-        self._undo_stack.clear()
-        self._redo_stack.clear()
+        super().clear()
+
+    def __bool__(self) -> bool:
+        return True

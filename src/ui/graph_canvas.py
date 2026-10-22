@@ -14,7 +14,7 @@ Includes:
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple, Set
 import numpy as np
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QBrush
 from PyQt6.QtWidgets import (
     QWidget,
@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
 import pyqtgraph as pg
 import pyqtgraph.exporters
 from src.core.table import DataTable, TableType
-from src.core.sheet import GraphSheet, GraphType, ResultSheet
+from src.core.sheet import BaseSheet, GraphSheet, GraphType, ResultSheet
 from src.core.hooking import GLOBAL_REGISTRY, HookedConstant
 from src.ui.mediator import WorkspaceMediator
 from src.ui.dialogs import FormatSeriesDialog
@@ -43,6 +43,9 @@ class ScientificPlotCanvas(QWidget):
     Includes active analysis overlay registry, toolbar layer clearing UI,
     and journal publishing grayscale symbology.
     """
+
+    pinGraphRequested = pyqtSignal()
+    freezeToggled = pyqtSignal(bool)
 
     # Expanded distinct scientific palette
     COLOR_PALETTE = [
@@ -130,6 +133,7 @@ class ScientificPlotCanvas(QWidget):
 
         self.show_bar_scatter_points: bool = True
         self.current_graph_sheet: Optional[GraphSheet] = None
+        self.active_sheet: Optional[BaseSheet] = None
 
         self._setup_plot_style()
 
@@ -166,7 +170,7 @@ class ScientificPlotCanvas(QWidget):
             "Both (±)",
             "Upper (+) Only",
         ])
-        self.whisker_dir_combo.currentIndexChanged.connect(lambda: self.refresh_plot(preserve_range=True))
+        self.whisker_dir_combo.currentIndexChanged.connect(self._on_whisker_dir_changed)
         top_bar.addWidget(self.whisker_dir_combo)
 
         # Per-graph scatter points toggle on bar charts
@@ -176,6 +180,27 @@ class ScientificPlotCanvas(QWidget):
         self.btn_toggle_scatter.setChecked(True)
         self.btn_toggle_scatter.toggled.connect(self._on_toggle_scatter_points)
         top_bar.addWidget(self.btn_toggle_scatter)
+
+        # Pinned & Frozen Graph Controls
+        self.btn_pin = QToolButton()
+        self.btn_pin.setText("📌 Pin Graph")
+        self.btn_pin.setToolTip("Pin snapshot as an independent Graph Sheet")
+        self.btn_pin.clicked.connect(self._on_pin_clicked)
+        top_bar.addWidget(self.btn_pin)
+
+        self.btn_freeze = QToolButton()
+        self.btn_freeze.setText("❄️ Freeze Graph")
+        self.btn_freeze.setToolTip("Freeze graph to disconnect from real-time data table modification signals")
+        self.btn_freeze.setCheckable(True)
+        self.btn_freeze.setVisible(False)
+        self.btn_freeze.toggled.connect(self._on_freeze_toggled)
+        top_bar.addWidget(self.btn_freeze)
+
+        # Specification-compliant control aliases
+        self.plot_type_combo = self.type_combo
+        self.show_scatter_check = self.btn_toggle_scatter
+        self.btn_pin_graph = self.btn_pin
+        self.btn_freeze_graph = self.btn_freeze
 
         top_bar.addStretch()
 
@@ -291,6 +316,7 @@ class ScientificPlotCanvas(QWidget):
             colors, opacities = dlg.get_formatting()
             self.custom_series_colors.update(colors)
             self.custom_series_opacities.update(opacities)
+            self._sync_plot_config_to_active_sheet()
             self.refresh_plot(preserve_range=True)
 
     def _setup_plot_style(self) -> None:
@@ -328,10 +354,134 @@ class ScientificPlotCanvas(QWidget):
             self.current_palette = self.GRAYSCALE_PALETTE
         else:
             self.current_palette = self.COLOR_PALETTE
+        self._sync_plot_config_to_active_sheet()
         self.refresh_plot(preserve_range=True)
 
     def _on_type_changed(self) -> None:
         self._update_scatter_button_visibility()
+        self._sync_plot_config_to_active_sheet()
+        self.refresh_plot()
+
+    def _on_whisker_dir_changed(self) -> None:
+        self._sync_plot_config_to_active_sheet()
+        self.refresh_plot(preserve_range=True)
+
+    def _on_pin_clicked(self) -> None:
+        self.pinGraphRequested.emit()
+
+    def pin_graph(self) -> None:
+        """Triggers pinning of current graph snapshot."""
+        self._on_pin_clicked()
+
+    def _on_freeze_toggled(self, checked: bool) -> None:
+        sheet = self.active_sheet or self.current_graph_sheet
+        if isinstance(sheet, GraphSheet):
+            sheet.is_frozen = checked
+            if not hasattr(sheet, "plot_config") or sheet.plot_config is None:
+                sheet.plot_config = {}
+            sheet.plot_config["is_frozen"] = checked
+        self.freezeToggled.emit(checked)
+
+    def _sync_plot_config_to_active_sheet(self) -> None:
+        sheet = self.active_sheet or self.current_graph_sheet
+        if sheet is None:
+            return
+        if not hasattr(sheet, "plot_config") or sheet.plot_config is None:
+            sheet.plot_config = {}
+        sheet.plot_config["plot_type"] = self.type_combo.currentText()
+        sheet.plot_config["graph_type"] = self.type_combo.currentText()
+        sheet.plot_config["palette"] = self.palette_combo.currentText()
+        sheet.plot_config["palette_index"] = self.palette_combo.currentIndex()
+        sheet.plot_config["is_grayscale"] = self.is_grayscale_mode
+        sheet.plot_config["whisker_dir"] = self.whisker_dir_combo.currentText()
+        sheet.plot_config["show_bar_scatter_points"] = self.show_bar_scatter_points
+        sheet.plot_config["show_scatter"] = self.show_bar_scatter_points
+        sheet.plot_config["error_style"] = self.error_style
+        sheet.plot_config["series_styles"] = dict(self.series_styles)
+        sheet.plot_config["series_colors"] = {
+            k: (v.name() if hasattr(v, "name") else str(v))
+            for k, v in self.custom_series_colors.items()
+        }
+        sheet.plot_config["series_opacities"] = dict(self.custom_series_opacities)
+        if isinstance(sheet, GraphSheet):
+            sheet.plot_config["is_frozen"] = sheet.is_frozen
+            sheet.plot_config["is_pinned"] = sheet.is_pinned
+            for gt in GraphType:
+                if gt.value == self.type_combo.currentText():
+                    sheet.graph_type = gt
+                    break
+
+    def load_plot_config(self, plot_config: Optional[Dict[str, Any]]) -> None:
+        """Loads saved plot_config onto toolbar controls and repaints."""
+        if not plot_config:
+            return
+        controls = [
+            self.type_combo,
+            self.palette_combo,
+            self.whisker_dir_combo,
+            self.btn_toggle_scatter,
+        ]
+        for ctrl in controls:
+            ctrl.blockSignals(True)
+
+        try:
+            ptype = plot_config.get("plot_type") or plot_config.get("graph_type")
+            if ptype:
+                val = ptype.value if hasattr(ptype, "value") else str(ptype)
+                idx = self.type_combo.findText(val)
+                if idx < 0:
+                    val_lower = val.lower().replace("_", " ").replace("-", " ")
+                    if "bar" in val_lower and "point" not in val_lower:
+                        idx = self.type_combo.findText(GraphType.COLUMN_BAR_ERROR.value)
+                    elif "xy" in val_lower or "scatter" in val_lower:
+                        idx = self.type_combo.findText(GraphType.XY_SCATTER_CURVE.value)
+                    elif "grouped" in val_lower:
+                        idx = self.type_combo.findText(GraphType.GROUPED_BARS_POINTS.value)
+                    elif "spike" in val_lower or "survival" in val_lower:
+                        idx = self.type_combo.findText(GraphType.XY_SPIKES_CURVE.value)
+                if idx >= 0:
+                    self.type_combo.setCurrentIndex(idx)
+
+            pal_idx = plot_config.get("palette_index")
+            pal_text = plot_config.get("palette")
+            is_gray = plot_config.get("is_grayscale")
+            if is_gray is True or pal_text in ("📄 Palette: Journal Grayscale", "grayscale", "gray") or pal_idx == 1:
+                self.palette_combo.setCurrentIndex(1)
+            elif pal_text and pal_text not in ("🎨 Palette: Color", "color"):
+                idx = self.palette_combo.findText(pal_text)
+                if idx < 0:
+                    self.palette_combo.addItem(pal_text)
+                    idx = self.palette_combo.findText(pal_text)
+                if idx >= 0:
+                    self.palette_combo.setCurrentIndex(idx)
+            elif is_gray is False or pal_text in ("🎨 Palette: Color", "color") or pal_idx == 0:
+                self.palette_combo.setCurrentIndex(0)
+
+            whisker_dir = plot_config.get("whisker_dir")
+            if whisker_dir:
+                idx = self.whisker_dir_combo.findText(whisker_dir)
+                if idx >= 0:
+                    self.whisker_dir_combo.setCurrentIndex(idx)
+
+            if "show_bar_scatter_points" in plot_config or "show_scatter" in plot_config:
+                val = bool(plot_config.get("show_bar_scatter_points", plot_config.get("show_scatter", True)))
+                self.show_bar_scatter_points = val
+                self.btn_toggle_scatter.setChecked(val)
+
+            if "error_style" in plot_config:
+                self.error_style = plot_config["error_style"]
+            if "series_styles" in plot_config:
+                self.series_styles = dict(plot_config["series_styles"])
+            if "series_colors" in plot_config:
+                self.custom_series_colors = {
+                    k: QColor(v) for k, v in plot_config["series_colors"].items()
+                }
+            if "series_opacities" in plot_config:
+                self.custom_series_opacities = dict(plot_config["series_opacities"])
+        finally:
+            for ctrl in controls:
+                ctrl.blockSignals(False)
+
         self.refresh_plot()
 
     def _is_bar_graph_type(self) -> bool:
@@ -361,18 +511,19 @@ class ScientificPlotCanvas(QWidget):
         self.btn_toggle_scatter.blockSignals(True)
         self.btn_toggle_scatter.setChecked(self.show_bar_scatter_points)
         self.btn_toggle_scatter.blockSignals(False)
-        if self.current_graph_sheet is not None:
-            self.current_graph_sheet.plot_config["show_bar_scatter_points"] = self.show_bar_scatter_points
+        self._sync_plot_config_to_active_sheet()
         self.refresh_plot(preserve_range=True)
 
     def set_series_representation(self, series: Any, rep_type: str) -> None:
         """Sets presentation style for a series (e.g. 'bars', 'spikes', 'scatter', 'line')."""
         self.series_styles[series] = rep_type.lower()
+        self._sync_plot_config_to_active_sheet()
         self.refresh_plot()
 
     def set_error_style(self, style: str) -> None:
         """Sets error bar calculation style: 'SEM', 'SD', or '95% CI'."""
         self.error_style = style
+        self._sync_plot_config_to_active_sheet()
         self.refresh_plot()
 
     def _rebuild_analysis_menu(self) -> None:
@@ -535,7 +686,8 @@ class ScientificPlotCanvas(QWidget):
         table: Optional[DataTable],
         result: Optional[ResultSheet] = None,
         graph_type: Optional[GraphType] = None,
-        sheet: Optional[GraphSheet] = None,
+        sheet: Optional[Any] = None,
+        table_name: Optional[str] = None,
     ) -> None:
         """Updates referenced table, result sheet, and optional graph sheet, then repaints."""
         if result is not None and (
@@ -546,20 +698,25 @@ class ScientificPlotCanvas(QWidget):
 
         self.current_table = table
         self.current_result = result
-        self.current_graph_sheet = sheet
+        self.active_sheet = sheet
+        self.current_graph_sheet = sheet if isinstance(sheet, GraphSheet) else None
 
-        if sheet is not None:
-            if "show_bar_scatter_points" in sheet.plot_config:
-                self.show_bar_scatter_points = bool(sheet.plot_config["show_bar_scatter_points"])
-                self.btn_toggle_scatter.blockSignals(True)
-                self.btn_toggle_scatter.setChecked(self.show_bar_scatter_points)
-                self.btn_toggle_scatter.blockSignals(False)
+        if isinstance(sheet, GraphSheet):
+            self.btn_freeze.setVisible(True)
+            self.btn_freeze.blockSignals(True)
+            self.btn_freeze.setChecked(bool(sheet.is_frozen))
+            self.btn_freeze.blockSignals(False)
+        else:
+            self.btn_freeze.setVisible(False)
 
-        if graph_type:
-            idx = self.type_combo.findText(graph_type.value)
-            if idx >= 0:
-                self.type_combo.setCurrentIndex(idx)
-        self.refresh_plot()
+        if sheet is not None and getattr(sheet, "plot_config", None):
+            self.load_plot_config(sheet.plot_config)
+        else:
+            if graph_type:
+                idx = self.type_combo.findText(graph_type.value)
+                if idx >= 0:
+                    self.type_combo.setCurrentIndex(idx)
+            self.refresh_plot()
 
     def refresh_plot(self, preserve_range: bool = False) -> None:
         """Clears and redraws graph according to current data, hooked elements, and settings."""

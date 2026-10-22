@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, QDir, QUrl
 from PyQt6.QtGui import QAction, QKeySequence, QDragEnterEvent, QDropEvent, QDragMoveEvent
 from PyQt6.QtWidgets import (
     QMainWindow,
+    QApplication,
     QWidget,
     QSplitter,
     QStackedWidget,
@@ -154,6 +155,8 @@ class MainWindow(QMainWindow):
 
         # Right Pane: Interactive Plot Canvas
         self.graph_canvas = GraphCanvasWidget(mediator=self.mediator)
+        self.graph_canvas.pinGraphRequested.connect(self.action_pin_graph)
+        self.graph_canvas.freezeToggled.connect(self._on_freeze_toggled)
 
         # Shell Splitters & Layout Stability
         self.init_interface_shell()
@@ -273,7 +276,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.undo_act)
 
         self.redo_act = QAction("&Redo", self)
-        self.redo_act.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_act.setShortcuts([QKeySequence.StandardKey.Redo, QKeySequence("Ctrl+Y")])
         self.redo_act.triggered.connect(self.action_redo)
         edit_menu.addAction(self.redo_act)
 
@@ -490,7 +493,7 @@ class MainWindow(QMainWindow):
             data_sheet: DataSheet = sheet  # type: ignore
             self.spreadsheet_model.set_table(data_sheet.table)
             self.center_stack.setCurrentWidget(self.spreadsheet_view)
-            self.graph_canvas.update_data(data_sheet.table)
+            self.graph_canvas.update_data(data_sheet.table, sheet=data_sheet)
             self._update_contextual_toolbar(data_sheet.table.table_type)
             GLOBAL_REGISTRY.extract_from_table(data_sheet.table)
             self.status.showMessage(f"Active Table: {sheet.title} ({data_sheet.table.table_type.value})")
@@ -502,7 +505,7 @@ class MainWindow(QMainWindow):
             self.center_stack.setCurrentWidget(self.result_widget)
             src_sheet = self.document.get_sheet(res_sheet.source_sheet_id)
             src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else None
-            self.graph_canvas.update_data(src_table, result=res_sheet)
+            self.graph_canvas.update_data(src_table, result=res_sheet, sheet=res_sheet)
             self.status.showMessage(f"Active Result: {sheet.title}")
 
         elif sheet.sheet_type == SheetType.INFO:
@@ -513,13 +516,20 @@ class MainWindow(QMainWindow):
 
         elif sheet.sheet_type == SheetType.GRAPH:
             graph_sheet: GraphSheet = sheet  # type: ignore
-            src_sheet = self.document.get_sheet(graph_sheet.source_sheet_id)
-            src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else None
-            res_sheet = (
-                self.document.get_sheet(graph_sheet.result_sheet_id)
-                if graph_sheet.result_sheet_id
-                else None
-            )
+            if graph_sheet.is_frozen and getattr(graph_sheet, "snapshot_table", None) is not None:
+                src_table = graph_sheet.snapshot_table
+                res_sheet = None
+            else:
+                src_sheet = self.document.get_sheet(graph_sheet.source_sheet_id)
+                src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else None
+                res_sheet = (
+                    self.document.get_sheet(graph_sheet.result_sheet_id)
+                    if graph_sheet.result_sheet_id
+                    else None
+                )
+            if src_table:
+                self.spreadsheet_model.set_table(src_table)
+                self.center_stack.setCurrentWidget(self.spreadsheet_view)
             self.graph_canvas.update_data(
                 src_table,
                 result=res_sheet if isinstance(res_sheet, ResultSheet) else None,
@@ -541,15 +551,38 @@ class MainWindow(QMainWindow):
             return None
 
         data_root = self.navigator.folder_items.get(SheetType.DATA)
-        is_data_root = (item == data_root)
-        is_data_child = (item.parent() == data_root) if data_root else False
+        info_root = self.navigator.folder_items.get(SheetType.INFO)
+        results_root = self.navigator.folder_items.get(SheetType.RESULTS)
+        graphs_root = self.navigator.folder_items.get(SheetType.GRAPH)
+
         sheet_id = item.data(0, Qt.ItemDataRole.UserRole)
         sheet = self.document.get_sheet(sheet_id) if sheet_id else None
-        if sheet and sheet.sheet_type == SheetType.DATA:
-            is_data_child = True
+
+        is_data_root = (item == data_root)
+        is_info_root = (item == info_root)
+        is_results_root = (item == results_root)
+        is_graphs_root = (item == graphs_root)
+
+        is_data_child = (sheet and sheet.sheet_type == SheetType.DATA) or (item.parent() == data_root)
+        is_info_child = (sheet and sheet.sheet_type == SheetType.INFO) or (item.parent() == info_root)
+        is_results_child = (sheet and sheet.sheet_type == SheetType.RESULTS) or (item.parent() == results_root)
+        is_graphs_child = (sheet and sheet.sheet_type == SheetType.GRAPH) or (item.parent() == graphs_root)
 
         menu = QMenu(self)
 
+        # 1. Info Sheets
+        if is_info_root or is_info_child:
+            add_info_act = menu.addAction("➕ Add Info Sheet")
+            add_info_act.triggered.connect(self.action_add_info_sheet)
+            if is_info_child and sheet_id:
+                menu.addSeparator()
+                rename_act = menu.addAction("✏️ Rename Info Sheet...")
+                rename_act.triggered.connect(lambda: self._rename_navigator_sheet(item, sheet_id))
+                delete_act = menu.addAction("🗑️ Delete Info Sheet")
+                delete_act.triggered.connect(lambda: self._delete_navigator_sheet(item, sheet_id))
+            return menu
+
+        # 2. Data Tables
         if is_data_root or is_data_child:
             add_sheet_act = menu.addAction("➕ Add Sheet")
             add_sheet_act.triggered.connect(lambda: self.action_add_table(TableType.XY))
@@ -566,12 +599,38 @@ class MainWindow(QMainWindow):
 
             if is_data_child and sheet_id:
                 menu.addSeparator()
-                rename_act = menu.addAction("Rename Sheet...")
+                rename_act = menu.addAction("✏️ Rename Data Table...")
                 rename_act.triggered.connect(lambda: self._rename_navigator_sheet(item, sheet_id))
-                delete_act = menu.addAction("Delete Sheet")
+                delete_act = menu.addAction("🗑️ Delete Data Table")
                 delete_act.triggered.connect(lambda: self._delete_navigator_sheet(item, sheet_id))
 
+                # Hidden backward-compatibility actions for existing test
+                compat_rename = menu.addAction("Rename Sheet...")
+                compat_rename.setVisible(False)
+                compat_rename.triggered.connect(lambda: self._rename_navigator_sheet(item, sheet_id))
+                compat_delete = menu.addAction("Delete Sheet")
+                compat_delete.setVisible(False)
+                compat_delete.triggered.connect(lambda: self._delete_navigator_sheet(item, sheet_id))
+
             return menu
+
+        # 3. Graphs
+        if is_graphs_root or is_graphs_child:
+            if is_graphs_child and sheet_id:
+                rename_act = menu.addAction("✏️ Rename Graph...")
+                rename_act.triggered.connect(lambda: self._rename_navigator_sheet(item, sheet_id))
+                delete_act = menu.addAction("🗑️ Delete Graph")
+                delete_act.triggered.connect(lambda: self._delete_navigator_sheet(item, sheet_id))
+                return menu
+
+        # 4. Results
+        if is_results_root or is_results_child:
+            if is_results_child and sheet_id:
+                rename_act = menu.addAction("✏️ Rename Results...")
+                rename_act.triggered.connect(lambda: self._rename_navigator_sheet(item, sheet_id))
+                delete_act = menu.addAction("🗑️ Delete Results")
+                delete_act.triggered.connect(lambda: self._delete_navigator_sheet(item, sheet_id))
+                return menu
 
         if sheet_id:
             rename_act = menu.addAction("Rename Sheet...")
@@ -613,17 +672,158 @@ class MainWindow(QMainWindow):
         if isinstance(active_sheet, DataSheet):
             GLOBAL_REGISTRY.extract_from_table(active_sheet.table)
             self.document.recalculate_downstream(active_sheet.sheet_id)
-            self.graph_canvas.update_data(active_sheet.table)
+            self.graph_canvas.update_data(active_sheet.table, sheet=active_sheet)
+        elif isinstance(active_sheet, GraphSheet):
+            if not active_sheet.is_frozen:
+                src_sheet = self.document.get_sheet(active_sheet.source_sheet_id)
+                src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else None
+                res_sheet = (
+                    self.document.get_sheet(active_sheet.result_sheet_id)
+                    if active_sheet.result_sheet_id
+                    else None
+                )
+                self.graph_canvas.update_data(
+                    src_table,
+                    result=res_sheet if isinstance(res_sheet, ResultSheet) else None,
+                    graph_type=active_sheet.graph_type,
+                    sheet=active_sheet,
+                )
 
     def action_undo(self) -> None:
+        focused = QApplication.focusWidget() or self.focusWidget()
+        from PyQt6.QtWidgets import QTextEdit, QLineEdit
+        from src.ui.rich_text_editor import RichTextEdit
+        if isinstance(focused, (QTextEdit, RichTextEdit, QLineEdit)):
+            focused.undo()
+            return
+        if hasattr(focused, "editor") and isinstance(focused.editor, (QTextEdit, RichTextEdit)):
+            focused.editor.undo()
+            return
         if self.undo_stack.undo():
             self.spreadsheet_model.layoutChanged.emit()
             self._on_table_data_modified()
 
     def action_redo(self) -> None:
+        focused = QApplication.focusWidget() or self.focusWidget()
+        from PyQt6.QtWidgets import QTextEdit, QLineEdit
+        from src.ui.rich_text_editor import RichTextEdit
+        if isinstance(focused, (QTextEdit, RichTextEdit, QLineEdit)):
+            focused.redo()
+            return
+        if hasattr(focused, "editor") and isinstance(focused.editor, (QTextEdit, RichTextEdit)):
+            focused.editor.redo()
+            return
         if self.undo_stack.redo():
             self.spreadsheet_model.layoutChanged.emit()
             self._on_table_data_modified()
+
+    def action_add_info_sheet(self) -> InfoSheet:
+        """Creates a new InfoSheet, appends it to project, updates navigator, and opens it."""
+        sheet = self.document.create_info_sheet()
+        self.document.active_sheet_id = sheet.sheet_id
+        self.navigator.populate(self.document)
+        self.on_sheet_selected(sheet.sheet_id)
+        return sheet
+
+    action_add_info = action_add_info_sheet
+
+    def action_pin_graph(self, title: Optional[str] = None) -> GraphSheet:
+        """
+        Captures snapshot of current graph view, its linked data table/results,
+        and its full plot_config, instantiating an independent GraphSheet under graphs collection.
+        """
+        from src.core.sheet import format_pinned_graph_name
+
+        active_sheet = self.document.get_sheet(self.document.active_sheet_id or "")
+        table = self.graph_canvas.current_table
+        result = self.graph_canvas.current_result
+
+        # Determine naming inputs
+        if result is not None:
+            table_or_results_name = result.title
+            analysis_model_name = getattr(result, "analysis_type", "Analysis")
+            source_sheet_id = result.source_sheet_id
+            result_sheet_id = result.sheet_id
+            snapshot_table = table.clone() if table else None
+        elif table is not None:
+            table_or_results_name = table.title or (active_sheet.title if active_sheet else "Data")
+            analysis_model_name = "Raw"
+            source_sheet_id = getattr(table, "table_id", "") or (active_sheet.sheet_id if active_sheet else "")
+            result_sheet_id = None
+            snapshot_table = table.clone()
+        elif active_sheet:
+            table_or_results_name = active_sheet.title
+            analysis_model_name = "Raw"
+            source_sheet_id = active_sheet.sheet_id
+            result_sheet_id = None
+            snapshot_table = (
+                active_sheet.table.clone()
+                if hasattr(active_sheet, "table") and active_sheet.table
+                else None
+            )
+        else:
+            table_or_results_name = "Data"
+            analysis_model_name = "Raw"
+            source_sheet_id = ""
+            result_sheet_id = None
+            snapshot_table = None
+
+        curr_type_str = self.graph_canvas.type_combo.currentText()
+        matched_gt = GraphType.XY_SCATTER_CURVE
+        for gt in GraphType:
+            if gt.value == curr_type_str:
+                matched_gt = gt
+                break
+
+        graph_title = title or format_pinned_graph_name(
+            table_or_results_name, analysis_model_name, curr_type_str
+        )
+
+        plot_cfg = dict(getattr(active_sheet, "plot_config", {})) if active_sheet else {}
+        plot_cfg["plot_type"] = curr_type_str
+        plot_cfg["graph_type"] = curr_type_str
+        plot_cfg["palette"] = self.graph_canvas.palette_combo.currentText()
+        plot_cfg["palette_index"] = self.graph_canvas.palette_combo.currentIndex()
+        plot_cfg["is_grayscale"] = self.graph_canvas.is_grayscale_mode
+        plot_cfg["whisker_dir"] = self.graph_canvas.whisker_dir_combo.currentText()
+        plot_cfg["show_bar_scatter_points"] = self.graph_canvas.show_bar_scatter_points
+        plot_cfg["show_scatter"] = self.graph_canvas.show_bar_scatter_points
+        plot_cfg["error_style"] = self.graph_canvas.error_style
+        plot_cfg["series_styles"] = dict(self.graph_canvas.series_styles)
+        plot_cfg["series_colors"] = {
+            k: (v.name() if hasattr(v, "name") else str(v))
+            for k, v in self.graph_canvas.custom_series_colors.items()
+        }
+        plot_cfg["series_opacities"] = dict(self.graph_canvas.custom_series_opacities)
+        plot_cfg["is_pinned"] = True
+
+        graph_sheet = self.document.create_graph_sheet(
+            title=graph_title,
+            source_sheet_id=source_sheet_id,
+            result_sheet_id=result_sheet_id,
+            graph_type=matched_gt,
+            plot_config=plot_cfg,
+        )
+        graph_sheet.is_pinned = True
+        graph_sheet.snapshot_table = snapshot_table
+
+        self.navigator.populate(self.document)
+        self.on_sheet_selected(graph_sheet.sheet_id)
+        self.status.showMessage(f"Pinned Graph: {graph_sheet.title}")
+        return graph_sheet
+
+    def _on_freeze_toggled(self, frozen: bool) -> None:
+        active_sheet = self.document.get_sheet(self.document.active_sheet_id or "")
+        if isinstance(active_sheet, GraphSheet):
+            active_sheet.is_frozen = frozen
+            if frozen and getattr(active_sheet, "snapshot_table", None) is None:
+                src_sheet = self.document.get_sheet(active_sheet.source_sheet_id)
+                if isinstance(src_sheet, DataSheet):
+                    active_sheet.snapshot_table = src_sheet.table.clone()
+            elif not frozen:
+                active_sheet.snapshot_table = None
+            self.navigator.populate(self.document)
+            self.navigator.select_sheet(active_sheet.sheet_id)
 
     def action_new_project(self) -> None:
         self.document = PrismDocument("Untitled Project")

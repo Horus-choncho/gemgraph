@@ -4,11 +4,11 @@ Derived from BridgeCLR DataGridView presentation contracts (REA-CLR-VM-102).
 """
 
 from __future__ import annotations
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, List
 import numpy as np
 import pandas as pd
 from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, pyqtSignal
-from PyQt6.QtGui import QFont, QColor, QBrush, QKeyEvent
+from PyQt6.QtGui import QFont, QColor, QBrush, QKeyEvent, QUndoCommand
 from PyQt6.QtWidgets import QTableView, QMenu, QInputDialog, QMessageBox
 import re
 from src.core.table import DataTable, TableType
@@ -32,7 +32,7 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
     ) -> None:
         super().__init__()
         self.table = table
-        self.undo_stack = undo_stack or UndoStack()
+        self.undo_stack = undo_stack if undo_stack is not None else UndoStack()
         self.mediator = mediator or WorkspaceMediator.get_instance()
 
     @property
@@ -360,6 +360,88 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
             return False
 
 
+class BatchClearCellsCommand(QUndoCommand):
+    """
+    Undoable batch command for clearing selected cells via Delete/Backspace.
+    Preserves prior cell values and restores them upon undo().
+    """
+
+    def __init__(
+        self,
+        model: ScientificSpreadsheetModel,
+        cells: Any = None,
+        text: str = "Clear Cells",
+        description: Optional[str] = None,
+    ) -> None:
+        cmd_text = description if description is not None else text
+        super().__init__(cmd_text)
+        self.model = model
+        self.entries: List[Tuple[int, int, Any]] = []
+
+        if cells:
+            if isinstance(cells[0], QModelIndex):
+                for idx in cells:
+                    r = idx.row()
+                    c = idx.column()
+                    if model.table.table_type == TableType.MULTIPLE_VARIABLES:
+                        old_val = model.table.get_variable_value(r, c)
+                    else:
+                        col_type, g_idx, s_idx = model._col_to_cell_coords(c)
+                        old_val = model.table.get_cell_value(r, col_type, g_idx, s_idx)
+                    self.entries.append((r, c, old_val))
+            elif isinstance(cells[0], (tuple, list)):
+                for item in cells:
+                    self.entries.append((int(item[0]), int(item[1]), item[2]))
+
+        self.cells = self.entries
+
+    def redo(self) -> None:
+        """Sets each cell to NaN (or empty string for string/multi-var tables) and emits changes."""
+        if not self.entries:
+            return
+        is_multivar = self.model.table.table_type == TableType.MULTIPLE_VARIABLES
+        for r, c, _ in self.entries:
+            if is_multivar:
+                self.model.table.set_variable_value(r, c, "")
+            else:
+                col_type, g_idx, s_idx = self.model._col_to_cell_coords(c)
+                self.model.table.set_cell_value(r, col_type, g_idx, s_idx, np.nan)
+        self._notify_model_changed()
+
+    def undo(self) -> None:
+        """Restores each cell to its exact old value and emits changes."""
+        if not self.entries:
+            return
+        is_multivar = self.model.table.table_type == TableType.MULTIPLE_VARIABLES
+        for r, c, old_val in self.entries:
+            if is_multivar:
+                self.model.table.set_variable_value(r, c, old_val)
+            else:
+                col_type, g_idx, s_idx = self.model._col_to_cell_coords(c)
+                self.model.table.set_cell_value(r, col_type, g_idx, s_idx, old_val)
+        self._notify_model_changed()
+
+    def execute(self) -> None:
+        self.redo()
+
+    def _notify_model_changed(self) -> None:
+        if not self.entries:
+            return
+        min_r = min(r for r, c, _ in self.entries)
+        max_r = max(r for r, c, _ in self.entries)
+        min_c = min(c for r, c, _ in self.entries)
+        max_c = max(c for r, c, _ in self.entries)
+        top_left = self.model.index(min_r, min_c)
+        bottom_right = self.model.index(max_r, max_c)
+        self.model.dataChanged.emit(
+            top_left, bottom_right, [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole]
+        )
+        self.model.dataChangedSignal.emit()
+        mediator = self.model.mediator or WorkspaceMediator.get_instance()
+        if mediator:
+            mediator.notify_table_modified()
+
+
 class ScientificSpreadsheetView(QTableView):
     """
     QTableView with contextual actions: exclude/include cells,
@@ -371,6 +453,7 @@ class ScientificSpreadsheetView(QTableView):
     def __init__(self, model: ScientificSpreadsheetModel, parent=None) -> None:
         super().__init__(parent)
         self.setModel(model)
+        self.undo_stack = model.undo_stack
         self.setAlternatingRowColors(True)
         self.horizontalHeader().setStretchLastSection(False)
         self.setSelectionMode(QTableView.SelectionMode.ExtendedSelection)
@@ -624,25 +707,8 @@ class ScientificSpreadsheetView(QTableView):
                 indexes = selection_model.selectedIndexes()
                 if indexes:
                     model = self.get_model()
-                    for idx in indexes:
-                        r = idx.row()
-                        c = idx.column()
-                        if model.table.table_type == TableType.MULTIPLE_VARIABLES:
-                            model.table.set_variable_value(r, c, "")
-                        else:
-                            col_type, g_idx, s_idx = model._col_to_cell_coords(c)
-                            model.table.set_cell_value(r, col_type, g_idx, s_idx, np.nan)
-                    min_r = min(idx.row() for idx in indexes)
-                    max_r = max(idx.row() for idx in indexes)
-                    min_c = min(idx.column() for idx in indexes)
-                    max_c = max(idx.column() for idx in indexes)
-                    top_left = model.index(min_r, min_c)
-                    bottom_right = model.index(max_r, max_c)
-                    model.dataChanged.emit(top_left, bottom_right, [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
-                    model.dataChangedSignal.emit()
-                    mediator = model.mediator or WorkspaceMediator.get_instance()
-                    if mediator:
-                        mediator.notify_table_modified()
+                    cmd = BatchClearCellsCommand(model, indexes)
+                    self.undo_stack.push(cmd)
                     event.accept()
                     return
         super().keyPressEvent(event)
@@ -659,6 +725,7 @@ __all__ = [
     "ScientificTableModel",
     "ScientificTableWidget",
     "ReplicateSpreadsheet",
+    "BatchClearCellsCommand",
 ]
 
 

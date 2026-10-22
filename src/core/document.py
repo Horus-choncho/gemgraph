@@ -51,6 +51,42 @@ class PrismDocument:
             ]
         return []
 
+    @property
+    def data_sheets(self) -> List[DataSheet]:
+        """Returns all DataSheet instances in the document."""
+        return [
+            self.sheets[sid]
+            for sid in self.sheet_order
+            if isinstance(self.sheets[sid], DataSheet)
+        ]
+
+    @property
+    def info_sheets(self) -> List[InfoSheet]:
+        """Returns all InfoSheet instances in the document."""
+        return [
+            self.sheets[sid]
+            for sid in self.sheet_order
+            if isinstance(self.sheets[sid], InfoSheet)
+        ]
+
+    @property
+    def result_sheets(self) -> List[ResultSheet]:
+        """Returns all ResultSheet instances in the document."""
+        return [
+            self.sheets[sid]
+            for sid in self.sheet_order
+            if isinstance(self.sheets[sid], ResultSheet)
+        ]
+
+    @property
+    def graphs(self) -> List[GraphSheet]:
+        """Returns all GraphSheet instances in the document."""
+        return [
+            self.sheets[sid]
+            for sid in self.sheet_order
+            if isinstance(self.sheets[sid], GraphSheet)
+        ]
+
     def has_path(self, start_id: str, target_id: str) -> bool:
         """Returns True if there is a directed path from start_id to target_id."""
         visited = set()

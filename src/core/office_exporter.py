@@ -262,55 +262,154 @@ def parse_notes_to_rich_paragraphs(notes_html: str, notes_plain: str) -> List[Ri
     return paras
 
 
+def _save_canvas_state(canvas: Any) -> Dict[str, Any]:
+    """Captures the current state of a graph canvas widget."""
+    return {
+        "table": getattr(canvas, "current_table", None),
+        "result": getattr(canvas, "current_result", None),
+        "active_sheet": getattr(canvas, "active_sheet", None),
+        "graph_sheet": getattr(canvas, "current_graph_sheet", None),
+        "type_idx": canvas.type_combo.currentIndex() if hasattr(canvas, "type_combo") else 0,
+        "type_text": canvas.type_combo.currentText() if hasattr(canvas, "type_combo") else "",
+        "pal_idx": canvas.palette_combo.currentIndex() if hasattr(canvas, "palette_combo") else 0,
+        "pal_text": canvas.palette_combo.currentText() if hasattr(canvas, "palette_combo") else "",
+        "whisker_idx": canvas.whisker_dir_combo.currentIndex() if hasattr(canvas, "whisker_dir_combo") else 0,
+        "scatter": getattr(canvas, "show_bar_scatter_points", True),
+        "colors": dict(getattr(canvas, "custom_series_colors", {})),
+        "opacities": dict(getattr(canvas, "custom_series_opacities", {})),
+        "styles": dict(getattr(canvas, "series_styles", {})),
+        "error_style": getattr(canvas, "error_style", "SEM"),
+        "is_gray": getattr(canvas, "is_grayscale_mode", False),
+    }
+
+
+def _restore_canvas_state(canvas: Any, state: Dict[str, Any]) -> None:
+    """Restores graph canvas widget to its prior state without triggering external side effects."""
+    controls = []
+    if hasattr(canvas, "type_combo"):
+        controls.append(canvas.type_combo)
+    if hasattr(canvas, "palette_combo"):
+        controls.append(canvas.palette_combo)
+    if hasattr(canvas, "whisker_dir_combo"):
+        controls.append(canvas.whisker_dir_combo)
+    if hasattr(canvas, "btn_toggle_scatter"):
+        controls.append(canvas.btn_toggle_scatter)
+
+    for ctrl in controls:
+        ctrl.blockSignals(True)
+
+    try:
+        canvas.current_table = state["table"]
+        canvas.current_result = state["result"]
+        canvas.active_sheet = state["active_sheet"]
+        canvas.current_graph_sheet = state["graph_sheet"]
+        if hasattr(canvas, "type_combo"):
+            idx = canvas.type_combo.findText(state.get("type_text", ""))
+            if idx >= 0:
+                canvas.type_combo.setCurrentIndex(idx)
+            else:
+                canvas.type_combo.setCurrentIndex(state["type_idx"])
+        if hasattr(canvas, "palette_combo"):
+            if state.get("is_gray"):
+                canvas.palette_combo.setCurrentIndex(1)
+            else:
+                idx = canvas.palette_combo.findText(state.get("pal_text", ""))
+                if idx >= 0:
+                    canvas.palette_combo.setCurrentIndex(idx)
+                else:
+                    canvas.palette_combo.setCurrentIndex(state["pal_idx"])
+        if hasattr(canvas, "whisker_dir_combo"):
+            canvas.whisker_dir_combo.setCurrentIndex(state["whisker_idx"])
+        if hasattr(canvas, "btn_toggle_scatter"):
+            canvas.btn_toggle_scatter.setChecked(state["scatter"])
+        canvas.show_bar_scatter_points = state["scatter"]
+        canvas.custom_series_colors = dict(state["colors"])
+        canvas.custom_series_opacities = dict(state["opacities"])
+        canvas.series_styles = dict(state["styles"])
+        canvas.error_style = state["error_style"]
+        canvas.refresh_plot()
+    finally:
+        for ctrl in controls:
+            ctrl.blockSignals(False)
+
+
 def render_graph_to_png_bytes(
-    graph_sheet: GraphSheet,
-    document: PrismDocument,
+    graph_sheet: Any,
+    document: Any = None,
     graph_canvas: Optional[Any] = None,
     width: int = 1200,
     height: int = 800,
 ) -> bytes:
-    """Renders a GraphSheet to high-DPI PNG bytes offscreen with zero subprocesses."""
-    canvas = graph_canvas
+    """Renders a GraphSheet or DataSheet to high-DPI PNG bytes offscreen with zero subprocesses and canvas isolation."""
+    # Support both calling conventions: (sheet, doc, canvas) and (canvas, sheet)
+    if hasattr(graph_sheet, "plot_widget"):
+        canvas = graph_sheet
+        target_sheet = document
+        doc = graph_canvas or (target_sheet.document if hasattr(target_sheet, "document") else PrismDocument())
+    else:
+        target_sheet = graph_sheet
+        doc = document
+        canvas = graph_canvas
+
     created_canvas = False
+    saved_state = None
     if canvas is None:
         from src.ui.graph_canvas import GraphCanvasWidget
         canvas = GraphCanvasWidget()
         canvas.resize(width // 2, height // 2)
         created_canvas = True
+    else:
+        saved_state = _save_canvas_state(canvas)
 
-    src_sheet = document.get_sheet(graph_sheet.source_sheet_id)
-    src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else None
-    res_sheet = (
-        document.get_sheet(graph_sheet.result_sheet_id)
-        if graph_sheet.result_sheet_id
-        else None
-    )
-
-    canvas.update_data(
-        src_table,
-        result=res_sheet if isinstance(res_sheet, ResultSheet) else None,
-        graph_type=graph_sheet.graph_type,
-        sheet=graph_sheet,
-    )
-
-    img = QImage(width, height, QImage.Format.Format_ARGB32)
-    img.fill(QColor(255, 255, 255))
-    painter = QPainter(img)
     try:
-        canvas.plot_widget.render(painter)
+        if isinstance(target_sheet, DataSheet):
+            src_table = target_sheet.table
+            res_sheet = None
+            gt = None
+        elif isinstance(target_sheet, GraphSheet):
+            if target_sheet.is_frozen and getattr(target_sheet, "snapshot_table", None) is not None:
+                src_table = target_sheet.snapshot_table
+                res_sheet = None
+            else:
+                src_sheet = doc.get_sheet(target_sheet.source_sheet_id) if doc else None
+                src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else None
+                res_sheet = (
+                    doc.get_sheet(target_sheet.result_sheet_id)
+                    if (doc and target_sheet.result_sheet_id)
+                    else None
+                )
+            gt = target_sheet.graph_type
+        else:
+            src_table = getattr(target_sheet, "table", None)
+            res_sheet = None
+            gt = None
+
+        canvas.update_data(
+            src_table,
+            result=res_sheet if isinstance(res_sheet, ResultSheet) else None,
+            graph_type=gt,
+            sheet=target_sheet,
+        )
+
+        img = QImage(width, height, QImage.Format.Format_ARGB32)
+        img.fill(QColor(255, 255, 255))
+        painter = QPainter(img)
+        try:
+            canvas.plot_widget.render(painter)
+        finally:
+            painter.end()
+
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        img.save(buffer, "PNG")
+        data = bytes(buffer.data())
+        buffer.close()
+        if created_canvas:
+            canvas.deleteLater()
+        return data
     finally:
-        painter.end()
-
-    ba = QByteArray()
-    buf = QBuffer(ba)
-    buf.open(QIODevice.OpenModeFlag.WriteOnly)
-    img.save(buf, "PNG")
-    png_bytes = bytes(ba)
-
-    if created_canvas:
-        canvas.deleteLater()
-
-    return png_bytes
+        if not created_canvas and saved_state is not None:
+            _restore_canvas_state(canvas, saved_state)
 
 
 class OfficeExporter:
