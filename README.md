@@ -8,12 +8,12 @@
 
 
 ## Run from Source !!! ##
-
+```
 git clone https://github.com/Horus-choncho/gemgraph.git
 cd gemgraph
 pip install -r requirements.txt
 python -m src.app
-
+```
 
 ---
 
