@@ -150,14 +150,10 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout(central_widget)
         main_layout.setContentsMargins(4, 4, 4, 4)
 
-        # 3-Pane Splitter
-        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
-
         # Left Pane: Navigator
         self.navigator = PrismNavigator()
         self.navigator.sheetSelected.connect(self.on_sheet_selected)
         self.navigator.sheetDeleted.connect(self.on_sheet_deleted)
-        self.main_splitter.addWidget(self.navigator)
 
         # Center Pane: Dynamic Stack
         self.center_stack = QStackedWidget()
@@ -184,15 +180,61 @@ class MainWindow(QMainWindow):
         self.info_widget = InfoSheetWidget()
         self.center_stack.addWidget(self.info_widget)
 
-        self.main_splitter.addWidget(self.center_stack)
-
         # Right Pane: Interactive Plot Canvas
-        self.graph_canvas = GraphCanvasWidget()
-        self.main_splitter.addWidget(self.graph_canvas)
+        self.graph_canvas = GraphCanvasWidget(mediator=self.mediator)
 
-        # Proportions: 200px sidebar, 600px table/result, 500px plot
-        self.main_splitter.setSizes([200, 580, 520])
-        main_layout.addWidget(self.main_splitter)
+        # Shell Splitters & Layout Stability
+        self.init_interface_shell()
+        main_layout.addWidget(self.outer_splitter)
+
+    def init_interface_shell(self) -> None:
+        """
+        Initializes responsive 3-pane layout shell with outer and inner splitters.
+        Guarantees layout stability, non-collapsible panes, and proportional stretch factors.
+        """
+        if hasattr(self, "outer_splitter") and self.outer_splitter is not None:
+            self.inner_splitter.setChildrenCollapsible(False)
+            self.outer_splitter.setChildrenCollapsible(False)
+            self.navigator.setMinimumWidth(180)
+            self.center_stack.setMinimumWidth(240)
+            self.graph_canvas.setMinimumWidth(320)
+            self.inner_splitter.setStretchFactor(0, 0)
+            self.inner_splitter.setStretchFactor(1, 1)
+            self.outer_splitter.setStretchFactor(0, 0)
+            self.outer_splitter.setStretchFactor(1, 1)
+            return
+
+        # Outer Splitter (Sidebar Tree | Main Workspace)
+        self.outer_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.outer_splitter.setChildrenCollapsible(False)
+
+        # Inner Splitter (Center Stack | Plot Canvas)
+        self.inner_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.inner_splitter.setChildrenCollapsible(False)
+
+        # Minimum widths for layout stability
+        self.navigator.setMinimumWidth(180)
+        self.center_stack.setMinimumWidth(240)
+        self.graph_canvas.setMinimumWidth(320)
+
+        # Wire widgets into splitters
+        self.outer_splitter.addWidget(self.navigator)
+        self.inner_splitter.addWidget(self.center_stack)
+        self.inner_splitter.addWidget(self.graph_canvas)
+        self.outer_splitter.addWidget(self.inner_splitter)
+
+        # Proportional stretch factors
+        self.inner_splitter.setStretchFactor(0, 0)  # Table maintains width
+        self.inner_splitter.setStretchFactor(1, 1)  # Plot canvas receives extra space
+        self.outer_splitter.setStretchFactor(0, 0)  # Sidebar tree maintains width
+        self.outer_splitter.setStretchFactor(1, 1)  # Main workspace receives resize space
+
+        # Backward compatibility alias
+        self.main_splitter = self.outer_splitter
+
+        # Initial sizes
+        self.outer_splitter.setSizes([200, 1100])
+        self.inner_splitter.setSizes([580, 520])
 
     def _setup_menus(self) -> None:
         menubar = self.menuBar()

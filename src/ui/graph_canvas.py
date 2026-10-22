@@ -7,10 +7,12 @@ Includes:
 - Live Results Embedding (linked analysis summary tables on canvas)
 - High-contrast grayscale journal palette defaults and palette switching
 - Constant Hooking rendering (tick lines e.g. Mean ± 2SD, dynamic text labels)
+- Active Analysis Overlay Registry & Layer Clearing UI
+- Standardized journal publishing marker shapes with alternating solid/open fills
 """
 
 from __future__ import annotations
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Set
 import numpy as np
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
@@ -19,6 +21,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
+    QToolButton,
+    QMenu,
     QComboBox,
     QLabel,
     QTableWidget,
@@ -29,24 +33,70 @@ import pyqtgraph.exporters
 from src.core.table import DataTable, TableType
 from src.core.sheet import GraphSheet, GraphType, ResultSheet
 from src.core.hooking import GLOBAL_REGISTRY, HookedConstant
+from src.ui.mediator import WorkspaceMediator
 
 
-class GraphCanvasWidget(QWidget):
+class ScientificPlotCanvas(QWidget):
     """
     High-performance scientific plot widget rendering publication-grade vector graphs.
+    Includes active analysis overlay registry, toolbar layer clearing UI,
+    and journal publishing grayscale symbology.
     """
 
-    # Distinct scientific palette matching Prism defaults
+    # Expanded distinct scientific palette
     COLOR_PALETTE = [
-        QColor(0, 114, 178),    # Blue
-        QColor(213, 94, 0),     # Vermilion
-        QColor(0, 158, 115),    # Bluish green
-        QColor(204, 121, 167),  # Reddish purple
-        QColor(230, 159, 0),    # Orange
-        QColor(86, 180, 233),   # Sky blue
+        QColor(0, 0, 0),         # Black
+        QColor(0, 114, 178),     # Blue
+        QColor(220, 20, 60),     # Crimson
+        QColor(34, 139, 34),     # Forest Green
+        QColor(255, 140, 0),     # Dark Orange
+        QColor(128, 0, 128),     # Purple
+        QColor(0, 158, 115),     # Bluish green
+        QColor(204, 121, 167),   # Reddish purple
+        QColor(86, 180, 233),    # Sky blue
     ]
 
-    # High-contrast grayscale journal palette
+    # Standardized publishing marker shapes with alternating solid/open fills
+    GRAYSCALE_SYMBOLS = [
+        {
+            "symbol": "o",
+            "brush": pg.mkBrush(0, 0, 0),
+            "pen": pg.mkPen(color=QColor(0, 0, 0), width=1.0),
+            "name": "Solid Circle",
+        },
+        {
+            "symbol": "s",
+            "brush": pg.mkBrush(255, 255, 255),
+            "pen": pg.mkPen(color=QColor(0, 0, 0), width=1.5),
+            "name": "Open Square",
+        },
+        {
+            "symbol": "t",
+            "brush": pg.mkBrush(0, 0, 0),
+            "pen": pg.mkPen(color=QColor(0, 0, 0), width=1.0),
+            "name": "Solid Triangle",
+        },
+        {
+            "symbol": "d",
+            "brush": pg.mkBrush(255, 255, 255),
+            "pen": pg.mkPen(color=QColor(0, 0, 0), width=1.5),
+            "name": "Open Diamond",
+        },
+        {
+            "symbol": "t1",
+            "brush": pg.mkBrush(0, 0, 0),
+            "pen": pg.mkPen(color=QColor(0, 0, 0), width=1.0),
+            "name": "Solid Inverted Triangle",
+        },
+        {
+            "symbol": "o",
+            "brush": pg.mkBrush(255, 255, 255),
+            "pen": pg.mkPen(color=QColor(0, 0, 0), width=1.5),
+            "name": "Open Circle",
+        },
+    ]
+
+    # Backward-compatible grayscale color list
     GRAYSCALE_PALETTE = [
         QColor(0, 0, 0),        # Solid Black
         QColor(70, 70, 70),     # Dark Gray
@@ -54,10 +104,21 @@ class GraphCanvasWidget(QWidget):
         QColor(190, 190, 190),  # Light Gray
     ]
 
-    def __init__(self, parent=None) -> None:
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        mediator: Optional[WorkspaceMediator] = None,
+    ) -> None:
         super().__init__(parent)
+        self.mediator = mediator or WorkspaceMediator.get_instance()
         self.plot_widget = pg.PlotWidget()
         self.current_palette = self.COLOR_PALETTE
+
+        # Active overlay registry: analysis_id -> { 'name': str, 'plot_items': list }
+        self.analysis_layers: Dict[str, Dict[str, Any]] = {}
+        self.custom_analysis_layers: Dict[str, Dict[str, Any]] = {}
+        self.removed_layer_ids: Set[str] = set()
+
         self.hooked_lines: List[Dict[str, Any]] = []
         self.hooked_labels: List[Dict[str, Any]] = []
         self.embedded_tables: List[Dict[str, Any]] = []
@@ -81,11 +142,23 @@ class GraphCanvasWidget(QWidget):
 
         top_bar.addWidget(QLabel("Palette:"))
         self.palette_combo = QComboBox()
-        self.palette_combo.addItems(["Prism Standard Color", "Journal Grayscale"])
+        self.palette_combo.addItems([
+            "🎨 Palette: Color",
+            "📄 Palette: Journal Grayscale",
+        ])
         self.palette_combo.currentIndexChanged.connect(self._on_palette_changed)
         top_bar.addWidget(self.palette_combo)
 
         top_bar.addStretch()
+
+        # Toolbar menu button: Clear Analysis
+        self.btn_clear_analysis = QToolButton()
+        self.btn_clear_analysis.setText("🧹 Clear Analysis")
+        self.analysis_menu = QMenu(self)
+        self.btn_clear_analysis.setMenu(self.analysis_menu)
+        self.btn_clear_analysis.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.analysis_menu.aboutToShow.connect(self._rebuild_analysis_menu)
+        top_bar.addWidget(self.btn_clear_analysis)
 
         self.btn_autoscale = QPushButton("Auto Range")
         self.btn_autoscale.clicked.connect(self.plot_widget.autoRange)
@@ -96,6 +169,7 @@ class GraphCanvasWidget(QWidget):
 
         self.current_table: Optional[DataTable] = None
         self.current_result: Optional[ResultSheet] = None
+        self._rebuild_analysis_menu()
 
     def _setup_plot_style(self) -> None:
         """Configures publication-grade white-background scientific styling with outward ticks."""
@@ -114,8 +188,21 @@ class GraphCanvasWidget(QWidget):
 
         self.plot_widget.addLegend(offset=(30, 30))
 
+    @property
+    def is_grayscale_mode(self) -> bool:
+        """Returns True if the canvas is currently in Journal Grayscale palette mode."""
+        return (
+            self.palette_combo.currentIndex() == 1
+            or "Grayscale" in self.palette_combo.currentText()
+        )
+
+    def set_grayscale_mode(self, enabled: bool = True) -> None:
+        """Selects between Color and Journal Grayscale mode."""
+        idx = 1 if enabled else 0
+        self.palette_combo.setCurrentIndex(idx)
+
     def _on_palette_changed(self) -> None:
-        if self.palette_combo.currentIndex() == 1:
+        if self.is_grayscale_mode:
             self.current_palette = self.GRAYSCALE_PALETTE
         else:
             self.current_palette = self.COLOR_PALETTE
@@ -123,6 +210,114 @@ class GraphCanvasWidget(QWidget):
 
     def _on_type_changed(self) -> None:
         self.refresh_plot()
+
+    def _rebuild_analysis_menu(self) -> None:
+        """Rebuilds the Clear Analysis toolbar popup menu."""
+        self.analysis_menu.clear()
+
+        clear_all_act = self.analysis_menu.addAction("Clear All Fitted Curves")
+        clear_all_act.triggered.connect(self.clear_all_fitted_curves)
+
+        if not self.analysis_layers:
+            clear_all_act.setEnabled(False)
+            no_act = self.analysis_menu.addAction("No Active Overlays")
+            no_act.setEnabled(False)
+            return
+
+        clear_all_act.setEnabled(True)
+        self.analysis_menu.addSeparator()
+
+        for layer_id, layer_info in list(self.analysis_layers.items()):
+            name = layer_info.get("name", layer_id)
+            act_text = name if name.startswith("Remove ") else f"Remove {name}"
+            act = self.analysis_menu.addAction(act_text)
+            act.triggered.connect(
+                lambda checked=False, lid=layer_id: self.remove_analysis_layer(lid)
+            )
+
+    def add_analysis_layer(self, layer_id: str, name: str, plot_items: list) -> None:
+        """Registers active plot items into the analysis overlay registry."""
+        self.analysis_layers[layer_id] = {
+            "name": name,
+            "plot_items": list(plot_items),
+        }
+        self.removed_layer_ids.discard(layer_id)
+        self._rebuild_analysis_menu()
+
+    def add_fitted_curve(
+        self,
+        analysis_id: str,
+        name: str,
+        x_dense: np.ndarray,
+        y_dense: np.ndarray,
+        pen: Optional[Any] = None,
+    ) -> pg.PlotDataItem:
+        """Adds a continuous fitted curve to the canvas and registers in analysis_layers."""
+        if pen is None:
+            pen = pg.mkPen(color=QColor(20, 20, 20), width=2.5)
+
+        self.custom_analysis_layers[analysis_id] = {
+            "name": name,
+            "x_dense": np.array(x_dense),
+            "y_dense": np.array(y_dense),
+            "pen": pen,
+        }
+        self.removed_layer_ids.discard(analysis_id)
+
+        curve_item = self.plot_widget.plot(
+            x_dense,
+            y_dense,
+            pen=pen,
+            name=name,
+        )
+        self.add_analysis_layer(analysis_id, name, [curve_item])
+        return curve_item
+
+    def remove_analysis_layer(self, layer_id: str) -> bool:
+        """
+        Removes the corresponding items from self.plot_widget.plotItem via removeItem().
+        Deletes the key from self.analysis_layers.
+        Restores the raw dataset scatter view without resetting user zoom or axis ranges.
+        """
+        if layer_id not in self.analysis_layers:
+            return False
+
+        layer = self.analysis_layers.pop(layer_id)
+        self.removed_layer_ids.add(layer_id)
+        self.custom_analysis_layers.pop(layer_id, None)
+
+        plot_item = self.plot_widget.plotItem
+        for item in layer.get("plot_items", []):
+            try:
+                plot_item.removeItem(item)
+            except Exception:
+                try:
+                    self.plot_widget.removeItem(item)
+                except Exception:
+                    pass
+            if plot_item.legend is not None:
+                try:
+                    plot_item.legend.removeItem(item)
+                except Exception:
+                    pass
+
+        self._rebuild_analysis_menu()
+
+        if self.mediator is not None:
+            self.mediator.notify_analysis_layer_removed(layer_id)
+
+        return True
+
+    def clear_all_analysis_layers(self) -> None:
+        """Removes all active fitted curves and statistical overlays."""
+        for layer_id in list(self.analysis_layers.keys()):
+            self.remove_analysis_layer(layer_id)
+        if self.mediator is not None:
+            self.mediator.notify_clear_all_analysis_layers()
+
+    def clear_all_fitted_curves(self) -> None:
+        """Top-level action: clears all fitted curves."""
+        self.clear_all_analysis_layers()
 
     def add_hooked_line(
         self,
@@ -172,6 +367,12 @@ class GraphCanvasWidget(QWidget):
         graph_type: Optional[GraphType] = None,
     ) -> None:
         """Updates referenced table and result sheet, then repaints."""
+        if result is not None and (
+            self.current_result is None
+            or getattr(result, "sheet_id", None) != getattr(self.current_result, "sheet_id", None)
+        ):
+            self.removed_layer_ids.discard(getattr(result, "sheet_id", ""))
+
         self.current_table = table
         self.current_result = result
         if graph_type:
@@ -186,7 +387,11 @@ class GraphCanvasWidget(QWidget):
         if self.plot_widget.plotItem.legend is not None:
             self.plot_widget.plotItem.legend.clear()
 
+        # Reset active overlay item references before redrawing
+        self.analysis_layers.clear()
+
         if self.current_table is None:
+            self._rebuild_analysis_menu()
             return
 
         selected_type = self.type_combo.currentText()
@@ -204,7 +409,7 @@ class GraphCanvasWidget(QWidget):
         self._render_embedded_tables()
 
     def _render_xy_graph(self) -> None:
-        """Renders XY points and fitted curve overlay."""
+        """Renders XY points and fitted curve overlay with discrete colors or journal grayscale symbology."""
         table = self.current_table
         if table is None or table.x_data is None:
             return
@@ -212,36 +417,84 @@ class GraphCanvasWidget(QWidget):
         self.plot_widget.setLabel("bottom", table.x_title or "X", color="black")
         self.plot_widget.setLabel("left", "Y Value", color="black")
 
-        for g_idx, g_title in enumerate(table.y_group_titles):
-            color = self.current_palette[g_idx % len(self.current_palette)]
-            xs, ys = table.get_clean_xy(g_idx)
+        y_datasets_dict = getattr(table, "y_datasets_dict", None)
+        if y_datasets_dict is None:
+            y_datasets_dict = {}
+            for g_idx, g_title in enumerate(table.y_group_titles):
+                y_datasets_dict[g_title] = table.get_clean_xy(g_idx)
+
+        is_grayscale = self.is_grayscale_mode
+
+        for col_idx, (g_title, (xs, ys)) in enumerate(y_datasets_dict.items()):
             if len(xs) == 0:
                 continue
+
+            if is_grayscale:
+                sym_spec = self.GRAYSCALE_SYMBOLS[col_idx % len(self.GRAYSCALE_SYMBOLS)]
+                symbol = sym_spec["symbol"]
+                pen = sym_spec["pen"]
+                brush = sym_spec["brush"]
+            else:
+                color = self.COLOR_PALETTE[col_idx % len(self.COLOR_PALETTE)]
+                symbol = "o"
+                pen = pg.mkPen(color, width=1.0)
+                brush = pg.mkBrush(color)
 
             scatter = pg.ScatterPlotItem(
                 x=xs,
                 y=ys,
-                pen=pg.mkPen(color, width=1),
-                brush=pg.mkBrush(color),
+                pen=pen,
+                brush=brush,
+                symbol=symbol,
                 size=8,
                 name=g_title,
             )
+            scatter.opts["pen"] = pen
+            scatter.opts["brush"] = brush
+            scatter.opts["symbol"] = symbol
+            scatter.opts["size"] = 8
+            scatter.opts["name"] = g_title
+
             self.plot_widget.addItem(scatter)
 
-        # Fitted curve overlay
-        if self.current_result is not None:
-            raw = self.current_result.raw_result_data
-            if "x_dense" in raw and "y_dense" in raw:
-                x_dense = np.array(raw["x_dense"])
-                y_dense = np.array(raw["y_dense"])
-                fit_pen = pg.mkPen(color=QColor(20, 20, 20), width=2.5)
-                self.plot_widget.plot(
-                    x_dense,
-                    y_dense,
-                    pen=fit_pen,
-                    name=raw.get("model_name", "Fitted Curve"),
+        # Custom registered continuous analysis curves
+        for layer_id, layer_data in list(self.custom_analysis_layers.items()):
+            if layer_id not in self.removed_layer_ids:
+                x_d = layer_data["x_dense"]
+                y_d = layer_data["y_dense"]
+                p_item = self.plot_widget.plot(
+                    x_d,
+                    y_d,
+                    pen=layer_data.get("pen", pg.mkPen(color=QColor(20, 20, 20), width=2.5)),
+                    name=layer_data.get("name", "Fitted Curve"),
                 )
+                self.analysis_layers[layer_id] = {
+                    "name": layer_data.get("name", "Fitted Curve"),
+                    "plot_items": [p_item],
+                }
 
+        # Result sheet fitted curve overlay
+        if self.current_result is not None:
+            res_id = getattr(self.current_result, "sheet_id", "active_fit")
+            if res_id not in self.removed_layer_ids:
+                raw = self.current_result.raw_result_data
+                if "x_dense" in raw and "y_dense" in raw:
+                    x_dense = np.array(raw["x_dense"])
+                    y_dense = np.array(raw["y_dense"])
+                    fit_pen = pg.mkPen(color=QColor(20, 20, 20), width=2.5)
+                    name = raw.get("model_name", getattr(self.current_result, "title", "Fitted Curve"))
+                    curve_item = self.plot_widget.plot(
+                        x_dense,
+                        y_dense,
+                        pen=fit_pen,
+                        name=name,
+                    )
+                    self.analysis_layers[res_id] = {
+                        "name": name,
+                        "plot_items": [curve_item],
+                    }
+
+        self._rebuild_analysis_menu()
         self.plot_widget.autoRange()
 
     def _render_column_graph(self) -> None:
@@ -262,11 +515,27 @@ class GraphCanvasWidget(QWidget):
         ax = self.plot_widget.getAxis("bottom")
         ax.setTicks([ticks])
 
+        is_grayscale = self.is_grayscale_mode
+
         for pos, name in zip(x_positions, names):
             vals = np.array(group_data[name], dtype=np.float64)
-            color = self.current_palette[pos % len(self.current_palette)]
             if len(vals) == 0:
                 continue
+
+            if is_grayscale:
+                sym_spec = self.GRAYSCALE_SYMBOLS[pos % len(self.GRAYSCALE_SYMBOLS)]
+                bar_pen = pg.mkPen("k", width=1.5)
+                bar_brush = pg.mkBrush(230, 230, 230, 160)
+                pt_symbol = sym_spec["symbol"]
+                pt_pen = sym_spec["pen"]
+                pt_brush = sym_spec["brush"]
+            else:
+                color = self.COLOR_PALETTE[pos % len(self.COLOR_PALETTE)]
+                bar_pen = pg.mkPen(color, width=1.5)
+                bar_brush = pg.mkBrush(color.red(), color.green(), color.blue(), 140)
+                pt_symbol = "o"
+                pt_pen = pg.mkPen("k", width=1)
+                pt_brush = pg.mkBrush("w")
 
             mean = float(np.mean(vals))
             if len(vals) > 1:
@@ -280,8 +549,8 @@ class GraphCanvasWidget(QWidget):
                 x=[pos],
                 height=[mean],
                 width=0.6,
-                brush=pg.mkBrush(color.red(), color.green(), color.blue(), 140),
-                pen=pg.mkPen(color, width=1.5),
+                brush=bar_brush,
+                pen=bar_pen,
             )
             self.plot_widget.addItem(bar)
 
@@ -302,8 +571,9 @@ class GraphCanvasWidget(QWidget):
             scatter = pg.ScatterPlotItem(
                 x=pos + jitter,
                 y=vals,
-                pen=pg.mkPen("k", width=1),
-                brush=pg.mkBrush("w"),
+                pen=pt_pen,
+                brush=pt_brush,
+                symbol=pt_symbol,
                 size=6,
             )
             self.plot_widget.addItem(scatter)
@@ -323,14 +593,20 @@ class GraphCanvasWidget(QWidget):
         means = [float(np.mean(group_data[n])) if group_data[n] else np.nan for n in names]
 
         valid_mask = ~np.isnan(means)
-        if np.sum(valid_mask) >= 2:
+        trend_id = "group_mean_trend"
+        if np.sum(valid_mask) >= 2 and trend_id not in self.removed_layer_ids:
             trend_pen = pg.mkPen(color=QColor(0, 0, 0), width=2, style=Qt.PenStyle.DashLine)
-            self.plot_widget.plot(
+            trend_item = self.plot_widget.plot(
                 x_positions[valid_mask],
                 np.array(means)[valid_mask],
                 pen=trend_pen,
                 name="Group Mean Trend",
             )
+            self.analysis_layers[trend_id] = {
+                "name": "Group Mean Trend",
+                "plot_items": [trend_item],
+            }
+            self._rebuild_analysis_menu()
 
     def _render_hooked_elements(self) -> None:
         """Renders dynamic tick lines and dynamic text equations from hooked constants."""
@@ -376,7 +652,6 @@ class GraphCanvasWidget(QWidget):
             title = tbl.get("title", "Results Summary")
             headers = tbl.get("headers", [])
             rows = tbl.get("rows", [])
-            # Build text representation
             lines = [f"<b>{title}</b>"]
             for row in rows[:6]:
                 row_str = " | ".join(str(c) for c in row)
@@ -411,3 +686,7 @@ class GraphCanvasWidget(QWidget):
             self.plot_widget.render(painter)
         finally:
             painter.end()
+
+
+# Alias for backward compatibility
+GraphCanvasWidget = ScientificPlotCanvas

@@ -19,6 +19,8 @@ class WorkspaceMediator(QObject):
     columnInserted = pyqtSignal(int, str)
     columnDeleted = pyqtSignal(int)
     tableModified = pyqtSignal()
+    analysisLayerRemoved = pyqtSignal(str)
+    allAnalysisLayersCleared = pyqtSignal()
 
     _instance: Optional[WorkspaceMediator] = None
 
@@ -58,3 +60,20 @@ class WorkspaceMediator(QObject):
         self.tableModified.emit()
         if self.main_window and hasattr(self.main_window, "_on_table_data_modified"):
             self.main_window._on_table_data_modified()
+
+    def notify_analysis_layer_removed(self, layer_id: str) -> None:
+        """Notifies workspace of an analysis overlay layer removal."""
+        self.analysisLayerRemoved.emit(layer_id)
+        if self.main_window and hasattr(self.main_window, "graph_canvas"):
+            canvas = getattr(self.main_window, "graph_canvas")
+            if hasattr(canvas, "analysis_layers") and layer_id in canvas.analysis_layers:
+                canvas.remove_analysis_layer(layer_id)
+
+    def notify_clear_all_analysis_layers(self) -> None:
+        """Notifies workspace that all analysis overlay layers should be cleared."""
+        self.allAnalysisLayersCleared.emit()
+        if self.main_window and hasattr(self.main_window, "graph_canvas"):
+            canvas = getattr(self.main_window, "graph_canvas")
+            if hasattr(canvas, "clear_all_analysis_layers"):
+                if hasattr(canvas, "analysis_layers") and canvas.analysis_layers:
+                    canvas.clear_all_analysis_layers()

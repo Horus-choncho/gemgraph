@@ -812,6 +812,15 @@ class DataTable:
 
         return np.array(xs, dtype=np.float64), np.array(ys, dtype=np.float64)
 
+    @property
+    def y_datasets_dict(self) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        """Returns mapping of column/group title to (xs, ys) clean coordinates."""
+        result = {}
+        for g_idx, title in enumerate(self.y_group_titles):
+            xs, ys = self.get_clean_xy(g_idx)
+            result[title] = (xs, ys)
+        return result
+
     def get_group_replicate_summary(self, group_idx: int = 0) -> Dict[str, np.ndarray]:
         """
         Returns Mean, SD, SEM, and N per row for a given group,
