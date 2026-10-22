@@ -1,7 +1,7 @@
-3c34c5aac998f771a6326f6c030583977608b0219a09b904b8685d226a308fde  dist/gemgraph_0.1.0-alpha_amd64.deb
-2c73f359977f7288b3f469f72f9f35af6240df843b29ab61ecb347b0431b0f3c  dist/GemGraph-Linux-x86_64-Portable.tar.gz
-4a77fc5f11d5fa838bbeaae6a51f6271459390b19573b62443fd2eb4fe93e669  dist/gemgraph-0.1.0-alpha.x86_64.rpm
-d4fb9b00caeeb58d9138f072e96ca31fe34c42a3afa47dee50f3c1a6ae108ce7  dist/gemgraph_0.1.0-alpha.flatpak
-6107c8fafcf99e14d0310685193146ce016e8a12e25378d0209f831f2fec7915  dist/GemGraph-0.1.0-alpha-x86_64.AppImage
-8e03cc61ee2a5a04b09240f0d751fa73655576b161e43f56071f0acf39f5fd27  GemGraph-0.1.0-alpha-Windows-Portable.zip
-23b61b2c725554d4121a8a1c4bb3035463082e7a6c27194710603cee1f77c26f  GemGraph-0.1.0-alpha-macOS.dmg
+98044bfb5ec8fc30e160e6ef82f78f66de675fbc5072178b4f1e74aa7d036c33  dist/gemgraph_0.1.1-alpha_amd64.deb
+20ecd7a8dadb66ae35ec392fd3087a3cb2cb608821aaa13c186c13e3ffedff50  dist/GemGraph-0.1.1-alpha-Linux-x86_64-Portable.tar.gz
+0fb0645d17cacd836d11cb3b8dc8c9e4922dbe2e50eda96d31ba49f7704124b8  dist/gemgraph-0.1.1-alpha.x86_64.rpm
+92fac72398de0f451ebf994d7bbdbe764674c2afc0e0bbe36fa75dc5f1056d11  dist/gemgraph_0.1.1-alpha.flatpak
+9f9aaa4d23639edaffb290ec558134c619e945061c38aeda4ef32b0cb43ca73d  dist/GemGraph-0.1.1-alpha-x86_64.AppImage
+4cc258c29976d935867549fdd9a0ec59b49447c52f8234cc4858ad4ec6fcde10  dist/GemGraph-v0.1.1-alpha-Windows-Portable.zip
+5cbfbed99fc3cef73e21fec3e321105f7338a7edebce9e8cb77a70fc8c78803f  dist/GemGraph-v0.1.1-alpha-macOS.dmg
