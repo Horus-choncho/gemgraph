@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple, Set
 import numpy as np
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QBrush
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -34,6 +34,7 @@ from src.core.table import DataTable, TableType
 from src.core.sheet import GraphSheet, GraphType, ResultSheet
 from src.core.hooking import GLOBAL_REGISTRY, HookedConstant
 from src.ui.mediator import WorkspaceMediator
+from src.ui.dialogs import FormatSeriesDialog
 
 
 class ScientificPlotCanvas(QWidget):
@@ -115,6 +116,8 @@ class ScientificPlotCanvas(QWidget):
         self.current_palette = self.COLOR_PALETTE
         self.series_styles: Dict[Any, str] = {}
         self.error_style: str = "SEM"
+        self.custom_series_colors: Dict[str, QColor] = {}
+        self.custom_series_opacities: Dict[str, float] = {}
 
         # Active overlay registry: analysis_id -> { 'name': str, 'plot_items': list }
         self.analysis_layers: Dict[str, Dict[str, Any]] = {}
@@ -153,6 +156,15 @@ class ScientificPlotCanvas(QWidget):
         ])
         self.palette_combo.currentIndexChanged.connect(self._on_palette_changed)
         top_bar.addWidget(self.palette_combo)
+
+        top_bar.addWidget(QLabel("Whiskers:"))
+        self.whisker_dir_combo = QComboBox()
+        self.whisker_dir_combo.addItems([
+            "Both (±)",
+            "Upper (+) Only",
+        ])
+        self.whisker_dir_combo.currentIndexChanged.connect(lambda: self.refresh_plot(preserve_range=True))
+        top_bar.addWidget(self.whisker_dir_combo)
 
         top_bar.addStretch()
 
@@ -210,6 +222,10 @@ class ScientificPlotCanvas(QWidget):
             act.triggered.connect(lambda chk=False, s=style_name: self.set_error_style(s))
 
         menu.addSeparator()
+        act_format = menu.addAction("🎨 Format Series / Bars...")
+        act_format.triggered.connect(self.action_format_series)
+
+        menu.addSeparator()
         if self.is_grayscale_mode:
             pal_act = menu.addAction("🎨 Switch to Color Palette")
             pal_act.triggered.connect(lambda: self.set_grayscale_mode(False))
@@ -218,6 +234,46 @@ class ScientificPlotCanvas(QWidget):
             pal_act.triggered.connect(lambda: self.set_grayscale_mode(True))
 
         menu.exec(event.globalPos())
+
+    @property
+    def whisker_direction(self) -> str:
+        """Returns the active error whisker direction: 'Both (±)' or 'Upper (+) Only'."""
+        if hasattr(self, "whisker_dir_combo"):
+            return self.whisker_dir_combo.currentText()
+        return "Both (±)"
+
+    def set_whisker_direction(self, direction: str) -> None:
+        """Sets error whisker direction: 'Both (±)' or 'Upper (+) Only'."""
+        if hasattr(self, "whisker_dir_combo"):
+            idx = self.whisker_dir_combo.findText(direction)
+            if idx >= 0:
+                self.whisker_dir_combo.setCurrentIndex(idx)
+                return
+        self.refresh_plot(preserve_range=True)
+
+    def action_format_series(self) -> None:
+        """Opens FormatSeriesDialog to configure custom color and opacity for series."""
+        names = []
+        if self.current_table is not None:
+            if self.current_table.table_type == TableType.COLUMN:
+                names = list(self.current_table.get_all_group_values().keys())
+            else:
+                names = list(self.current_table.y_group_titles)
+        if not names:
+            return
+
+        dlg = FormatSeriesDialog(
+            series_names=names,
+            series_colors=self.custom_series_colors,
+            series_opacities=self.custom_series_opacities,
+            is_grayscale=self.is_grayscale_mode,
+            parent=self,
+        )
+        if dlg.exec():
+            colors, opacities = dlg.get_formatting()
+            self.custom_series_colors.update(colors)
+            self.custom_series_opacities.update(opacities)
+            self.refresh_plot(preserve_range=True)
 
     def _setup_plot_style(self) -> None:
         """Configures publication-grade white-background scientific styling with outward ticks."""
@@ -556,16 +612,21 @@ class ScientificPlotCanvas(QWidget):
             if len(xs) == 0:
                 continue
 
+            has_custom_color = g_title in self.custom_series_colors
+            custom_color = self.custom_series_colors.get(g_title)
+            custom_opacity = self.custom_series_opacities.get(g_title, 1.0 if is_grayscale else 0.8)
+
             if is_grayscale:
                 sym_spec = self.GRAYSCALE_SYMBOLS[col_idx % len(self.GRAYSCALE_SYMBOLS)]
                 symbol = sym_spec["symbol"]
                 pen = sym_spec["pen"]
                 brush = sym_spec["brush"]
             else:
-                color = self.COLOR_PALETTE[col_idx % len(self.COLOR_PALETTE)]
+                color = custom_color if (has_custom_color and custom_color is not None) else self.COLOR_PALETTE[col_idx % len(self.COLOR_PALETTE)]
                 symbol = "o"
                 pen = pg.mkPen(color, width=1.0)
-                brush = pg.mkBrush(color)
+                alpha = int(round(custom_opacity * 255))
+                brush = pg.mkBrush(color.red(), color.green(), color.blue(), alpha)
 
             scatter = pg.ScatterPlotItem(
                 x=xs,
@@ -618,18 +679,47 @@ class ScientificPlotCanvas(QWidget):
             if len(vals) == 0:
                 continue
 
-            if is_grayscale:
-                sym_spec = self.GRAYSCALE_SYMBOLS[pos % len(self.GRAYSCALE_SYMBOLS)]
+            has_custom_color = name in self.custom_series_colors
+            custom_color = self.custom_series_colors.get(name)
+            custom_opacity = self.custom_series_opacities.get(name, 1.0 if is_grayscale else 0.8)
+
+            sym_spec = self.GRAYSCALE_SYMBOLS[pos % len(self.GRAYSCALE_SYMBOLS)]
+
+            if is_grayscale and not has_custom_color:
+                pattern_idx = pos % 5
                 bar_pen = pg.mkPen("k", width=1.5)
-                bar_brush = pg.mkBrush(230, 230, 230, 160)
+                if pattern_idx == 0:
+                    bar_brush = QBrush(QColor("#000000"))
+                    pt_brush = pg.mkBrush("w")
+                    pt_pen = pg.mkPen("k", width=1.5)
+                elif pattern_idx == 1:
+                    bar_brush = QBrush(QColor("#ffffff"))
+                    bar_pen = pg.mkPen(QColor(0, 0, 0), width=1.5)
+                    pt_brush = pg.mkBrush("k")
+                    pt_pen = pg.mkPen("k", width=1.5)
+                elif pattern_idx == 2:
+                    bar_brush = QBrush(QColor("#808080"))
+                    pt_brush = pg.mkBrush("w")
+                    pt_pen = pg.mkPen("k", width=1.5)
+                elif pattern_idx == 3:
+                    bar_brush = QBrush(QColor("#c0c0c0"))
+                    pt_brush = pg.mkBrush("k")
+                    pt_pen = pg.mkPen("k", width=1.5)
+                else:  # pattern_idx == 4
+                    bar_brush = QBrush(QColor("#000000"), Qt.BrushStyle.DiagCrossPattern)
+                    pt_brush = pg.mkBrush("w")
+                    pt_pen = pg.mkPen("k", width=1.5)
+
                 pt_symbol = sym_spec["symbol"]
-                pt_pen = sym_spec["pen"]
-                pt_brush = sym_spec["brush"]
                 err_pen = pg.mkPen("k", width=1.5)
             else:
-                color = self.COLOR_PALETTE[pos % len(self.COLOR_PALETTE)]
+                if has_custom_color and custom_color is not None:
+                    color = custom_color
+                else:
+                    color = self.COLOR_PALETTE[pos % len(self.COLOR_PALETTE)]
+                alpha = int(round(custom_opacity * 255))
                 bar_pen = pg.mkPen(color, width=1.5)
-                bar_brush = pg.mkBrush(color.red(), color.green(), color.blue(), 130)
+                bar_brush = pg.mkBrush(color.red(), color.green(), color.blue(), alpha)
                 pt_symbol = "o"
                 pt_pen = pg.mkPen(color.darker(140), width=1)
                 pt_brush = pg.mkBrush(color)
@@ -665,11 +755,13 @@ class ScientificPlotCanvas(QWidget):
 
             # Error bar
             if err_val > 0:
+                top_err = np.array([err_val])
+                bot_err = np.zeros_like(top_err) if self.whisker_direction == "Upper (+) Only" else top_err
                 err = pg.ErrorBarItem(
                     x=np.array([pos]),
                     y=np.array([mean]),
-                    top=np.array([err_val]),
-                    bottom=np.array([err_val]),
+                    top=top_err,
+                    bottom=bot_err,
                     beam=0.2,
                     pen=err_pen,
                 )
@@ -746,19 +838,47 @@ class ScientificPlotCanvas(QWidget):
         sub_w = cluster_w / max(1, num_groups)
 
         for g_idx, g_title in enumerate(table.y_group_titles):
-            if is_grayscale:
-                sym_spec = self.GRAYSCALE_SYMBOLS[g_idx % len(self.GRAYSCALE_SYMBOLS)]
-                gray_val = max(50, int(220 - (g_idx % 4) * 45))
-                bar_brush = pg.mkBrush(gray_val, gray_val, gray_val, 160)
+            has_custom_color = g_title in self.custom_series_colors
+            custom_color = self.custom_series_colors.get(g_title)
+            custom_opacity = self.custom_series_opacities.get(g_title, 1.0 if is_grayscale else 0.8)
+
+            sym_spec = self.GRAYSCALE_SYMBOLS[g_idx % len(self.GRAYSCALE_SYMBOLS)]
+
+            if is_grayscale and not has_custom_color:
+                pattern_idx = g_idx % 5
                 bar_pen = pg.mkPen("k", width=1.5)
+                if pattern_idx == 0:
+                    bar_brush = QBrush(QColor("#000000"))
+                    pt_brush = pg.mkBrush("w")
+                    pt_pen = pg.mkPen("k", width=1.5)
+                elif pattern_idx == 1:
+                    bar_brush = QBrush(QColor("#ffffff"))
+                    bar_pen = pg.mkPen(QColor(0, 0, 0), width=1.5)
+                    pt_brush = pg.mkBrush("k")
+                    pt_pen = pg.mkPen("k", width=1.5)
+                elif pattern_idx == 2:
+                    bar_brush = QBrush(QColor("#808080"))
+                    pt_brush = pg.mkBrush("w")
+                    pt_pen = pg.mkPen("k", width=1.5)
+                elif pattern_idx == 3:
+                    bar_brush = QBrush(QColor("#c0c0c0"))
+                    pt_brush = pg.mkBrush("k")
+                    pt_pen = pg.mkPen("k", width=1.5)
+                else:  # pattern_idx == 4
+                    bar_brush = QBrush(QColor("#000000"), Qt.BrushStyle.DiagCrossPattern)
+                    pt_brush = pg.mkBrush("w")
+                    pt_pen = pg.mkPen("k", width=1.5)
+
                 pt_symbol = sym_spec["symbol"]
-                pt_pen = sym_spec["pen"]
-                pt_brush = sym_spec["brush"]
                 err_pen = pg.mkPen("k", width=1.5)
             else:
-                color = self.COLOR_PALETTE[g_idx % len(self.COLOR_PALETTE)]
+                if has_custom_color and custom_color is not None:
+                    color = custom_color
+                else:
+                    color = self.COLOR_PALETTE[g_idx % len(self.COLOR_PALETTE)]
+                alpha = int(round(custom_opacity * 255))
                 bar_pen = pg.mkPen(color, width=1.5)
-                bar_brush = pg.mkBrush(color.red(), color.green(), color.blue(), 130)
+                bar_brush = pg.mkBrush(color.red(), color.green(), color.blue(), alpha)
                 pt_symbol = "o"
                 pt_pen = pg.mkPen(color.darker(140), width=1.0)
                 pt_brush = pg.mkBrush(color)
@@ -809,11 +929,13 @@ class ScientificPlotCanvas(QWidget):
                 self.plot_widget.addItem(bar)
 
                 if err_val > 0:
+                    top_err = np.array([err_val])
+                    bot_err = np.zeros_like(top_err) if self.whisker_direction == "Upper (+) Only" else top_err
                     err = pg.ErrorBarItem(
                         x=np.array([x_pos]),
                         y=np.array([mean]),
-                        top=np.array([err_val]),
-                        bottom=np.array([err_val]),
+                        top=top_err,
+                        bottom=bot_err,
                         beam=sub_w * 0.3,
                         pen=err_pen,
                     )

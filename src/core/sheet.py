@@ -84,38 +84,115 @@ class DataSheet(BaseSheet):
         return sheet
 
 
+GLP_FIELD_DEFINITIONS: List[Tuple[str, str]] = [
+    ("experiment_title", "Experiment Title"),
+    ("project_study_id", "Project / Study ID"),
+    ("author_scientist", "Author / Scientist"),
+    ("principal_investigator", "Principal Investigator (PI)"),
+    ("notebook_page_ref", "Notebook / Page Ref"),
+    ("experiment_date", "Experiment Date"),
+    ("organism_cell_line", "Organism / Cell Line"),
+    ("compound_lot_number", "Compound / Lot Number"),
+    ("protocol_sop_number", "Protocol / SOP Number"),
+]
+
+
 class InfoSheet(BaseSheet):
-    """Sheet holding project, experiment, and protocol metadata."""
+    """Sheet holding structured GLP experiment and protocol metadata."""
 
     def __init__(
         self,
         sheet_id: str,
         title: str = "Info 1",
         notes: str = "",
+        experiment_title: str = "",
+        project_study_id: str = "",
+        author_scientist: str = "",
+        principal_investigator: str = "",
+        notebook_page_ref: str = "",
+        experiment_date: str = "",
+        organism_cell_line: str = "",
+        compound_lot_number: str = "",
+        protocol_sop_number: str = "",
         constants: Optional[Dict[str, str]] = None,
     ) -> None:
         super().__init__(sheet_id, title, SheetType.INFO)
-        self.notes = notes
-        self.constants: Dict[str, str] = constants or {
-            "Experimenter": "",
-            "Project": "",
-            "Notebook ID": "",
-            "Date": "",
-        }
+        self.notes: str = notes
+        self.experiment_title: str = experiment_title
+        self.project_study_id: str = project_study_id
+        self.author_scientist: str = author_scientist
+        self.principal_investigator: str = principal_investigator
+        self.notebook_page_ref: str = notebook_page_ref
+        self.experiment_date: str = experiment_date
+        self.organism_cell_line: str = organism_cell_line
+        self.compound_lot_number: str = compound_lot_number
+        self.protocol_sop_number: str = protocol_sop_number
+
+        self.constants: Dict[str, str] = dict(constants or {})
+        self._sync_constants_from_fields()
+
+    def _sync_constants_from_fields(self) -> None:
+        for attr, label in GLP_FIELD_DEFINITIONS:
+            val = getattr(self, attr, "")
+            if val:
+                self.constants[label] = val
+
+    def get_field_value(self, attr_name: str) -> str:
+        val = getattr(self, attr_name, "")
+        if not val:
+            for attr, label in GLP_FIELD_DEFINITIONS:
+                if attr == attr_name:
+                    return self.constants.get(label, "")
+        return val
+
+    def set_field_value(self, attr_name: str, value: str) -> None:
+        if hasattr(self, attr_name):
+            setattr(self, attr_name, value)
+            for attr, label in GLP_FIELD_DEFINITIONS:
+                if attr == attr_name:
+                    self.constants[label] = value
+                    break
 
     def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
         d["notes"] = self.notes
-        d["constants"] = self.constants
+        d["experiment_title"] = self.experiment_title
+        d["project_study_id"] = self.project_study_id
+        d["author_scientist"] = self.author_scientist
+        d["principal_investigator"] = self.principal_investigator
+        d["notebook_page_ref"] = self.notebook_page_ref
+        d["experiment_date"] = self.experiment_date
+        d["organism_cell_line"] = self.organism_cell_line
+        d["compound_lot_number"] = self.compound_lot_number
+        d["protocol_sop_number"] = self.protocol_sop_number
+
+        self._sync_constants_from_fields()
+        d["constants"] = dict(self.constants)
         return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> InfoSheet:
+        constants = dict(data.get("constants", {}))
+
+        def read_val(attr: str, label: str) -> str:
+            if attr in data and data[attr]:
+                return str(data[attr])
+            return str(constants.get(label, ""))
+
         sheet = cls(
             sheet_id=data["sheet_id"],
             title=data.get("title", "Info"),
             notes=data.get("notes", ""),
-            constants=data.get("constants", {}),
+            experiment_title=read_val("experiment_title", "Experiment Title"),
+            project_study_id=read_val("project_study_id", "Project / Study ID"),
+            author_scientist=read_val("author_scientist", "Author / Scientist"),
+            principal_investigator=read_val("principal_investigator", "Principal Investigator (PI)"),
+            notebook_page_ref=read_val("notebook_page_ref", "Notebook / Page Ref"),
+            experiment_date=read_val("experiment_date", "Experiment Date"),
+            organism_cell_line=read_val("organism_cell_line", "Organism / Cell Line"),
+            compound_lot_number=read_val("compound_lot_number", "Compound / Lot Number"),
+            protocol_sop_number=read_val("protocol_sop_number", "Protocol / SOP Number"),
+            constants=constants,
         )
         sheet.is_frozen = data.get("is_frozen", False)
         sheet.is_orphaned = data.get("is_orphaned", False)

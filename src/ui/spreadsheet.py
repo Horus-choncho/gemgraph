@@ -8,7 +8,7 @@ from typing import Optional, Tuple, Any
 import numpy as np
 import pandas as pd
 from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, pyqtSignal
-from PyQt6.QtGui import QFont, QColor, QBrush
+from PyQt6.QtGui import QFont, QColor, QBrush, QKeyEvent
 from PyQt6.QtWidgets import QTableView, QMenu, QInputDialog, QMessageBox
 import re
 from src.core.table import DataTable, TableType
@@ -616,6 +616,36 @@ class ScientificSpreadsheetView(QTableView):
             model.table.set_replicates(reps)
             model.endResetModel()
             model.dataChangedSignal.emit()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            selection_model = self.selectionModel()
+            if selection_model is not None:
+                indexes = selection_model.selectedIndexes()
+                if indexes:
+                    model = self.get_model()
+                    for idx in indexes:
+                        r = idx.row()
+                        c = idx.column()
+                        if model.table.table_type == TableType.MULTIPLE_VARIABLES:
+                            model.table.set_variable_value(r, c, "")
+                        else:
+                            col_type, g_idx, s_idx = model._col_to_cell_coords(c)
+                            model.table.set_cell_value(r, col_type, g_idx, s_idx, np.nan)
+                    min_r = min(idx.row() for idx in indexes)
+                    max_r = max(idx.row() for idx in indexes)
+                    min_c = min(idx.column() for idx in indexes)
+                    max_c = max(idx.column() for idx in indexes)
+                    top_left = model.index(min_r, min_c)
+                    bottom_right = model.index(max_r, max_c)
+                    model.dataChanged.emit(top_left, bottom_right, [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
+                    model.dataChangedSignal.emit()
+                    mediator = model.mediator or WorkspaceMediator.get_instance()
+                    if mediator:
+                        mediator.notify_table_modified()
+                    event.accept()
+                    return
+        super().keyPressEvent(event)
 
 
 # Aliases for explicit ReplicateSpreadsheet and ScientificTableWidget references

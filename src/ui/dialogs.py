@@ -4,7 +4,9 @@ Derived from BridgeCLR analysis parameter dialogs (REA-CLR-VM-102).
 """
 
 from __future__ import annotations
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -16,6 +18,9 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QGroupBox,
     QFormLayout,
+    QPushButton,
+    QSlider,
+    QColorDialog,
 )
 from src.math.nonlinear import STANDARD_MODELS, ConvergencePreset
 
@@ -187,3 +192,105 @@ class AnovaDialog(QDialog):
         posthoc = self.posthoc_combo.currentData()
         ctrl_idx = self.ctrl_combo.currentIndex()
         return test_type, posthoc, ctrl_idx
+
+
+class FormatSeriesDialog(QDialog):
+    """Dialog for customizing per-series color and opacity."""
+
+    def __init__(
+        self,
+        series_names: List[str],
+        series_colors: Optional[Dict[str, QColor]] = None,
+        series_opacities: Optional[Dict[str, float]] = None,
+        is_grayscale: bool = False,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Format Series / Bars")
+        self.setMinimumWidth(380)
+
+        self.series_names = list(series_names)
+        self.colors: Dict[str, QColor] = dict(series_colors or {})
+        self.opacities: Dict[str, float] = dict(series_opacities or {})
+        self.is_grayscale = is_grayscale
+
+        layout = QVBoxLayout(self)
+
+        form_group = QGroupBox("Series Appearance")
+        form = QFormLayout(form_group)
+
+        self.series_combo = QComboBox()
+        self.series_combo.addItems(self.series_names)
+        self.series_combo.currentIndexChanged.connect(self._on_series_selected)
+        form.addRow("Select Series:", self.series_combo)
+
+        # Color picker button with preview swatch
+        color_layout = QHBoxLayout()
+        self.btn_color = QPushButton("Pick Color...")
+        self.btn_color.clicked.connect(self._choose_color)
+        self.color_preview = QLabel("        ")
+        self.color_preview.setAutoFillBackground(True)
+        color_layout.addWidget(self.btn_color)
+        color_layout.addWidget(self.color_preview)
+        color_layout.addStretch()
+        form.addRow("Fill Color:", color_layout)
+
+        # Opacity slider 0 - 100%
+        opacity_layout = QHBoxLayout()
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(0, 100)
+        default_op = 100 if is_grayscale else 80
+        self.opacity_slider.setValue(default_op)
+        self.opacity_label = QLabel(f"{default_op}%")
+        self.opacity_slider.valueChanged.connect(self._on_opacity_slider_changed)
+        opacity_layout.addWidget(self.opacity_slider)
+        opacity_layout.addWidget(self.opacity_label)
+        form.addRow("Opacity:", opacity_layout)
+
+        layout.addWidget(form_group)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        if self.series_names:
+            self._on_series_selected(0)
+
+    def _current_series(self) -> str:
+        return self.series_combo.currentText()
+
+    def _on_series_selected(self, index: int) -> None:
+        name = self._current_series()
+        col = self.colors.get(name, QColor("#000000" if self.is_grayscale else "#0072B2"))
+        default_op = 1.0 if self.is_grayscale else 0.8
+        op_val = self.opacities.get(name, default_op)
+        op_pct = int(round(op_val * 100))
+        self._update_color_preview(col)
+        self.opacity_slider.blockSignals(True)
+        self.opacity_slider.setValue(op_pct)
+        self.opacity_slider.blockSignals(False)
+        self.opacity_label.setText(f"{op_pct}%")
+
+    def _choose_color(self) -> None:
+        name = self._current_series()
+        initial = self.colors.get(name, QColor("#000000" if self.is_grayscale else "#0072B2"))
+        color = QColorDialog.getColor(initial, self, f"Select Color for {name}")
+        if color.isValid():
+            self.colors[name] = color
+            self._update_color_preview(color)
+
+    def _update_color_preview(self, color: QColor) -> None:
+        self.color_preview.setStyleSheet(
+            f"background-color: {color.name()}; border: 1px solid #333333; min-width: 40px; min-height: 20px;"
+        )
+
+    def _on_opacity_slider_changed(self, value: int) -> None:
+        name = self._current_series()
+        self.opacities[name] = value / 100.0
+        self.opacity_label.setText(f"{value}%")
+
+    def get_formatting(self) -> Tuple[Dict[str, QColor], Dict[str, float]]:
+        return self.colors, self.opacities

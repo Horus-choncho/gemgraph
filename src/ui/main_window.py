@@ -71,41 +71,8 @@ from src.ui.mediator import WorkspaceMediator
 ResultSheetWidget = ResultTabsWidget
 
 
-class InfoSheetWidget(QWidget):
-    """Presents and edits project metadata notes and constants."""
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.layout = QVBoxLayout(self)
-        self.title_label = QLabel("Experiment Information & Notes")
-        font = self.title_label.font()
-        font.setBold(True)
-        font.setPointSize(12)
-        self.title_label.setFont(font)
-        self.layout.addWidget(self.title_label)
-
-        self.notes_edit = QTextEdit()
-        self.notes_edit.setStyleSheet("""
-            QTextEdit {
-                background-color: #ffffff;
-                color: #000000;
-                border: 1px solid #d0d0d0;
-            }
-        """)
-        self.layout.addWidget(self.notes_edit)
-
-        self.current_sheet: Optional[InfoSheet] = None
-        self.notes_edit.textChanged.connect(self._on_notes_changed)
-
-    def display_info(self, sheet: InfoSheet) -> None:
-        self.current_sheet = sheet
-        self.notes_edit.blockSignals(True)
-        self.notes_edit.setPlainText(sheet.notes)
-        self.notes_edit.blockSignals(False)
-
-    def _on_notes_changed(self) -> None:
-        if self.current_sheet:
-            self.current_sheet.notes = self.notes_edit.toPlainText()
+from src.ui.info_sheet_view import InfoSheetView
+InfoSheetWidget = InfoSheetView
 
 
 class MainWindow(QMainWindow):
@@ -177,7 +144,8 @@ class MainWindow(QMainWindow):
         self.center_stack.addWidget(self.result_widget)
 
         # Info Sheet View
-        self.info_widget = InfoSheetWidget()
+        self.info_widget = InfoSheetView()
+        self.info_widget.infoModified.connect(self._on_table_data_modified)
         self.center_stack.addWidget(self.info_widget)
 
         # Right Pane: Interactive Plot Canvas
