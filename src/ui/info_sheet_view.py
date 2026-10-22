@@ -13,11 +13,11 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QTextEdit,
     QLabel,
     QHeaderView,
 )
 from src.core.info_sheet import InfoSheet, GLP_FIELD_DEFINITIONS
+from src.ui.rich_text_editor import RichTextEditor
 
 
 class InfoSheetView(QWidget):
@@ -107,19 +107,10 @@ class InfoSheetView(QWidget):
         notes_label.setFont(notes_font)
         bottom_layout.addWidget(notes_label)
 
-        self.notes_edit = QTextEdit()
-        self.notes_edit.setStyleSheet("""
-            QTextEdit {
-                background-color: #ffffff;
-                color: #000000;
-                border: 1px solid #d0d0d0;
-                padding: 6px;
-                font-family: Arial, sans-serif;
-                font-size: 11pt;
-            }
-        """)
-        self.notes_edit.textChanged.connect(self._on_notes_changed)
-        bottom_layout.addWidget(self.notes_edit)
+        self.notes_editor = RichTextEditor()
+        self.notes_edit = self.notes_editor.editor  # Backward compatibility
+        self.notes_editor.textChanged.connect(self._on_notes_changed)
+        bottom_layout.addWidget(self.notes_editor)
         splitter.addWidget(bottom_widget)
 
         splitter.setStretchFactor(0, 1)
@@ -137,9 +128,12 @@ class InfoSheetView(QWidget):
             if item is not None:
                 item.setText(val)
 
-        self.notes_edit.blockSignals(True)
-        self.notes_edit.setPlainText(sheet.notes)
-        self.notes_edit.blockSignals(False)
+        self.notes_editor.blockSignals(True)
+        if getattr(sheet, "notes_html", ""):
+            self.notes_editor.setHtml(sheet.notes_html)
+        else:
+            self.notes_editor.setPlainText(sheet.notes)
+        self.notes_editor.blockSignals(False)
 
         self._is_updating = False
 
@@ -155,5 +149,6 @@ class InfoSheetView(QWidget):
     def _on_notes_changed(self) -> None:
         if self._is_updating or self.current_sheet is None:
             return
-        self.current_sheet.notes = self.notes_edit.toPlainText()
+        self.current_sheet.notes = self.notes_editor.toPlainText()
+        self.current_sheet.notes_html = self.notes_editor.toHtml()
         self.infoModified.emit()

@@ -242,6 +242,7 @@ class PrismIO:
                         "uid": sheet.sheet_id,
                         "title": sheet.title,
                         "notesText": sheet.notes,
+                        "notesHtml": getattr(sheet, "notes_html", ""),
                         "constants": sheet.constants,
                     }
                     zf.writestr(f"info/{sheet.sheet_id}/sheet.json", json.dumps(info_meta, indent=2))
@@ -251,8 +252,10 @@ class PrismIO:
                         "@class": "GraphSheet",
                         "uid": sheet.sheet_id,
                         "title": sheet.title,
+                        "graph_type": sheet.graph_type.value,
                         "source_sheet_id": sheet.source_sheet_id,
                         "inputDataSets": [f"Y_{sheet.source_sheet_id}_0"] if sheet.source_sheet_id else [],
+                        "plot_config": getattr(sheet, "plot_config", {}),
                     }
                     zf.writestr(f"graphs/{sheet.sheet_id}/sheet.json", json.dumps(graph_meta, indent=2))
 
@@ -931,6 +934,7 @@ class PrismIO:
                 or f"Info {len(doc.sheets) + 1}"
             )
             notes = i_data.get("notesText", "") or i_data.get("notes", "")
+            notes_html = i_data.get("notesHtml", "") or i_data.get("notes_html", "")
 
             raw_consts = i_data.get("constants", {})
             consts_dict: Dict[str, str] = {}
@@ -941,7 +945,7 @@ class PrismIO:
             elif isinstance(raw_consts, dict):
                 consts_dict = raw_consts
 
-            info_sheet = InfoSheet(sheet_id=i_uid, title=i_title, notes=notes, constants=consts_dict)
+            info_sheet = InfoSheet(sheet_id=i_uid, title=i_title, notes=notes, notes_html=notes_html, constants=consts_dict)
             doc.sheets[i_uid] = info_sheet
             doc.sheet_order.append(i_uid)
 
@@ -969,7 +973,19 @@ class PrismIO:
             if not source_sheet_id and data_sheet_uids:
                 source_sheet_id = data_sheet_uids[0]
 
-            graph_sheet = GraphSheet(sheet_id=g_uid, title=g_title, source_sheet_id=source_sheet_id)
+            plot_config = g_data.get("plot_config", {})
+            raw_gt = g_data.get("graph_type")
+            try:
+                g_type = GraphType(raw_gt) if raw_gt else GraphType.XY_SCATTER_CURVE
+            except Exception:
+                g_type = GraphType.XY_SCATTER_CURVE
+            graph_sheet = GraphSheet(
+                sheet_id=g_uid,
+                title=g_title,
+                graph_type=g_type,
+                source_sheet_id=source_sheet_id,
+                plot_config=plot_config,
+            )
             doc.sheets[g_uid] = graph_sheet
             doc.sheet_order.append(g_uid)
 

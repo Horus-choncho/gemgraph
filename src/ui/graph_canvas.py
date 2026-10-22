@@ -128,6 +128,9 @@ class ScientificPlotCanvas(QWidget):
         self.hooked_labels: List[Dict[str, Any]] = []
         self.embedded_tables: List[Dict[str, Any]] = []
 
+        self.show_bar_scatter_points: bool = True
+        self.current_graph_sheet: Optional[GraphSheet] = None
+
         self._setup_plot_style()
 
         # Canvas toolbar
@@ -165,6 +168,14 @@ class ScientificPlotCanvas(QWidget):
         ])
         self.whisker_dir_combo.currentIndexChanged.connect(lambda: self.refresh_plot(preserve_range=True))
         top_bar.addWidget(self.whisker_dir_combo)
+
+        # Per-graph scatter points toggle on bar charts
+        self.btn_toggle_scatter = QToolButton()
+        self.btn_toggle_scatter.setText("⚪ Show Scatter Points")
+        self.btn_toggle_scatter.setCheckable(True)
+        self.btn_toggle_scatter.setChecked(True)
+        self.btn_toggle_scatter.toggled.connect(self._on_toggle_scatter_points)
+        top_bar.addWidget(self.btn_toggle_scatter)
 
         top_bar.addStretch()
 
@@ -204,6 +215,13 @@ class ScientificPlotCanvas(QWidget):
         menu.addMenu(self.analysis_menu)
 
         menu.addSeparator()
+
+        if self._is_bar_graph_type():
+            act_scatter_bars = menu.addAction("Show Individual Scatter Points on Bars")
+            act_scatter_bars.setCheckable(True)
+            act_scatter_bars.setChecked(self.show_bar_scatter_points)
+            act_scatter_bars.toggled.connect(self.set_show_bar_scatter_points)
+            menu.addSeparator()
 
         if self.current_table and self.current_table.y_group_titles:
             series_menu = menu.addMenu("Series Representation")
@@ -313,7 +331,39 @@ class ScientificPlotCanvas(QWidget):
         self.refresh_plot(preserve_range=True)
 
     def _on_type_changed(self) -> None:
+        self._update_scatter_button_visibility()
         self.refresh_plot()
+
+    def _is_bar_graph_type(self) -> bool:
+        t = self.type_combo.currentText()
+        if t in (
+            GraphType.COLUMN_BAR_ERROR.value,
+            GraphType.BARS_AND_POINTS.value,
+            "Superimposed Bars & Points",
+            GraphType.GROUPED_BARS_POINTS.value,
+            "Grouped Bars + Replicate Points",
+        ):
+            return True
+        if self.current_table and self.current_table.table_type in (TableType.GROUPED, TableType.COLUMN):
+            return True
+        return False
+
+    def _update_scatter_button_visibility(self) -> None:
+        is_bar = self._is_bar_graph_type()
+        self.btn_toggle_scatter.setVisible(is_bar)
+        self.btn_toggle_scatter.setEnabled(is_bar)
+
+    def _on_toggle_scatter_points(self, checked: bool) -> None:
+        self.set_show_bar_scatter_points(checked)
+
+    def set_show_bar_scatter_points(self, show: bool) -> None:
+        self.show_bar_scatter_points = bool(show)
+        self.btn_toggle_scatter.blockSignals(True)
+        self.btn_toggle_scatter.setChecked(self.show_bar_scatter_points)
+        self.btn_toggle_scatter.blockSignals(False)
+        if self.current_graph_sheet is not None:
+            self.current_graph_sheet.plot_config["show_bar_scatter_points"] = self.show_bar_scatter_points
+        self.refresh_plot(preserve_range=True)
 
     def set_series_representation(self, series: Any, rep_type: str) -> None:
         """Sets presentation style for a series (e.g. 'bars', 'spikes', 'scatter', 'line')."""
@@ -485,8 +535,9 @@ class ScientificPlotCanvas(QWidget):
         table: Optional[DataTable],
         result: Optional[ResultSheet] = None,
         graph_type: Optional[GraphType] = None,
+        sheet: Optional[GraphSheet] = None,
     ) -> None:
-        """Updates referenced table and result sheet, then repaints."""
+        """Updates referenced table, result sheet, and optional graph sheet, then repaints."""
         if result is not None and (
             self.current_result is None
             or getattr(result, "sheet_id", None) != getattr(self.current_result, "sheet_id", None)
@@ -495,6 +546,15 @@ class ScientificPlotCanvas(QWidget):
 
         self.current_table = table
         self.current_result = result
+        self.current_graph_sheet = sheet
+
+        if sheet is not None:
+            if "show_bar_scatter_points" in sheet.plot_config:
+                self.show_bar_scatter_points = bool(sheet.plot_config["show_bar_scatter_points"])
+                self.btn_toggle_scatter.blockSignals(True)
+                self.btn_toggle_scatter.setChecked(self.show_bar_scatter_points)
+                self.btn_toggle_scatter.blockSignals(False)
+
         if graph_type:
             idx = self.type_combo.findText(graph_type.value)
             if idx >= 0:
@@ -503,6 +563,7 @@ class ScientificPlotCanvas(QWidget):
 
     def refresh_plot(self, preserve_range: bool = False) -> None:
         """Clears and redraws graph according to current data, hooked elements, and settings."""
+        self._update_scatter_button_visibility()
         range_before = None
         if preserve_range:
             try:
@@ -768,19 +829,20 @@ class ScientificPlotCanvas(QWidget):
                 self.plot_widget.addItem(err)
 
             # Scatter points
-            if len(vals) > 1:
-                jitter = (np.random.RandomState(42 + pos).rand(len(vals)) - 0.5) * 0.25
-            else:
-                jitter = np.zeros(len(vals))
-            scatter = pg.ScatterPlotItem(
-                x=pos + jitter,
-                y=vals,
-                pen=pt_pen,
-                brush=pt_brush,
-                symbol=pt_symbol,
-                size=6,
-            )
-            self.plot_widget.addItem(scatter)
+            if self.show_bar_scatter_points:
+                if len(vals) > 1:
+                    jitter = (np.random.RandomState(42 + pos).rand(len(vals)) - 0.5) * 0.25
+                else:
+                    jitter = np.zeros(len(vals))
+                scatter = pg.ScatterPlotItem(
+                    x=pos + jitter,
+                    y=vals,
+                    pen=pt_pen,
+                    brush=pt_brush,
+                    symbol=pt_symbol,
+                    size=6,
+                )
+                self.plot_widget.addItem(scatter)
 
     def _render_grouped_bars_points(self) -> None:
         """
@@ -941,21 +1003,22 @@ class ScientificPlotCanvas(QWidget):
                     )
                     self.plot_widget.addItem(err)
 
-                if len(valid_vals) > 1:
-                    rng = np.random.RandomState(42 + r * 13 + g_idx * 7)
-                    jitter = (rng.rand(len(valid_vals)) - 0.5) * (sub_w * 0.35)
-                else:
-                    jitter = np.zeros(len(valid_vals))
+                if self.show_bar_scatter_points:
+                    if len(valid_vals) > 1:
+                        rng = np.random.RandomState(42 + r * 13 + g_idx * 7)
+                        jitter = (rng.rand(len(valid_vals)) - 0.5) * (sub_w * 0.35)
+                    else:
+                        jitter = np.zeros(len(valid_vals))
 
-                scatter = pg.ScatterPlotItem(
-                    x=x_pos + jitter,
-                    y=valid_vals,
-                    pen=pt_pen,
-                    brush=pt_brush,
-                    symbol=pt_symbol,
-                    size=6,
-                )
-                self.plot_widget.addItem(scatter)
+                    scatter = pg.ScatterPlotItem(
+                        x=x_pos + jitter,
+                        y=valid_vals,
+                        pen=pt_pen,
+                        brush=pt_brush,
+                        symbol=pt_symbol,
+                        size=6,
+                    )
+                    self.plot_widget.addItem(scatter)
 
     def _render_xy_spikes_and_curve(self) -> None:
         """

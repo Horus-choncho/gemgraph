@@ -23,6 +23,7 @@ class PrismNavigator(QTreeWidget):
         super().__init__(parent)
         self.setHeaderLabel("Project Navigator")
         self.setAnimated(True)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.itemClicked.connect(self._on_item_clicked)
 
         # Folder root items
@@ -100,31 +101,7 @@ class PrismNavigator(QTreeWidget):
             self.sheetSelected.emit(sheet_id)
 
     def contextMenuEvent(self, event) -> None:
-        item = self.itemAt(event.pos())
-        if not item:
+        if self.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu:
+            self.customContextMenuRequested.emit(event.pos())
             return
-        sheet_id = item.data(0, Qt.ItemDataRole.UserRole)
-        if not sheet_id:
-            return
-
-        menu = QMenu(self)
-        rename_act = menu.addAction("Rename Sheet...")
-        delete_act = menu.addAction("Delete Sheet")
-
-        action = menu.exec(event.globalPos())
-        if action == rename_act:
-            new_title, ok = QInputDialog.getText(self, "Rename Sheet", "New title:", text=item.text(0))
-            if ok and new_title.strip() and self.current_doc:
-                sheet = self.current_doc.get_sheet(sheet_id)
-                if sheet:
-                    sheet.title = new_title.strip()
-                    item.setText(0, sheet.title)
-        elif action == delete_act:
-            reply = QMessageBox.question(
-                self,
-                "Delete Sheet",
-                f"Are you sure you want to delete '{item.text(0)}'?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                self.sheetDeleted.emit(sheet_id)
+        super().contextMenuEvent(event)

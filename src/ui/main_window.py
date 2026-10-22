@@ -27,6 +27,9 @@ from PyQt6.QtWidgets import (
     QToolBar,
     QStatusBar,
     QHeaderView,
+    QMenu,
+    QInputDialog,
+    QTreeWidgetItem,
 )
 from src.core.document import PrismDocument
 from src.core.sheet import DataSheet, InfoSheet, ResultSheet, GraphSheet, SheetType, GraphType
@@ -121,6 +124,7 @@ class MainWindow(QMainWindow):
         self.navigator = PrismNavigator()
         self.navigator.sheetSelected.connect(self.on_sheet_selected)
         self.navigator.sheetDeleted.connect(self.on_sheet_deleted)
+        self.navigator.customContextMenuRequested.connect(self._on_navigator_context_menu)
 
         # Center Pane: Dynamic Stack
         self.center_stack = QStackedWidget()
@@ -238,6 +242,10 @@ class MainWindow(QMainWindow):
         export_xml_act = QAction("Export Prism XML (.xml)...", self)
         export_xml_act.triggered.connect(self.action_export_xml)
         file_menu.addAction(export_xml_act)
+
+        export_office_act = QAction("Export Report / Office Document...", self)
+        export_office_act.triggered.connect(self.action_export_office_dialog)
+        file_menu.addAction(export_office_act)
 
         file_menu.addSeparator()
 
@@ -419,6 +427,8 @@ class MainWindow(QMainWindow):
 
         toolbar.addAction("Add Table", lambda: self.action_add_table(TableType.XY))
         toolbar.addAction("Add Graph", self.action_add_graph)
+        toolbar.addSeparator()
+        toolbar.addAction("Export...", self.action_export_office_dialog)
 
         self._setup_contextual_toolbar()
 
@@ -513,6 +523,7 @@ class MainWindow(QMainWindow):
                 src_table,
                 result=res_sheet if isinstance(res_sheet, ResultSheet) else None,
                 graph_type=graph_sheet.graph_type,
+                sheet=graph_sheet,
             )
             self.status.showMessage(f"Active Graph: {sheet.title}")
 
@@ -522,6 +533,78 @@ class MainWindow(QMainWindow):
         self.navigator.populate(self.document)
         if self.document.active_sheet_id:
             self.on_sheet_selected(self.document.active_sheet_id)
+
+    def _create_navigator_context_menu(self, pos) -> Optional[QMenu]:
+        item = self.navigator.itemAt(pos)
+        if not item:
+            return None
+
+        data_root = self.navigator.folder_items.get(SheetType.DATA)
+        is_data_root = (item == data_root)
+        is_data_child = (item.parent() == data_root) if data_root else False
+        sheet_id = item.data(0, Qt.ItemDataRole.UserRole)
+        sheet = self.document.get_sheet(sheet_id) if sheet_id else None
+        if sheet and sheet.sheet_type == SheetType.DATA:
+            is_data_child = True
+
+        menu = QMenu(self)
+
+        if is_data_root or is_data_child:
+            add_sheet_act = menu.addAction("➕ Add Sheet")
+            add_sheet_act.triggered.connect(lambda: self.action_add_table(TableType.XY))
+
+            type_menu = menu.addMenu("➕ Add Sheet (Format...)")
+            type_menu.addAction("XY Data Table", lambda: self.action_add_table(TableType.XY))
+            type_menu.addAction("Column Data Table", lambda: self.action_add_table(TableType.COLUMN))
+            type_menu.addAction("Grouped Data Table", lambda: self.action_add_table(TableType.GROUPED))
+            type_menu.addAction("Contingency Table", lambda: self.action_add_table(TableType.CONTINGENCY))
+            type_menu.addAction("Survival Table", lambda: self.action_add_table(TableType.SURVIVAL))
+            type_menu.addAction("Parts of Whole", lambda: self.action_add_table(TableType.PARTS_OF_WHOLE))
+            type_menu.addAction("Multiple Variables", lambda: self.action_add_table(TableType.MULTIPLE_VARIABLES))
+            type_menu.addAction("Nested Data Table", lambda: self.action_add_table(TableType.NESTED))
+
+            if is_data_child and sheet_id:
+                menu.addSeparator()
+                rename_act = menu.addAction("Rename Sheet...")
+                rename_act.triggered.connect(lambda: self._rename_navigator_sheet(item, sheet_id))
+                delete_act = menu.addAction("Delete Sheet")
+                delete_act.triggered.connect(lambda: self._delete_navigator_sheet(item, sheet_id))
+
+            return menu
+
+        if sheet_id:
+            rename_act = menu.addAction("Rename Sheet...")
+            rename_act.triggered.connect(lambda: self._rename_navigator_sheet(item, sheet_id))
+            delete_act = menu.addAction("Delete Sheet")
+            delete_act.triggered.connect(lambda: self._delete_navigator_sheet(item, sheet_id))
+            return menu
+
+        return None
+
+    def _on_navigator_context_menu(self, pos) -> Optional[QMenu]:
+        menu = self._create_navigator_context_menu(pos)
+        if menu:
+            menu.exec(self.navigator.viewport().mapToGlobal(pos))
+        return menu
+
+    def _rename_navigator_sheet(self, item: QTreeWidgetItem, sheet_id: str) -> None:
+        clean_title = item.text(0).replace(" ❄️", "").replace(" ⚠️", "")
+        new_title, ok = QInputDialog.getText(self, "Rename Sheet", "New title:", text=clean_title)
+        if ok and new_title.strip() and self.document:
+            sheet = self.document.get_sheet(sheet_id)
+            if sheet:
+                sheet.title = new_title.strip()
+                self.navigator.populate(self.document)
+
+    def _delete_navigator_sheet(self, item: QTreeWidgetItem, sheet_id: str) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Delete Sheet",
+            f"Are you sure you want to delete '{item.text(0)}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.on_sheet_deleted(sheet_id)
 
     def _on_table_data_modified(self) -> None:
         # Re-render graph canvas when table values change and propagate downstream
@@ -742,6 +825,11 @@ class MainWindow(QMainWindow):
                 self.status.showMessage(f"Exported XML: {file_path}")
             except Exception as e:
                 QMessageBox.critical(self, "Error Exporting XML", str(e))
+
+    def action_export_office_dialog(self) -> None:
+        from src.ui.export_dialog import ExportProjectDialog
+        dialog = ExportProjectDialog(self.document, graph_canvas=self.graph_canvas, parent=self)
+        dialog.exec()
 
     def action_export_png(self) -> None:
         initial_dir = self.get_smart_initial_dir()

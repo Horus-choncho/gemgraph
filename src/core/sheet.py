@@ -115,9 +115,11 @@ class InfoSheet(BaseSheet):
         compound_lot_number: str = "",
         protocol_sop_number: str = "",
         constants: Optional[Dict[str, str]] = None,
+        notes_html: str = "",
     ) -> None:
         super().__init__(sheet_id, title, SheetType.INFO)
         self.notes: str = notes
+        self.notes_html: str = notes_html
         self.experiment_title: str = experiment_title
         self.project_study_id: str = project_study_id
         self.author_scientist: str = author_scientist
@@ -156,6 +158,7 @@ class InfoSheet(BaseSheet):
     def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
         d["notes"] = self.notes
+        d["notes_html"] = getattr(self, "notes_html", "")
         d["experiment_title"] = self.experiment_title
         d["project_study_id"] = self.project_study_id
         d["author_scientist"] = self.author_scientist
@@ -183,6 +186,7 @@ class InfoSheet(BaseSheet):
             sheet_id=data["sheet_id"],
             title=data.get("title", "Info"),
             notes=data.get("notes", ""),
+            notes_html=data.get("notes_html", ""),
             experiment_title=read_val("experiment_title", "Experiment Title"),
             project_study_id=read_val("project_study_id", "Project / Study ID"),
             author_scientist=read_val("author_scientist", "Author / Scientist"),
@@ -311,6 +315,7 @@ class GraphSheet(BaseSheet):
         y_label: str = "Y",
         show_error_bars: bool = True,
         error_style: str = "SEM",  # "SD" or "SEM"
+        plot_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__(sheet_id, title, SheetType.GRAPH)
         self.graph_type = graph_type
@@ -320,6 +325,7 @@ class GraphSheet(BaseSheet):
         self.y_label = y_label
         self.show_error_bars = show_error_bars
         self.error_style = error_style
+        self.plot_config: Dict[str, Any] = dict(plot_config or {})
 
     def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
@@ -330,6 +336,7 @@ class GraphSheet(BaseSheet):
         d["y_label"] = self.y_label
         d["show_error_bars"] = self.show_error_bars
         d["error_style"] = self.error_style
+        d["plot_config"] = dict(self.plot_config)
         return d
 
     @classmethod
@@ -344,4 +351,5 @@ class GraphSheet(BaseSheet):
             y_label=data.get("y_label", "Y"),
             show_error_bars=data.get("show_error_bars", True),
             error_style=data.get("error_style", "SEM"),
+            plot_config=data.get("plot_config", {}),
         )

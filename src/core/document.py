@@ -6,7 +6,7 @@ Derived from Core.dll document layout (REA-CORE-STORAGE-204).
 from __future__ import annotations
 import uuid
 from typing import Dict, List, Optional, Any
-from src.core.sheet import BaseSheet, DataSheet, InfoSheet, ResultSheet, GraphSheet, SheetType
+from src.core.sheet import BaseSheet, DataSheet, InfoSheet, ResultSheet, GraphSheet, SheetType, GraphType
 from src.core.table import TableType, DataTable
 
 
@@ -434,6 +434,8 @@ class PrismDocument:
         title: Optional[str] = None,
         source_sheet_id: str = "",
         result_sheet_id: Optional[str] = None,
+        graph_type: GraphType = GraphType.XY_SCATTER_CURVE,
+        plot_config: Optional[Dict[str, Any]] = None,
     ) -> GraphSheet:
         """Creates and registers a new GraphSheet linked to a DataSheet."""
         sheet_count = len(self.get_sheets_by_type(SheetType.GRAPH)) + 1
@@ -442,8 +444,10 @@ class PrismDocument:
         sheet = GraphSheet(
             sheet_id=sheet_id,
             title=name,
+            graph_type=graph_type,
             source_sheet_id=source_sheet_id,
             result_sheet_id=result_sheet_id,
+            plot_config=plot_config,
         )
         self.add_sheet(sheet)
         if source_sheet_id:
