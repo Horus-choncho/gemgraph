@@ -179,7 +179,12 @@ class TestOfficeExportEngine(unittest.TestCase):
         self.info.set_field_value("experiment_title", "Kinase Assay Dose Response")
         self.info.set_field_value("author_scientist", "Dr. A. Researcher")
         self.info.notes = "- Incubated 24h\n- Stopped with reagent B"
-        self.info.notes_html = "<p>• Incubated 24h</p><p>• Stopped with reagent B</p>"
+        self.info.notes_html = (
+            "<p>Assay: <span style=\"font-weight: 700;\">Critical</span> and "
+            "<span style=\"font-style: italic;\">Sensitive</span> and "
+            "<span style=\"text-decoration: underline;\">Verified</span>.</p>"
+            "<ul><li><span style=\"font-family: 'Liberation Serif'; font-size: 16pt;\">Step 1</span></li></ul>"
+        )
 
         # 2. Data Sheet (XY)
         self.data_sheet = self.doc.create_data_sheet(
@@ -225,7 +230,7 @@ class TestOfficeExportEngine(unittest.TestCase):
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_docx_export_validity(self) -> None:
-        """Word document (.docx) builds valid ZIP archive with document.xml and styles."""
+        """Word document (.docx) builds valid ZIP archive preserving rich text and graph."""
         out_path = os.path.join(self.tmp_dir, "report.docx")
         exporter = OfficeExporter(self.doc)
         exporter.export(out_path, fmt=ExportFormat.DOCX)
@@ -239,15 +244,21 @@ class TestOfficeExportEngine(unittest.TestCase):
             self.assertIn("word/document.xml", namelist)
             self.assertIn("word/styles.xml", namelist)
             self.assertIn("word/_rels/document.xml.rels", namelist)
+            self.assertIn("word/media/image1.png", namelist)
 
-            # Parse document.xml to verify valid XML
-            doc_xml = zf.read("word/document.xml")
-            root = ET.fromstring(doc_xml)
+            # Parse document.xml to verify valid XML and rich text
+            doc_xml = zf.read("word/document.xml").decode("utf-8")
+            root = ET.fromstring(doc_xml.encode("utf-8"))
             self.assertIsNotNone(root)
-            self.assertIn("Dose Response Data", doc_xml.decode("utf-8"))
+            self.assertIn("Dose Response Data", doc_xml)
+            self.assertIn("<w:b/>", doc_xml)
+            self.assertIn("<w:i/>", doc_xml)
+            self.assertIn("<w:u ", doc_xml)
+            self.assertIn("Liberation Serif", doc_xml)
+            self.assertIn("ListBullet", doc_xml)
 
     def test_odt_export_validity(self) -> None:
-        """OpenDocument Text (.odt) builds valid OASIS package with content.xml and manifest."""
+        """OpenDocument Text (.odt) builds valid OASIS package with content.xml, styles, and graph."""
         out_path = os.path.join(self.tmp_dir, "report.odt")
         exporter = OfficeExporter(self.doc)
         exporter.export(out_path, fmt=ExportFormat.ODT)
@@ -263,15 +274,21 @@ class TestOfficeExportEngine(unittest.TestCase):
             self.assertIn("META-INF/manifest.xml", namelist)
             self.assertIn("content.xml", namelist)
             self.assertIn("styles.xml", namelist)
+            self.assertIn("Pictures/image1.png", namelist)
 
-            # Parse content.xml
-            content_xml = zf.read("content.xml")
-            root = ET.fromstring(content_xml)
+            # Parse content.xml and styles.xml
+            content_xml = zf.read("content.xml").decode("utf-8")
+            styles_xml = zf.read("styles.xml").decode("utf-8")
+            root = ET.fromstring(content_xml.encode("utf-8"))
             self.assertIsNotNone(root)
-            self.assertIn("Dose Response Data", content_xml.decode("utf-8"))
+            self.assertIn("Dose Response Data", content_xml)
+            self.assertIn('text:style-name="Bold"', content_xml)
+            self.assertIn('text:style-name="Italic"', content_xml)
+            self.assertIn("<text:list>", content_xml)
+            self.assertIn('style:name="Bold"', styles_xml)
 
     def test_xlsx_export_validity(self) -> None:
-        """Excel workbook (.xlsx) builds separate worksheets for data and results."""
+        """Excel workbook (.xlsx) builds separate worksheets for data, results, and embedded graphs."""
         out_path = os.path.join(self.tmp_dir, "tables.xlsx")
         exporter = OfficeExporter(self.doc)
         exporter.export(out_path, fmt=ExportFormat.XLSX)
@@ -284,15 +301,18 @@ class TestOfficeExportEngine(unittest.TestCase):
             self.assertIn("[Content_Types].xml", namelist)
             self.assertIn("xl/workbook.xml", namelist)
             self.assertIn("xl/worksheets/sheet1.xml", namelist)
+            self.assertIn("xl/media/image1.png", namelist)
+            self.assertIn("xl/drawings/drawing1.xml", namelist)
 
             # Parse workbook.xml
-            wb_xml = zf.read("xl/workbook.xml")
-            root = ET.fromstring(wb_xml)
+            wb_xml = zf.read("xl/workbook.xml").decode("utf-8")
+            root = ET.fromstring(wb_xml.encode("utf-8"))
             self.assertIsNotNone(root)
-            self.assertIn("Dose Response Data", wb_xml.decode("utf-8"))
+            self.assertIn("Dose Response Data", wb_xml)
+            self.assertIn("Graph_Dose Response Curve", wb_xml)
 
     def test_ods_export_validity(self) -> None:
-        """OpenDocument Spreadsheet (.ods) builds valid OASIS spreadsheet package."""
+        """OpenDocument Spreadsheet (.ods) builds valid OASIS spreadsheet package with graphs."""
         out_path = os.path.join(self.tmp_dir, "tables.ods")
         exporter = OfficeExporter(self.doc)
         exporter.export(out_path, fmt=ExportFormat.ODS)
@@ -306,11 +326,13 @@ class TestOfficeExportEngine(unittest.TestCase):
             self.assertEqual(zf.read("mimetype").decode("utf-8"), "application/vnd.oasis.opendocument.spreadsheet")
             self.assertIn("META-INF/manifest.xml", namelist)
             self.assertIn("content.xml", namelist)
+            self.assertIn("Pictures/image1.png", namelist)
 
             # Parse content.xml
-            content_xml = zf.read("content.xml")
-            root = ET.fromstring(content_xml)
+            content_xml = zf.read("content.xml").decode("utf-8")
+            root = ET.fromstring(content_xml.encode("utf-8"))
             self.assertIsNotNone(root)
+            self.assertIn("Graph_Dose Response Curve", content_xml)
 
     def test_pdf_export_validity(self) -> None:
         """PDF report renders publication layout with %PDF- header."""
@@ -474,10 +496,12 @@ class TestProjectNavigatorContextMenu(unittest.TestCase):
         # Trigger adding a sheet via action_add_table
         self.window.action_add_table(TableType.XY)
 
-        # Verify new sheet was added and selected
+        # Verify new sheet was added and selected in both document, central stack, and navigator
         new_count = len(self.window.document.get_sheets_by_type(SheetType.DATA))
         self.assertEqual(new_count, initial_sheet_count + 1)
         self.assertEqual(self.window.center_stack.currentWidget(), self.window.spreadsheet_view)
+        self.assertIsNotNone(nav.currentItem())
+        self.assertEqual(nav.currentItem().data(0, Qt.ItemDataRole.UserRole), self.window.document.active_sheet_id)
 
     def test_right_click_child_data_sheet_has_actions(self) -> None:
         """Right-clicking an existing data sheet provides Add Sheet, Rename, and Delete."""

@@ -131,6 +131,9 @@ class InfoSheet(BaseSheet):
         self.protocol_sop_number: str = protocol_sop_number
 
         self.constants: Dict[str, str] = dict(constants or {})
+        for attr, label in GLP_FIELD_DEFINITIONS:
+            if not getattr(self, attr, "") and label in self.constants:
+                setattr(self, attr, self.constants[label])
         self._sync_constants_from_fields()
 
     def _sync_constants_from_fields(self) -> None:
@@ -185,8 +188,8 @@ class InfoSheet(BaseSheet):
         sheet = cls(
             sheet_id=data["sheet_id"],
             title=data.get("title", "Info"),
-            notes=data.get("notes", ""),
-            notes_html=data.get("notes_html", ""),
+            notes=data.get("notes", "") or data.get("notesText", ""),
+            notes_html=data.get("notes_html", "") or data.get("notesHtml", ""),
             experiment_title=read_val("experiment_title", "Experiment Title"),
             project_study_id=read_val("project_study_id", "Project / Study ID"),
             author_scientist=read_val("author_scientist", "Author / Scientist"),

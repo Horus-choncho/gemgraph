@@ -484,6 +484,7 @@ class MainWindow(QMainWindow):
         if not sheet:
             return
         self.document.active_sheet_id = sheet_id
+        self.navigator.select_sheet(sheet_id)
 
         if sheet.sheet_type == SheetType.DATA:
             data_sheet: DataSheet = sheet  # type: ignore
@@ -906,12 +907,13 @@ class MainWindow(QMainWindow):
             )
         else:
             sheet = self.document.create_data_sheet(table_type=table_type)
+        self.document.active_sheet_id = sheet.sheet_id
         self.navigator.populate(self.document)
         self.on_sheet_selected(sheet.sheet_id)
 
-
     def action_add_info(self) -> None:
         sheet = self.document.create_info_sheet()
+        self.document.active_sheet_id = sheet.sheet_id
         self.navigator.populate(self.document)
         self.on_sheet_selected(sheet.sheet_id)
 
@@ -919,6 +921,7 @@ class MainWindow(QMainWindow):
         active_sheet = self.document.get_sheet(self.document.active_sheet_id or "")
         src_id = active_sheet.sheet_id if isinstance(active_sheet, DataSheet) else ""
         sheet = self.document.create_graph_sheet(source_sheet_id=src_id)
+        self.document.active_sheet_id = sheet.sheet_id
         self.navigator.populate(self.document)
         self.on_sheet_selected(sheet.sheet_id)
 

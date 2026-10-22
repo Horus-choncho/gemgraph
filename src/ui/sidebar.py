@@ -100,6 +100,22 @@ class PrismNavigator(QTreeWidget):
         if sheet_id:
             self.sheetSelected.emit(sheet_id)
 
+    def select_sheet(self, sheet_id: str) -> bool:
+        """Finds, expands, and selects the tree item corresponding to sheet_id."""
+        def _search(item: QTreeWidgetItem) -> bool:
+            if item.data(0, Qt.ItemDataRole.UserRole) == sheet_id:
+                self.setCurrentItem(item)
+                return True
+            for i in range(item.childCount()):
+                if _search(item.child(i)):
+                    return True
+            return False
+
+        for i in range(self.topLevelItemCount()):
+            if _search(self.topLevelItem(i)):
+                return True
+        return False
+
     def contextMenuEvent(self, event) -> None:
         if self.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu:
             self.customContextMenuRequested.emit(event.pos())
