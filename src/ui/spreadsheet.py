@@ -141,14 +141,16 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
         except ValueError:
             pass
 
-        # 2. Elapsed time: e.g. "HH:MM:SS" or "MM:SS"
+        # 2. Elapsed time: e.g. "HH:MM:SS" or "MM:SS" or "-01:30"
         if ":" in s:
-            parts = s.split(":")
+            sign = -1.0 if s.startswith("-") else 1.0
+            clean_s = s.lstrip("+-")
+            parts = clean_s.split(":")
             try:
                 if len(parts) == 2:  # MM:SS
-                    return float(parts[0]) * 60.0 + float(parts[1])
+                    return sign * (float(parts[0]) * 60.0 + float(parts[1]))
                 elif len(parts) == 3:  # HH:MM:SS
-                    return float(parts[0]) * 3600.0 + float(parts[1]) * 60.0 + float(parts[2])
+                    return sign * (float(parts[0]) * 3600.0 + float(parts[1]) * 60.0 + float(parts[2]))
             except ValueError:
                 pass
 

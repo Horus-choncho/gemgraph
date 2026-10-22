@@ -185,9 +185,39 @@ class ScientificPlotCanvas(QWidget):
                 pass
 
     def contextMenuEvent(self, event) -> None:
-        """Shows context menu with Clear Analysis options."""
+        """Shows contextual formatting and analysis options."""
+        menu = QMenu(self)
+
         self._rebuild_analysis_menu()
-        self.analysis_menu.exec(event.globalPos())
+        menu.addMenu(self.analysis_menu)
+
+        menu.addSeparator()
+
+        if self.current_table and self.current_table.y_group_titles:
+            series_menu = menu.addMenu("Series Representation")
+            for g_title in self.current_table.y_group_titles:
+                sub = series_menu.addMenu(f"{g_title}")
+                act_bars = sub.addAction("📊 Spikes / Columns")
+                act_scatter = sub.addAction("⚪ Scatter Points")
+                act_line = sub.addAction("📈 Connected Line")
+                act_bars.triggered.connect(lambda chk=False, t=g_title: self.set_series_representation(t, "spikes"))
+                act_scatter.triggered.connect(lambda chk=False, t=g_title: self.set_series_representation(t, "scatter"))
+                act_line.triggered.connect(lambda chk=False, t=g_title: self.set_series_representation(t, "line"))
+
+        err_menu = menu.addMenu("Error Whisker Style")
+        for style_name in ("SEM", "SD", "95% CI"):
+            act = err_menu.addAction(f"Mean ± {style_name}")
+            act.triggered.connect(lambda chk=False, s=style_name: self.set_error_style(s))
+
+        menu.addSeparator()
+        if self.is_grayscale_mode:
+            pal_act = menu.addAction("🎨 Switch to Color Palette")
+            pal_act.triggered.connect(lambda: self.set_grayscale_mode(False))
+        else:
+            pal_act = menu.addAction("📄 Switch to Journal Grayscale")
+            pal_act.triggered.connect(lambda: self.set_grayscale_mode(True))
+
+        menu.exec(event.globalPos())
 
     def _setup_plot_style(self) -> None:
         """Configures publication-grade white-background scientific styling with outward ticks."""
@@ -646,7 +676,10 @@ class ScientificPlotCanvas(QWidget):
                 self.plot_widget.addItem(err)
 
             # Scatter points
-            jitter = (np.random.RandomState(42 + pos).rand(len(vals)) - 0.5) * 0.25
+            if len(vals) > 1:
+                jitter = (np.random.RandomState(42 + pos).rand(len(vals)) - 0.5) * 0.25
+            else:
+                jitter = np.zeros(len(vals))
             scatter = pg.ScatterPlotItem(
                 x=pos + jitter,
                 y=vals,
@@ -853,8 +886,15 @@ class ScientificPlotCanvas(QWidget):
                 bar_brush = pg.mkBrush(color.red(), color.green(), color.blue(), 140)
 
             if rep_style in ("bars", "columns", "spikes"):
-                if len(xs) > 1:
-                    diffs = np.diff(np.sort(np.unique(xs)))
+                unique_xs = np.unique(xs)
+                bar_ys = []
+                for ux in unique_xs:
+                    matching_ys = ys[xs == ux]
+                    bar_ys.append(float(np.mean(matching_ys)))
+                bar_ys = np.array(bar_ys)
+
+                if len(unique_xs) > 1:
+                    diffs = np.diff(np.sort(unique_xs))
                     bar_w = float(np.min(diffs)) * 0.4 if len(diffs) > 0 else 0.5
                 else:
                     bar_w = 0.5
@@ -862,8 +902,8 @@ class ScientificPlotCanvas(QWidget):
                     bar_w = 0.5
 
                 bar_item = pg.BarGraphItem(
-                    x=xs,
-                    height=ys,
+                    x=unique_xs,
+                    height=bar_ys,
                     width=bar_w,
                     brush=bar_brush,
                     pen=bar_pen,
@@ -888,6 +928,31 @@ class ScientificPlotCanvas(QWidget):
                 scatter.opts["size"] = 8
                 scatter.opts["name"] = g_title
                 self.plot_widget.addItem(scatter)
+
+                # Continuous regression curve overlay for scatter dataset in XY_SPIKES_CURVE
+                curve_id = f"auto_curve_{col_idx}"
+                if (
+                    curve_id not in self.removed_layer_ids
+                    and len(xs) >= 3
+                    and not self.custom_analysis_layers
+                    and self.current_result is None
+                ):
+                    try:
+                        x_dense = np.linspace(np.min(xs), np.max(xs), 200)
+                        poly_deg = min(2, len(np.unique(xs)) - 1)
+                        if poly_deg >= 1:
+                            coeffs = np.polyfit(xs, ys, deg=poly_deg)
+                            y_dense = np.polyval(coeffs, x_dense)
+                            curve_pen = pg.mkPen(color=QColor(20, 20, 20) if is_grayscale else color.darker(160), width=2.0)
+                            curve_item = self.plot_widget.plot(
+                                x_dense, y_dense, pen=curve_pen, name=f"{g_title} Fit"
+                            )
+                            self.analysis_layers[curve_id] = {
+                                "name": f"{g_title} Fit",
+                                "plot_items": [curve_item],
+                            }
+                    except Exception:
+                        pass
 
         # Continuous fitted curve overlays
         self._render_analysis_overlays()

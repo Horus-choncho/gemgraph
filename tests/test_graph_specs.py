@@ -283,6 +283,131 @@ class TestAnalysisLayerRegistryAndClearing(unittest.TestCase):
         scatters_after = [it for it in canvas.plot_widget.plotItem.items if isinstance(it, pg.ScatterPlotItem)]
         self.assertGreater(len(scatters_after), 0)
 
+    def test_trailing_x_and_subsequent_y_insertion(self):
+        """Verifies that inserting a trailing X column and subsequent Y column associates Y with the trailing X."""
+        table = DataTable(table_id="tbl_trail", title="Trailing X Test", table_type=TableType.XY, num_rows=3, num_replicates=1)
+        # Sequence: X1, Y_A, Y_B
+        table.y_group_titles = ["Group A", "Group B"]
+        table.column_order = [("X", 0), ("Y", 0), ("Y", 1)]
+
+        # Insert trailing X column at the right of last column (visual index 2)
+        cols_before = table.get_columns()
+        x2_idx = table.insert_x_column_at(len(cols_before) - 1, position="right", title="X2 (Post)")
+        self.assertEqual(table.column_order[-1], ("X", 1))
+
+        # Insert new Y column to the right of trailing X column
+        cols_mid = table.get_columns()
+        trailing_x_visual_idx = len(cols_mid) - 1
+        self.assertEqual(cols_mid[trailing_x_visual_idx].role, "X")
+        self.assertEqual(cols_mid[trailing_x_visual_idx].group_idx, 1)
+
+        table.insert_column(trailing_x_visual_idx, position="right", title="Group C")
+        self.assertEqual(table.column_order[-1], ("Y", 2))
+        self.assertEqual(table.column_order[-2], ("X", 1))
+
+        # Check association: Group C (group 2) must associate with X2 (group 1)
+        self.assertEqual(table.get_y_associated_x_idx(2), 1)
+
+    def test_delete_x_column_in_column_table(self):
+        """Verifies adding and deleting an optional X column in a Column table."""
+        table = DataTable(table_id="tbl_col_x", title="Column X Test", table_type=TableType.COLUMN, num_rows=3)
+        self.assertEqual(table.get_x_column_count(), 0)
+
+        # Add X column
+        x_idx = table.add_x_column(title="X_Optional")
+        self.assertEqual(table.get_x_column_count(), 1)
+        self.assertIn(("X", 0), table.column_order)
+
+        # Delete X column
+        cols = table.get_columns()
+        x_col_idx = [i for i, c in enumerate(cols) if c.role == "X"][0]
+        deleted = table.delete_column(x_col_idx)
+        self.assertTrue(deleted)
+        self.assertEqual(table.get_x_column_count(), 0)
+        self.assertNotIn(("X", 0), table.column_order)
+
+    def test_pzfx_grouped_table_column_count_fidelity(self):
+        """Verifies 1661_Points_and_grouped_bars.pzfx imports all 4 Y columns into column_order and spreadsheet."""
+        doc = PrismXMLIO.import_xml("docs/graph_specs/1661_Points_and_grouped_bars.pzfx")
+        sheet = list(doc.sheets.values())[0]
+        table = sheet.table
+        self.assertEqual(len(table.y_group_titles), 4)
+        self.assertEqual(len(table.column_order), 4)
+        self.assertEqual(len(table.get_columns()), 4)
+
+        model = ScientificSpreadsheetModel(table)
+        self.assertEqual(model.columnCount(), 4)
+
+    def test_pzf_loading_and_graph_types(self):
+        """Verifies binary .pzf projects from docs/graph_specs/ are parsed by PrismIO.load."""
+        from src.io.prism_io import PrismIO
+
+        # 1. bars_and_points_overlaying_two_graphs.pzf
+        doc1 = PrismIO.load("docs/graph_specs/bars_and_points_overlaying_two_graphs.pzf")
+        t1 = doc1.sheets["data_1"].table
+        self.assertEqual(t1.table_type, TableType.COLUMN)
+        self.assertEqual(t1.y_group_titles, ["Cats", "dogs", "mice"])
+        self.assertEqual(t1.num_rows, 6)
+        self.assertEqual(doc1.sheets["graph_1"].graph_type, GraphType.BARS_AND_POINTS)
+
+        # 2. bars_and_points_2.pzf
+        doc2 = PrismIO.load("docs/graph_specs/bars_and_points_2.pzf")
+        t2 = doc2.sheets["data_1"].table
+        self.assertEqual(t2.table_type, TableType.XY)
+        self.assertEqual(t2.x_title, "Seconds")
+        self.assertEqual(t2.y_group_titles, ["Plasma drug level", "Enzyme activity"])
+        self.assertEqual(doc2.sheets["graph_1"].graph_type, GraphType.XY_SPIKES_CURVE)
+
+        # 3. BarsandPointsStacked.pzf
+        doc3 = PrismIO.load("docs/graph_specs/BarsandPointsStacked.pzf")
+        t3 = doc3.sheets["data_1"].table
+        self.assertEqual(t3.table_type, TableType.XY)
+        self.assertEqual(t3.x_title, "Seconds")
+        self.assertIn("Plasma drug level", t3.y_group_titles)
+        self.assertIn("Enzyme activity", t3.y_group_titles)
+
+    def test_negative_elapsed_time_parsing(self):
+        """Verifies signed negative elapsed time parsing in spreadsheet model."""
+        self.assertEqual(ScientificSpreadsheetModel._parse_x_value("-01:30"), -90.0)
+        self.assertEqual(ScientificSpreadsheetModel._parse_x_value("-00:45"), -45.0)
+        self.assertEqual(ScientificSpreadsheetModel._parse_x_value("-01:02:03"), -3723.0)
+
+    def test_multi_x_xml_export_and_import_roundtrip(self):
+        """Verifies multi-X XML serialization and deserialization preserves column order and all X data."""
+        import tempfile
+        table = DataTable(table_id="tbl_mx_xml", title="Multi-X XML Test", table_type=TableType.XY, num_rows=3, num_replicates=1)
+        table.x_columns[0]["data"] = np.array([1.0, 2.0, 3.0])
+        table.y_group_titles = ["Group A", "Group B"]
+        table.y_data[0, :, 0] = [10.0, 20.0, 30.0]
+        table.y_data[1, :, 0] = [40.0, 50.0, 60.0]
+
+        # Add second X column and arrange: X1, Group A, X2, Group B
+        table.add_x_column(title="X2 (Dose)")
+        table.x_columns[1]["data"] = np.array([0.1, 0.2, 0.3])
+        table.column_order = [("X", 0), ("Y", 0), ("X", 1), ("Y", 1)]
+
+        doc = PrismDocument(title="Doc MX")
+        doc.add_sheet(DataSheet(sheet_id="d1", title="Data Sheet 1", table=table))
+
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            PrismXMLIO.export_xml(doc, tmp_path)
+            loaded_doc = PrismXMLIO.import_xml(tmp_path)
+            loaded_table = loaded_doc.sheets["d1"].table
+
+            self.assertEqual(loaded_table.get_x_column_count(), 2)
+            self.assertEqual(loaded_table.column_order, [("X", 0), ("Y", 0), ("X", 1), ("Y", 1)])
+            np.testing.assert_array_equal(loaded_table.x_columns[0]["data"], [1.0, 2.0, 3.0])
+            np.testing.assert_array_equal(loaded_table.x_columns[1]["data"], [0.1, 0.2, 0.3])
+            np.testing.assert_array_equal(loaded_table.y_data[0, :, 0], [10.0, 20.0, 30.0])
+            np.testing.assert_array_equal(loaded_table.y_data[1, :, 0], [40.0, 50.0, 60.0])
+        finally:
+            import os
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
 
 if __name__ == "__main__":
     unittest.main()

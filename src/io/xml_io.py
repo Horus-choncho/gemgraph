@@ -54,34 +54,35 @@ class PrismXMLIO:
                 d = ET.SubElement(subcol, "d")
                 d.text = rt
 
-            # X Column
-            if table.x_data is not None:
-                x_col = ET.SubElement(t_elem, "XColumn")
-                x_title = ET.SubElement(x_col, "Title")
-                x_title.text = table.x_title or "X"
-                x_sub = ET.SubElement(x_col, "Subcolumn")
-                for r in range(table.num_rows):
-                    val = table.x_data[r]
-                    d = ET.SubElement(x_sub, "d")
-                    if table.is_excluded(r, "X", 0, 0):
-                        d.set("Excluded", "1")
-                    if not np.isnan(val):
-                        d.text = f"{val:.8g}"
-
-            # Y Columns
-            for g_idx, g_title in enumerate(table.y_group_titles):
-                y_col = ET.SubElement(t_elem, "YColumn")
-                y_title = ET.SubElement(y_col, "Title")
-                y_title.text = g_title
-                for s_idx in range(table.num_replicates):
-                    y_sub = ET.SubElement(y_col, "Subcolumn")
+            # Export columns in visual column_order sequence
+            for block_type, b_idx in table.column_order:
+                if block_type == "X" and 0 <= b_idx < len(table.x_columns):
+                    x_col_dict = table.x_columns[b_idx]
+                    x_col = ET.SubElement(t_elem, "XColumn")
+                    x_title = ET.SubElement(x_col, "Title")
+                    x_title.text = x_col_dict["title"] or f"X{b_idx + 1}"
+                    x_sub = ET.SubElement(x_col, "Subcolumn")
                     for r in range(table.num_rows):
-                        val = table.y_data[g_idx, r, s_idx]
-                        d = ET.SubElement(y_sub, "d")
-                        if table.is_excluded(r, "Y", g_idx, s_idx):
+                        val = x_col_dict["data"][r]
+                        d = ET.SubElement(x_sub, "d")
+                        if table.is_excluded(r, "X", b_idx, 0):
                             d.set("Excluded", "1")
                         if not np.isnan(val):
                             d.text = f"{val:.8g}"
+                elif block_type == "Y" and 0 <= b_idx < len(table.y_group_titles):
+                    g_title = table.y_group_titles[b_idx]
+                    y_col = ET.SubElement(t_elem, "YColumn")
+                    y_title = ET.SubElement(y_col, "Title")
+                    y_title.text = g_title
+                    for s_idx in range(table.num_replicates):
+                        y_sub = ET.SubElement(y_col, "Subcolumn")
+                        for r in range(table.num_rows):
+                            val = table.y_data[b_idx, r, s_idx]
+                            d = ET.SubElement(y_sub, "d")
+                            if table.is_excluded(r, "Y", b_idx, s_idx):
+                                d.set("Excluded", "1")
+                            if not np.isnan(val):
+                                d.text = f"{val:.8g}"
 
         tree = ET.ElementTree(root)
         ET.indent(tree, space="  ")
@@ -179,7 +180,7 @@ class PrismXMLIO:
             for g in y_subcol_data:
                 for rep in g:
                     num_rows = max(num_rows, len(rep))
-            num_rows = max(num_rows, 10)
+            num_rows = max(num_rows, 1) if num_rows > 0 else 10
 
             # Create table
             table = DataTable(
@@ -219,6 +220,23 @@ class PrismXMLIO:
                                 table.y_data[g_idx, r_idx, s_idx] = val
                                 if ex:
                                     table.set_excluded(r_idx, "Y", g_idx, s_idx, True)
+
+            col_order = []
+            x_c = 0
+            y_c = 0
+            for child in t_elem:
+                if child.tag == "XColumn":
+                    col_order.append(("X", x_c))
+                    x_c += 1
+                elif child.tag == "YColumn":
+                    col_order.append(("Y", y_c))
+                    y_c += 1
+            if not col_order:
+                for x_idx in range(len(table.x_columns)):
+                    col_order.append(("X", x_idx))
+                for y_idx in range(len(table.y_group_titles)):
+                    col_order.append(("Y", y_idx))
+            table.column_order = col_order
 
             sheet = DataSheet(sheet_id=t_id, title=title, table=table)
             doc.add_sheet(sheet)

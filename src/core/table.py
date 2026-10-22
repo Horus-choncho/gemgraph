@@ -88,9 +88,15 @@ class ColumnInfo:
         self.associated_x_idx = associated_x_idx
 
     @property
+    def replicate_index(self) -> int:
+        return self.subcol_idx
+
+    @property
     def display_header(self) -> str:
         if self.role == "X":
-            return self.title if self.title else f"X{self.group_idx + 1}"
+            if not self.title or self.title == "X":
+                return f"X{self.group_idx + 1}"
+            return self.title
         if self.subcol_idx > 0 or self.title.startswith("Group "):
             return f"{self.title} [Y{self.subcol_idx + 1}]"
         return self.title
@@ -434,7 +440,7 @@ class DataTable:
         self.nested_subgroup_titles = new_nested
         return True
 
-    def insert_y_group(self, group_idx: int, title: Optional[str] = None) -> int:
+    def insert_y_group(self, group_idx: int, title: Optional[str] = None, order_pos: Optional[int] = None) -> int:
         """Inserts a new Y column group at group_idx, shifting subsequent groups and masks."""
         group_idx = max(0, min(group_idx, len(self.y_group_titles)))
         if not title:
@@ -455,18 +461,22 @@ class DataTable:
         else:
             self.y_data = np.insert(self.y_data, group_idx, new_group_data[0], axis=0)
 
-        # Update column_order: find where to insert
-        target_pos = len(self.column_order)
-        for i, (b_type, b_idx) in enumerate(self.column_order):
-            if b_type == "Y" and b_idx == group_idx:
-                target_pos = i
-                break
+        # Update column_order: shift Y indices >= group_idx
         new_order = []
         for b_type, b_idx in self.column_order:
             if b_type == "Y" and b_idx >= group_idx:
                 new_order.append(("Y", b_idx + 1))
             else:
                 new_order.append((b_type, b_idx))
+
+        if order_pos is not None:
+            target_pos = max(0, min(order_pos, len(new_order)))
+        else:
+            target_pos = len(new_order)
+            for i, (b_type, b_idx) in enumerate(new_order):
+                if b_type == "Y" and b_idx == group_idx + 1:
+                    target_pos = i
+                    break
         new_order.insert(target_pos, ("Y", group_idx))
         self.column_order = new_order
 
@@ -541,7 +551,7 @@ class DataTable:
         """Removes X column at x_idx, updating column_order, masks, and colors."""
         if x_idx < 0 or x_idx >= len(self.x_columns):
             return False
-        if len(self.x_columns) <= 1:
+        if len(self.x_columns) <= 1 and self.table_type in (TableType.XY, TableType.SURVIVAL):
             return False
 
         del self.x_columns[x_idx]
@@ -702,18 +712,23 @@ class DataTable:
         col_idx = max(0, min(col_idx, len(cols) - 1))
         target_col = cols[col_idx]
 
+        block_pos = 0
+        for i, (b_type, b_idx) in enumerate(self.column_order):
+            if b_type == target_col.role and b_idx == target_col.group_idx:
+                block_pos = i
+                break
+
+        order_insert_pos = block_pos + 1 if position == "right" else block_pos
+
         if target_col.role == "Y":
             target_g = target_col.group_idx + 1 if position == "right" else target_col.group_idx
         else:
-            # If target is X column
             target_g = 0
-            for b_type, b_idx in self.column_order:
-                if b_type == "Y":
-                    target_g = b_idx
-                    break
-            if position == "right":
-                target_g = 0
-        return self.insert_y_group(target_g, title=title)
+            for i in range(order_insert_pos):
+                if i < len(self.column_order) and self.column_order[i][0] == "Y":
+                    target_g = self.column_order[i][1] + 1
+
+        return self.insert_y_group(target_g, title=title, order_pos=order_insert_pos)
 
     def delete_column(self, col_idx: int) -> bool:
         """Deletes column at col_idx. Returns False if operation disallowed."""
@@ -726,7 +741,7 @@ class DataTable:
 
         target_col = cols[col_idx]
         if target_col.role == "X":
-            if len(self.x_columns) <= 1:
+            if len(self.x_columns) <= 1 and self.table_type in (TableType.XY, TableType.SURVIVAL):
                 return False
             return self.remove_x_column(target_col.group_idx)
         return self.remove_y_group(target_col.group_idx)
@@ -849,6 +864,13 @@ class DataTable:
                     self.y_data[g_idx, :num_rows, 0] = pd.to_numeric(
                         df[c_name].iloc[:num_rows], errors="coerce"
                     ).to_numpy()
+
+        new_order = []
+        if self.x_columns:
+            new_order.append(("X", 0))
+        for g_idx in range(len(self.y_group_titles)):
+            new_order.append(("Y", g_idx))
+        self.column_order = new_order
 
     @classmethod
     def from_dataframe(

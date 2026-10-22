@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from src.core.document import PrismDocument
-from src.core.sheet import BaseSheet, DataSheet, GraphSheet, InfoSheet, ResultSheet, SheetType
+from src.core.sheet import BaseSheet, DataSheet, GraphSheet, GraphType, InfoSheet, ResultSheet, SheetType
 from src.core.table import DataTable, TableType, XFormat, YFormat
 
 
@@ -280,6 +280,8 @@ class PrismIO:
         if ext in (".pzfx", ".xml", ".pzm"):
             from src.io.xml_io import PrismXMLIO
             return PrismXMLIO.import_xml(file_path)
+        if ext == ".pzf":
+            return cls.load_pzf(file_path)
 
         if zipfile.is_zipfile(file_path):
             with zipfile.ZipFile(file_path, mode="r") as zf:
@@ -293,12 +295,137 @@ class PrismIO:
                 else:
                     return cls._load_prism10(zf, manifest)
 
+        # Fallback: check binary header for pzf
+        try:
+            with open(file_path, "rb") as f:
+                header = f.read(8)
+            if header.startswith(b"PCFF"):
+                return cls.load_pzf(file_path)
+        except Exception:
+            pass
+
         # Fallback: try XML or CSV
         try:
             from src.io.xml_io import PrismXMLIO
             return PrismXMLIO.import_xml(file_path)
         except Exception:
             return cls.load_csv(file_path)
+
+    @classmethod
+    def load_pzf(cls, file_path: str) -> PrismDocument:
+        """Parses a legacy GraphPad Prism binary project (.pzf) into a PrismDocument."""
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        with open(file_path, "rb") as f:
+            data = f.read()
+
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        doc = PrismDocument(title=base_name or "Prism PZF Project")
+
+        pattern = re.compile(rb'\t\x00(..)\x00\x00([A-Za-z0-9_ \-]{1,50})\x00\x10\x00(.)\x00\x00\x00\x00\x00(....)')
+        cols = []
+        seen = set()
+        for m in pattern.finditer(data):
+            title = m.group(2).decode("latin1").strip()
+            num_rows = struct.unpack("<I", m.group(4))[0]
+            key = (title, num_rows)
+            if key in seen or num_rows == 0 or num_rows > 10000:
+                continue
+            seen.add(key)
+            p = m.end()
+            vals = []
+            for _ in range(num_rows):
+                if p + 12 > len(data):
+                    break
+                val = struct.unpack("<f", data[p+8:p+12])[0]
+                vals.append(float(val))
+                p += 12
+            if len(vals) == num_rows:
+                cols.append((title, vals))
+
+        if not cols:
+            raise ValueError(f"Could not extract table data from {file_path}")
+
+        first_title_lower = cols[0][0].lower()
+        is_xy = any(k in first_title_lower for k in ("x", "second", "time", "day", "dose", "conc"))
+
+        if is_xy:
+            x_title, x_vals = cols[0]
+            num_rows = len(x_vals)
+
+            candidate_y = []
+            for title, vals in cols[1:]:
+                t_lower = title.lower()
+                if any(k in t_lower for k in ("x", "second", "time", "day", "dose", "conc")):
+                    break
+                if len(vals) != num_rows and (len(vals) % num_rows != 0 or len(vals) == 0):
+                    break
+                candidate_y.append((title, vals))
+
+            y_cols = candidate_y
+            replicates = 1
+            if y_cols and len(y_cols[0][1]) > num_rows and len(y_cols[0][1]) % num_rows == 0:
+                replicates = len(y_cols[0][1]) // num_rows
+
+            table = DataTable(
+                table_id="table_1",
+                title=base_name or "Data 1",
+                table_type=TableType.XY,
+                num_rows=num_rows,
+                num_replicates=replicates,
+                y_group_titles=[c[0] for c in y_cols] if y_cols else ["Group A"],
+            )
+            table.x_columns = [{"title": x_title, "data": np.array(x_vals, dtype=np.float64)}]
+            table.column_order = [("X", 0)] + [("Y", i) for i in range(len(y_cols))]
+
+            if y_cols:
+                table.y_data = np.full((len(y_cols), num_rows, replicates), np.nan, dtype=np.float64)
+                for g_idx, (_, vals) in enumerate(y_cols):
+                    for r in range(num_rows):
+                        for s in range(replicates):
+                            val_idx = r * replicates + s
+                            if val_idx < len(vals):
+                                table.y_data[g_idx, r, s] = vals[val_idx]
+
+            graph_type = GraphType.XY_SPIKES_CURVE
+        else:
+            first_len = len(cols[0][1])
+            candidate_y = []
+            for title, vals in cols:
+                if len(vals) != first_len:
+                    break
+                candidate_y.append((title, vals))
+            y_cols = candidate_y
+            num_rows = first_len
+            table = DataTable(
+                table_id="table_1",
+                title=base_name or "Data 1",
+                table_type=TableType.COLUMN,
+                num_rows=num_rows,
+                num_replicates=1,
+                y_group_titles=[c[0] for c in y_cols],
+            )
+            table.column_order = [("Y", i) for i in range(len(y_cols))]
+            table.y_data = np.full((len(y_cols), num_rows, 1), np.nan, dtype=np.float64)
+            for g_idx, (_, vals) in enumerate(y_cols):
+                for r, v in enumerate(vals):
+                    table.y_data[g_idx, r, 0] = v
+
+            graph_type = GraphType.BARS_AND_POINTS
+
+        data_sheet = DataSheet(sheet_id="data_1", title=base_name or "Data 1", table=table)
+        doc.add_sheet(data_sheet)
+
+        graph_sheet = GraphSheet(
+            sheet_id="graph_1",
+            title=f"Graph of {base_name or 'Data 1'}",
+            graph_type=graph_type,
+            source_sheet_id="data_1",
+        )
+        doc.add_sheet(graph_sheet)
+        doc.active_sheet_id = "data_1"
+        return doc
 
     @classmethod
     def load_csv(cls, file_path: str) -> PrismDocument:
