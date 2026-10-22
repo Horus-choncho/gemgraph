@@ -70,6 +70,44 @@ class YFormat(enum.Enum):
     TEXT = "text"
 
 
+class ColumnInfo:
+    """Descriptor for an individual visual column in a DataTable."""
+
+    def __init__(
+        self,
+        role: str,
+        group_idx: int,
+        subcol_idx: int = 0,
+        title: str = "",
+        associated_x_idx: int = 0,
+    ) -> None:
+        self.role = role  # "X" or "Y"
+        self.group_idx = group_idx
+        self.subcol_idx = subcol_idx
+        self.title = title
+        self.associated_x_idx = associated_x_idx
+
+    @property
+    def display_header(self) -> str:
+        if self.role == "X":
+            return self.title if self.title else f"X{self.group_idx + 1}"
+        if self.subcol_idx > 0 or self.title.startswith("Group "):
+            return f"{self.title} [Y{self.subcol_idx + 1}]"
+        return self.title
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "role": self.role,
+            "group_idx": self.group_idx,
+            "subcol_idx": self.subcol_idx,
+            "title": self.title,
+            "associated_x_idx": self.associated_x_idx,
+        }
+
+    def __repr__(self) -> str:
+        return f"ColumnInfo(role={self.role}, group={self.group_idx}, subcol={self.subcol_idx}, title='{self.title}')"
+
+
 class DataTable:
     """
     Scientific data table supporting replicates, subcolumns, missing values,
@@ -98,13 +136,16 @@ class DataTable:
         # Row titles (e.g., sample names or categories)
         self.row_titles: List[str] = ["" for _ in range(self.num_rows)]
 
-        # X column data
+        self._legacy_x_title: str = ""
+        # Multi-X column storage: list of dicts {"title": str, "data": np.ndarray}
+        self.x_columns: List[Dict[str, Any]] = []
         if self.table_type in (TableType.XY, TableType.SURVIVAL):
-            self.x_title = "Elapsed Time (days)" if self.table_type == TableType.SURVIVAL else "X"
-            self.x_data = np.full(self.num_rows, np.nan, dtype=np.float64)
-        else:
-            self.x_title = ""
-            self.x_data = None
+            init_x_title = "Elapsed Time (days)" if self.table_type == TableType.SURVIVAL else "X"
+            self._legacy_x_title = init_x_title
+            self.x_columns.append({
+                "title": init_x_title,
+                "data": np.full(self.num_rows, np.nan, dtype=np.float64),
+            })
 
         # Y column groups: list of group titles, each group has num_replicates subcolumns
         if y_group_titles is not None:
@@ -124,6 +165,13 @@ class DataTable:
             dtype=np.float64,
         )
 
+        # Column sequence order: list of (block_type, block_idx) e.g. [("X", 0), ("Y", 0), ("Y", 1)]
+        self.column_order: List[Tuple[str, int]] = []
+        if self.x_columns:
+            self.column_order.append(("X", 0))
+        for g_idx in range(len(self.y_group_titles)):
+            self.column_order.append(("Y", g_idx))
+
         # Excluded points bitmask: set of (row, col_type, group_idx, subcol_idx)
         # col_type: 'X' or 'Y'
         self.excluded_points: Set[Tuple[int, str, int, int]] = set()
@@ -140,15 +188,120 @@ class DataTable:
         if self.table_type == TableType.MULTIPLE_VARIABLES:
             self._init_default_variables()
 
+    @property
+    def x_title(self) -> str:
+        if self.x_columns:
+            return self.x_columns[0]["title"]
+        return self._legacy_x_title
+
+    @x_title.setter
+    def x_title(self, val: str) -> None:
+        self._legacy_x_title = val
+        if self.x_columns:
+            self.x_columns[0]["title"] = val
+        elif val and self.table_type in (TableType.XY, TableType.SURVIVAL):
+            self.x_columns.append({"title": val, "data": np.full(self.num_rows, np.nan, dtype=np.float64)})
+            if ("X", 0) not in self.column_order:
+                self.column_order.insert(0, ("X", 0))
+
+    @property
+    def x_data(self) -> Optional[np.ndarray]:
+        if self.x_columns:
+            return self.x_columns[0]["data"]
+        return None
+
+    @x_data.setter
+    def x_data(self, val: Optional[np.ndarray]) -> None:
+        if val is None:
+            self.x_columns = []
+            self.column_order = [b for b in self.column_order if b[0] != "X"]
+        else:
+            arr = np.asarray(val, dtype=np.float64)
+            if not self.x_columns:
+                title = self._legacy_x_title or "X"
+                self.x_columns = [{"title": title, "data": arr}]
+                if ("X", 0) not in self.column_order:
+                    self.column_order.insert(0, ("X", 0))
+            else:
+                self.x_columns[0]["data"] = arr
+
+    def get_columns(self) -> List[ColumnInfo]:
+        """Returns flat list of ColumnInfo descriptors for all visual columns."""
+        cols: List[ColumnInfo] = []
+        current_x_idx = 0 if self.x_columns else -1
+        for block_type, idx in self.column_order:
+            if block_type == "X":
+                if 0 <= idx < len(self.x_columns):
+                    current_x_idx = idx
+                    title = self.x_columns[idx]["title"]
+                    cols.append(ColumnInfo(
+                        role="X",
+                        group_idx=idx,
+                        subcol_idx=0,
+                        title=title,
+                        associated_x_idx=idx,
+                    ))
+            elif block_type == "Y":
+                if 0 <= idx < len(self.y_group_titles):
+                    g_title = self.y_group_titles[idx]
+                    assoc_x = current_x_idx if current_x_idx >= 0 else 0
+                    for s_idx in range(self.num_replicates):
+                        cols.append(ColumnInfo(
+                            role="Y",
+                            group_idx=idx,
+                            subcol_idx=s_idx,
+                            title=g_title,
+                            associated_x_idx=assoc_x,
+                        ))
+        return cols
+
+    @property
+    def columns(self) -> List[ColumnInfo]:
+        return self.get_columns()
+
+    def get_column_role(self, col_idx: int) -> str:
+        """Returns 'X' or 'Y' for visual column index."""
+        cols = self.get_columns()
+        if 0 <= col_idx < len(cols):
+            return cols[col_idx].role
+        return "Y"
+
+    def get_column_replicate_index(self, col_idx: int) -> int:
+        """Returns subcolumn replicate index (0-based) for visual column."""
+        cols = self.get_columns()
+        if 0 <= col_idx < len(cols):
+            return cols[col_idx].subcol_idx
+        return 0
+
+    def get_x_column_count(self) -> int:
+        """Returns number of distinct X columns."""
+        return len(self.x_columns)
+
+    def get_x_data(self, x_idx: int = 0) -> Optional[np.ndarray]:
+        """Retrieves raw numpy array for a specific X column."""
+        if 0 <= x_idx < len(self.x_columns):
+            return self.x_columns[x_idx]["data"]
+        return None
+
+    def get_y_associated_x_idx(self, group_idx: int) -> int:
+        """Finds preceding X column for a given Y group index, falling back to 0."""
+        current_x = 0
+        for block_type, idx in self.column_order:
+            if block_type == "X":
+                current_x = idx
+            elif block_type == "Y" and idx == group_idx:
+                return current_x
+        return 0
+
     def add_row(self, count: int = 1) -> None:
         """Appends empty rows to the table."""
         if count <= 0:
             return
         self.num_rows += count
         self.row_titles.extend(["" for _ in range(count)])
-        if self.x_data is not None:
+        for x_col in self.x_columns:
             new_x = np.full(count, np.nan, dtype=np.float64)
-            self.x_data = np.concatenate([self.x_data, new_x])
+            x_col["data"] = np.concatenate([x_col["data"], new_x])
 
         new_y = np.full(
             (len(self.y_group_titles), count, self.num_replicates),
@@ -171,6 +324,7 @@ class DataTable:
             letter = chr(ord("A") + group_idx) if group_idx < 26 else f"G{group_idx + 1}"
             title = f"Group {letter}"
         self.y_group_titles.append(title)
+        self.column_order.append(("Y", group_idx))
         new_group_data = np.full(
             (1, self.num_rows, self.num_replicates), np.nan, dtype=np.float64
         )
@@ -188,8 +342,8 @@ class DataTable:
             return False
         self.num_rows -= 1
         del self.row_titles[row_idx]
-        if self.x_data is not None:
-            self.x_data = np.delete(self.x_data, row_idx)
+        for x_col in self.x_columns:
+            x_col["data"] = np.delete(x_col["data"], row_idx)
         self.y_data = np.delete(self.y_data, row_idx, axis=1)
         if row_idx < len(self.multi_var_data):
             del self.multi_var_data[row_idx]
@@ -225,6 +379,20 @@ class DataTable:
             return False
         del self.y_group_titles[group_idx]
         self.y_data = np.delete(self.y_data, group_idx, axis=0)
+
+        # Update column_order
+        new_order = []
+        for b_type, b_idx in self.column_order:
+            if b_type == "Y":
+                if b_idx == group_idx:
+                    continue
+                elif b_idx > group_idx:
+                    new_order.append(("Y", b_idx - 1))
+                else:
+                    new_order.append(("Y", b_idx))
+            else:
+                new_order.append((b_type, b_idx))
+        self.column_order = new_order
 
         # Update excluded points
         new_excluded = set()
@@ -287,6 +455,21 @@ class DataTable:
         else:
             self.y_data = np.insert(self.y_data, group_idx, new_group_data[0], axis=0)
 
+        # Update column_order: find where to insert
+        target_pos = len(self.column_order)
+        for i, (b_type, b_idx) in enumerate(self.column_order):
+            if b_type == "Y" and b_idx == group_idx:
+                target_pos = i
+                break
+        new_order = []
+        for b_type, b_idx in self.column_order:
+            if b_type == "Y" and b_idx >= group_idx:
+                new_order.append(("Y", b_idx + 1))
+            else:
+                new_order.append((b_type, b_idx))
+        new_order.insert(target_pos, ("Y", group_idx))
+        self.column_order = new_order
+
         # Shift excluded points for g_idx >= group_idx
         new_excluded = set()
         for r, c_type, g_idx, s_idx in self.excluded_points:
@@ -315,6 +498,96 @@ class DataTable:
         self.nested_subgroup_titles = new_nested
 
         return group_idx
+
+    def add_x_column(self, title: Optional[str] = None, position_in_order: Optional[int] = None) -> int:
+        """Adds a new X column to the table."""
+        x_idx = len(self.x_columns)
+        if not title:
+            title = f"X{x_idx + 1}" if x_idx > 0 else "X"
+        col_data = np.full(self.num_rows, np.nan, dtype=np.float64)
+        self.x_columns.append({"title": title, "data": col_data})
+        if position_in_order is not None and 0 <= position_in_order <= len(self.column_order):
+            self.column_order.insert(position_in_order, ("X", x_idx))
+        else:
+            self.column_order.append(("X", x_idx))
+        return x_idx
+
+    def insert_x_column_at(self, col_idx: int, position: str = "left", title: Optional[str] = None) -> int:
+        """Inserts an X column to the left or right of visual column col_idx."""
+        cols = self.get_columns()
+        if not cols:
+            return self.add_x_column(title=title)
+
+        col_idx = max(0, min(col_idx, len(cols) - 1))
+        target_col = cols[col_idx]
+
+        block_pos = 0
+        for i, (b_type, b_idx) in enumerate(self.column_order):
+            if b_type == target_col.role and b_idx == target_col.group_idx:
+                block_pos = i
+                break
+
+        insert_pos = block_pos + 1 if position == "right" else block_pos
+
+        x_idx = len(self.x_columns)
+        if not title:
+            title = f"X{x_idx + 1}"
+        col_data = np.full(self.num_rows, np.nan, dtype=np.float64)
+        self.x_columns.append({"title": title, "data": col_data})
+        self.column_order.insert(insert_pos, ("X", x_idx))
+        return x_idx
+
+    def remove_x_column(self, x_idx: int) -> bool:
+        """Removes X column at x_idx, updating column_order, masks, and colors."""
+        if x_idx < 0 or x_idx >= len(self.x_columns):
+            return False
+        if len(self.x_columns) <= 1:
+            return False
+
+        del self.x_columns[x_idx]
+
+        new_order = []
+        for b_type, b_idx in self.column_order:
+            if b_type == "X":
+                if b_idx == x_idx:
+                    continue
+                elif b_idx > x_idx:
+                    new_order.append(("X", b_idx - 1))
+                else:
+                    new_order.append(("X", b_idx))
+            else:
+                new_order.append((b_type, b_idx))
+        self.column_order = new_order
+
+        # Shift excluded points
+        new_excluded = set()
+        for r, c_type, g_idx, s_idx in self.excluded_points:
+            if c_type == "X":
+                if g_idx == x_idx:
+                    continue
+                elif g_idx > x_idx:
+                    new_excluded.add((r, c_type, g_idx - 1, s_idx))
+                else:
+                    new_excluded.add((r, c_type, g_idx, s_idx))
+            else:
+                new_excluded.add((r, c_type, g_idx, s_idx))
+        self.excluded_points = new_excluded
+
+        # Shift cell colors
+        new_colors = {}
+        for (r, c_type, g_idx, s_idx), col in self.cell_colors.items():
+            if c_type == "X":
+                if g_idx == x_idx:
+                    continue
+                elif g_idx > x_idx:
+                    new_colors[(r, c_type, g_idx - 1, s_idx)] = col
+                else:
+                    new_colors[(r, c_type, g_idx, s_idx)] = col
+            else:
+                new_colors[(r, c_type, g_idx, s_idx)] = col
+        self.cell_colors = new_colors
+
+        return True
 
     def rename_group(self, group_idx: int, new_title: str) -> None:
         """Renames a Y group."""
@@ -386,15 +659,11 @@ class DataTable:
             if 0 <= col_idx < len(self.variables):
                 return self.variables[col_idx].name
             return f"Var {col_idx + 1}"
-        if self.x_data is not None:
-            if col_idx == 0:
-                return self.x_title or "X"
-            g_idx = (col_idx - 1) // self.num_replicates
-        else:
-            g_idx = col_idx // self.num_replicates
-        if 0 <= g_idx < len(self.y_group_titles):
-            return self.y_group_titles[g_idx]
-        return f"Group {g_idx + 1}"
+
+        cols = self.get_columns()
+        if 0 <= col_idx < len(cols):
+            return cols[col_idx].title
+        return f"Col {col_idx + 1}"
 
     def rename_column(self, col_idx: int, new_title: str) -> bool:
         """Renames a column by view column index."""
@@ -406,33 +675,44 @@ class DataTable:
                 self.rename_variable(col_idx, new_title)
                 return True
             return False
-        if self.x_data is not None:
-            if col_idx == 0:
-                self.x_title = new_title
-                return True
-            g_idx = (col_idx - 1) // self.num_replicates
-        else:
-            g_idx = col_idx // self.num_replicates
-        if 0 <= g_idx < len(self.y_group_titles):
-            self.rename_group(g_idx, new_title)
-            return True
+
+        cols = self.get_columns()
+        if 0 <= col_idx < len(cols):
+            target_col = cols[col_idx]
+            if target_col.role == "X":
+                if 0 <= target_col.group_idx < len(self.x_columns):
+                    self.x_columns[target_col.group_idx]["title"] = new_title
+                    return True
+            else:
+                if 0 <= target_col.group_idx < len(self.y_group_titles):
+                    self.rename_group(target_col.group_idx, new_title)
+                    return True
         return False
 
     def insert_column(self, col_idx: int, position: str = "right", title: Optional[str] = None) -> int:
-        """Inserts a column to the left or right of col_idx."""
+        """Inserts a Y column group to the left or right of col_idx."""
         if self.table_type == TableType.MULTIPLE_VARIABLES:
             target = col_idx + 1 if position == "right" else col_idx
             return self.insert_variable(target, name=title)
 
-        if self.x_data is not None:
-            if col_idx == 0:
-                target_g = 0
-            else:
-                curr_g = (col_idx - 1) // self.num_replicates
-                target_g = curr_g + 1 if position == "right" else curr_g
+        cols = self.get_columns()
+        if not cols:
+            return self.add_y_group(title=title)
+
+        col_idx = max(0, min(col_idx, len(cols) - 1))
+        target_col = cols[col_idx]
+
+        if target_col.role == "Y":
+            target_g = target_col.group_idx + 1 if position == "right" else target_col.group_idx
         else:
-            curr_g = col_idx // self.num_replicates
-            target_g = curr_g + 1 if position == "right" else curr_g
+            # If target is X column
+            target_g = 0
+            for b_type, b_idx in self.column_order:
+                if b_type == "Y":
+                    target_g = b_idx
+                    break
+            if position == "right":
+                target_g = 0
         return self.insert_y_group(target_g, title=title)
 
     def delete_column(self, col_idx: int) -> bool:
@@ -440,13 +720,16 @@ class DataTable:
         if self.table_type == TableType.MULTIPLE_VARIABLES:
             return self.remove_variable(col_idx)
 
-        if self.x_data is not None:
-            if col_idx == 0:
+        cols = self.get_columns()
+        if col_idx < 0 or col_idx >= len(cols):
+            return False
+
+        target_col = cols[col_idx]
+        if target_col.role == "X":
+            if len(self.x_columns) <= 1:
                 return False
-            g_idx = (col_idx - 1) // self.num_replicates
-        else:
-            g_idx = col_idx // self.num_replicates
-        return self.remove_y_group(g_idx)
+            return self.remove_x_column(target_col.group_idx)
+        return self.remove_y_group(target_col.group_idx)
 
     def to_dataframe(self) -> pd.DataFrame:
         """Converts DataTable representation into a pandas DataFrame."""
@@ -454,27 +737,29 @@ class DataTable:
             cols = [v.name for v in self.variables]
             return pd.DataFrame(self.multi_var_data, columns=cols)
 
+        col_infos = self.get_columns()
         cols = []
-        if self.x_data is not None:
-            cols.append(self.x_title or "X")
-        for g_idx, g_title in enumerate(self.y_group_titles):
-            if self.num_replicates == 1:
-                cols.append(g_title)
+        for c in col_infos:
+            if c.role == "X":
+                cols.append(c.title or f"X{c.group_idx + 1}")
             else:
-                for s_idx in range(self.num_replicates):
-                    cols.append(f"{g_title}:Y{s_idx + 1}")
+                if self.num_replicates == 1:
+                    cols.append(c.title)
+                else:
+                    cols.append(f"{c.title}:Y{c.subcol_idx + 1}")
 
         rows = []
         for r in range(self.num_rows):
             row_vals = []
-            if self.x_data is not None:
-                row_vals.append(self.x_data[r])
-            for g_idx in range(len(self.y_group_titles)):
-                for s_idx in range(self.num_replicates):
-                    row_vals.append(self.y_data[g_idx, r, s_idx])
+            for c in col_infos:
+                if c.role == "X":
+                    row_vals.append(self.x_columns[c.group_idx]["data"][r])
+                else:
+                    row_vals.append(self.y_data[c.group_idx, r, c.subcol_idx])
             rows.append(row_vals)
 
         return pd.DataFrame(rows, columns=cols)
+
 
     def update_from_dataframe(self, df: pd.DataFrame) -> None:
         """Updates DataTable content, column names, and dimensions from a pandas DataFrame."""
@@ -743,7 +1028,9 @@ class DataTable:
                 )
 
         if col_type == "X":
-            if self.x_data is not None:
+            if 0 <= group_idx < len(self.x_columns):
+                self.x_columns[group_idx]["data"][row] = val
+            elif self.x_data is not None:
                 self.x_data[row] = val
         elif col_type == "Y":
             if 0 <= group_idx < len(self.y_group_titles) and 0 <= subcol_idx < self.num_replicates:
@@ -756,7 +1043,9 @@ class DataTable:
         if row < 0 or row >= self.num_rows:
             return np.nan
         if col_type == "X":
-            if self.x_data is not None:
+            if 0 <= group_idx < len(self.x_columns):
+                return float(self.x_columns[group_idx]["data"][row])
+            elif self.x_data is not None:
                 return float(self.x_data[row])
             return np.nan
         elif col_type == "Y":
@@ -791,18 +1080,25 @@ class DataTable:
         Extracts clean (X, Y) pairs for regression/plotting.
         Expands all valid replicates into flat (X, Y) arrays,
         filtering out missing values (NaN) and excluded points.
+        Binds to the associated preceding X column.
         """
-        if self.x_data is None or group_idx < 0 or group_idx >= len(self.y_group_titles):
+        if not self.x_columns or group_idx < 0 or group_idx >= len(self.y_group_titles):
             return np.array([]), np.array([])
+
+        x_idx = self.get_y_associated_x_idx(group_idx)
+        if x_idx < 0 or x_idx >= len(self.x_columns):
+            x_idx = 0
+        x_data = self.x_columns[x_idx]["data"]
 
         xs: List[float] = []
         ys: List[float] = []
 
-        for r in range(min(self.num_rows, len(self.x_data))):
-            x_val = self.x_data[r]
-            if np.isnan(x_val) or self.is_excluded(r, "X", 0, 0):
+        max_reps = min(self.num_replicates, self.y_data.shape[2]) if self.y_data.ndim >= 3 else self.num_replicates
+        for r in range(min(self.num_rows, len(x_data))):
+            x_val = x_data[r]
+            if np.isnan(x_val) or self.is_excluded(r, "X", x_idx, 0):
                 continue
-            for s in range(self.num_replicates):
+            for s in range(max_reps):
                 if self.is_excluded(r, "Y", group_idx, s):
                     continue
                 y_val = self.y_data[group_idx, r, s]
@@ -837,9 +1133,10 @@ class DataTable:
         if group_idx < 0 or group_idx >= len(self.y_group_titles):
             return {"mean": means, "sd": sds, "sem": sems, "n": ns}
 
+        max_reps = min(self.num_replicates, self.y_data.shape[2]) if self.y_data.ndim >= 3 else self.num_replicates
         for r in range(self.num_rows):
             valid_vals = []
-            for s in range(self.num_replicates):
+            for s in range(max_reps):
                 if not self.is_excluded(r, "Y", group_idx, s):
                     val = self.y_data[group_idx, r, s]
                     if not np.isnan(val):
@@ -864,10 +1161,11 @@ class DataTable:
         Returns all valid non-excluded values per group (for One-Way ANOVA).
         """
         data: Dict[str, List[float]] = {}
+        max_reps = min(self.num_replicates, self.y_data.shape[2]) if self.y_data.ndim >= 3 else self.num_replicates
         for g_idx, title in enumerate(self.y_group_titles):
             vals: List[float] = []
             for r in range(self.num_rows):
-                for s in range(self.num_replicates):
+                for s in range(max_reps):
                     if not self.is_excluded(r, "Y", g_idx, s):
                         val = self.y_data[g_idx, r, s]
                         if not np.isnan(val):
@@ -888,6 +1186,11 @@ class DataTable:
             "row_titles": self.row_titles,
             "x_title": self.x_title,
             "x_data": self.x_data.tolist() if self.x_data is not None else None,
+            "x_columns": [
+                {"title": c["title"], "data": c["data"].tolist()}
+                for c in self.x_columns
+            ],
+            "column_order": [list(item) for item in self.column_order],
             "y_group_titles": self.y_group_titles,
             "y_data": self.y_data.tolist(),
             "excluded_points": list(self.excluded_points),
@@ -917,11 +1220,32 @@ class DataTable:
         )
         tbl.row_titles = data.get("row_titles", ["" for _ in range(tbl.num_rows)])
         tbl.x_title = data.get("x_title", "X")
-        if data.get("x_data") is not None:
-            tbl.x_data = np.array(data["x_data"], dtype=np.float64)
+        if "x_columns" in data and data["x_columns"]:
+            tbl.x_columns = [
+                {"title": c.get("title", "X"), "data": np.array(c["data"], dtype=np.float64)}
+                for c in data["x_columns"]
+            ]
+        elif data.get("x_data") is not None:
+            tbl.x_columns = [{
+                "title": data.get("x_title", "X"),
+                "data": np.array(data["x_data"], dtype=np.float64),
+            }]
+        else:
+            tbl.x_columns = []
+
         tbl.y_group_titles = data.get("y_group_titles", ["Group A", "Group B"])
         if data.get("y_data") is not None:
             tbl.y_data = np.array(data["y_data"], dtype=np.float64)
+
+        if "column_order" in data and data["column_order"]:
+            tbl.column_order = [(item[0], int(item[1])) for item in data["column_order"]]
+        else:
+            tbl.column_order = []
+            if tbl.x_columns:
+                tbl.column_order.append(("X", 0))
+            for g_idx in range(len(tbl.y_group_titles)):
+                tbl.column_order.append(("Y", g_idx))
+
         tbl.excluded_points = {
             (pt[0], pt[1], pt[2], pt[3]) for pt in data.get("excluded_points", [])
         }

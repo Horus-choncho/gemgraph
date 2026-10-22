@@ -93,39 +93,58 @@ class PrismXMLIO:
         tree = ET.parse(file_path)
         root = tree.getroot()
 
+        # Strip XML namespaces for seamless tag matching across official Prism and cleanroom files
+        for el in root.iter():
+            if "}" in el.tag:
+                el.tag = el.tag.split("}", 1)[1]
+
         doc = PrismDocument(title="Imported Prism XML")
 
         for t_elem in root.findall(".//Table"):
             t_id = t_elem.get("ID", "table_1")
             ttype_str = t_elem.get("TableType", "XY")
-            try:
-                table_type = TableType(ttype_str)
-            except ValueError:
-                table_type = TableType.XY
+            if ttype_str == "TwoWay":
+                table_type = TableType.GROUPED
+            elif ttype_str == "OneWay":
+                table_type = TableType.COLUMN
+            else:
+                try:
+                    table_type = TableType(ttype_str)
+                except ValueError:
+                    table_type = TableType.XY
 
             replicates = int(t_elem.get("Replicates", "1"))
             title_node = t_elem.find("Title")
             title = title_node.text if title_node is not None and title_node.text else "Data Table"
 
-            # Parse X values
-            x_vals = []
-            x_excluded = []
-            x_col = t_elem.find("XColumn")
-            x_title = "X"
-            if x_col is not None:
-                xt_node = x_col.find("Title")
-                if xt_node is not None and xt_node.text:
-                    x_title = xt_node.text
-                x_sub = x_col.find("Subcolumn")
+            # Parse Row titles if any
+            row_titles = []
+            rt_col = t_elem.find("RowTitlesColumn")
+            if rt_col is not None:
+                rt_sub = rt_col.find("Subcolumn")
+                if rt_sub is not None:
+                    for d in rt_sub.findall("d"):
+                        row_titles.append(d.text.strip() if d.text else "")
+
+            # Parse X values (support multiple X columns)
+            x_cols = t_elem.findall("XColumn")
+            x_cols_data = []
+            for xc in x_cols:
+                xt_node = xc.find("Title")
+                xt = xt_node.text if xt_node is not None and xt_node.text else "X"
+                vals = []
+                exs = []
+                x_sub = xc.find("Subcolumn")
                 if x_sub is not None:
                     for d in x_sub.findall("d"):
                         ex = d.get("Excluded", "0") in ("1", "true")
-                        x_excluded.append(ex)
+                        exs.append(ex)
                         text = d.text.strip() if d.text else ""
                         try:
-                            x_vals.append(float(text) if text else np.nan)
+                            vals.append(float(text) if text else np.nan)
                         except ValueError:
-                            x_vals.append(np.nan)
+                            vals.append(np.nan)
+                x_cols_data.append((xt, vals, exs))
 
             # Parse Y columns
             y_cols = t_elem.findall("YColumn")
@@ -154,7 +173,9 @@ class PrismXMLIO:
                 y_subcol_data.append(group_reps)
 
             # Determine row count
-            num_rows = len(x_vals)
+            num_rows = len(row_titles)
+            for _, x_vals, _ in x_cols_data:
+                num_rows = max(num_rows, len(x_vals))
             for g in y_subcol_data:
                 for rep in g:
                     num_rows = max(num_rows, len(rep))
@@ -168,13 +189,21 @@ class PrismXMLIO:
                 num_rows=num_rows,
                 num_replicates=max(1, len(y_subcol_data[0]) if y_subcol_data and y_subcol_data[0] else replicates),
             )
-            table.x_title = x_title
-            if table.x_data is not None and x_vals:
-                for r, v in enumerate(x_vals):
-                    table.x_data[r] = v
-                for r, ex in enumerate(x_excluded):
-                    if ex:
-                        table.set_excluded(r, "X", 0, 0, True)
+            if row_titles:
+                padded_rt = list(row_titles) + ["" for _ in range(max(0, num_rows - len(row_titles)))]
+                table.row_titles = padded_rt[:num_rows]
+
+            if x_cols_data:
+                table.x_columns = []
+                for x_idx, (xt, x_vals, x_exs) in enumerate(x_cols_data):
+                    col_arr = np.full(num_rows, np.nan, dtype=np.float64)
+                    for r, v in enumerate(x_vals):
+                        if r < num_rows:
+                            col_arr[r] = v
+                    for r, ex in enumerate(x_exs):
+                        if ex and r < num_rows:
+                            table.set_excluded(r, "X", x_idx, 0, True)
+                    table.x_columns.append({"title": xt, "data": col_arr})
 
             if y_titles:
                 table.y_group_titles = y_titles

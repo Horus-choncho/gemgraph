@@ -113,6 +113,8 @@ class ScientificPlotCanvas(QWidget):
         self.mediator = mediator or WorkspaceMediator.get_instance()
         self.plot_widget = pg.PlotWidget()
         self.current_palette = self.COLOR_PALETTE
+        self.series_styles: Dict[Any, str] = {}
+        self.error_style: str = "SEM"
 
         # Active overlay registry: analysis_id -> { 'name': str, 'plot_items': list }
         self.analysis_layers: Dict[str, Dict[str, Any]] = {}
@@ -135,7 +137,10 @@ class ScientificPlotCanvas(QWidget):
         self.type_combo.addItems([
             GraphType.XY_SCATTER_CURVE.value,
             GraphType.COLUMN_BAR_ERROR.value,
+            GraphType.BARS_AND_POINTS.value,
             "Superimposed Bars & Points",
+            GraphType.GROUPED_BARS_POINTS.value,
+            GraphType.XY_SPIKES_CURVE.value,
         ])
         self.type_combo.currentIndexChanged.connect(self._on_type_changed)
         top_bar.addWidget(self.type_combo)
@@ -224,6 +229,16 @@ class ScientificPlotCanvas(QWidget):
     def _on_type_changed(self) -> None:
         self.refresh_plot()
 
+    def set_series_representation(self, series: Any, rep_type: str) -> None:
+        """Sets presentation style for a series (e.g. 'bars', 'spikes', 'scatter', 'line')."""
+        self.series_styles[series] = rep_type.lower()
+        self.refresh_plot()
+
+    def set_error_style(self, style: str) -> None:
+        """Sets error bar calculation style: 'SEM', 'SD', or '95% CI'."""
+        self.error_style = style
+        self.refresh_plot()
+
     def _rebuild_analysis_menu(self) -> None:
         """Rebuilds the Clear Analysis toolbar popup menu."""
         self.analysis_menu.clear()
@@ -292,12 +307,12 @@ class ScientificPlotCanvas(QWidget):
         Deletes the key from self.analysis_layers.
         Restores the raw dataset scatter view without resetting user zoom or axis ranges.
         """
-        if layer_id not in self.analysis_layers:
+        if layer_id not in self.analysis_layers and layer_id not in self.custom_analysis_layers:
             return False
 
-        layer = self.analysis_layers.pop(layer_id)
         self.removed_layer_ids.add(layer_id)
         self.custom_analysis_layers.pop(layer_id, None)
+        layer = self.analysis_layers.pop(layer_id, {})
 
         plot_item = self.plot_widget.plotItem
         for item in layer.get("plot_items", []):
@@ -328,7 +343,8 @@ class ScientificPlotCanvas(QWidget):
 
     def clear_all_analysis_layers(self, notify: bool = True) -> None:
         """Removes all active fitted curves and statistical overlays."""
-        for layer_id in list(self.analysis_layers.keys()):
+        all_ids = set(self.analysis_layers.keys()) | set(self.custom_analysis_layers.keys())
+        for layer_id in list(all_ids):
             self.remove_analysis_layer(layer_id, notify=False)
         if notify and self.mediator is not None:
             self.mediator.notify_clear_all_analysis_layers()
@@ -420,9 +436,19 @@ class ScientificPlotCanvas(QWidget):
             return
 
         selected_type = self.type_combo.currentText()
-        if selected_type == "Superimposed Bars & Points":
+        if (
+            selected_type in (GraphType.GROUPED_BARS_POINTS.value, "Grouped Bars + Replicate Points")
+            or (self.current_table.table_type == TableType.GROUPED and selected_type not in (GraphType.XY_SPIKES_CURVE.value, GraphType.XY_SCATTER_CURVE.value))
+        ):
+            self._render_grouped_bars_points()
+        elif selected_type in (GraphType.XY_SPIKES_CURVE.value, "Columns/Spikes + Curve Fit"):
+            self._render_xy_spikes_and_curve()
+        elif selected_type == "Superimposed Bars & Points":
             self._render_superimposed_graph()
-        elif selected_type == GraphType.COLUMN_BAR_ERROR.value or self.current_table.table_type == TableType.COLUMN:
+        elif (
+            selected_type in (GraphType.BARS_AND_POINTS.value, GraphType.COLUMN_BAR_ERROR.value)
+            or self.current_table.table_type == TableType.COLUMN
+        ):
             self._render_column_graph()
         else:
             self._render_xy_graph()
@@ -437,6 +463,47 @@ class ScientificPlotCanvas(QWidget):
             self.plot_widget.setRange(xRange=range_before[0], yRange=range_before[1], padding=0)
         else:
             self.plot_widget.autoRange()
+
+    def _render_analysis_overlays(self) -> None:
+        """Renders custom and result sheet analysis fitted curves."""
+        # Custom registered continuous analysis curves
+        for layer_id, layer_data in list(self.custom_analysis_layers.items()):
+            if layer_id not in self.removed_layer_ids:
+                x_d = layer_data["x_dense"]
+                y_d = layer_data["y_dense"]
+                p_item = self.plot_widget.plot(
+                    x_d,
+                    y_d,
+                    pen=layer_data.get("pen", pg.mkPen(color=QColor(20, 20, 20), width=2.5)),
+                    name=layer_data.get("name", "Fitted Curve"),
+                )
+                self.analysis_layers[layer_id] = {
+                    "name": layer_data.get("name", "Fitted Curve"),
+                    "plot_items": [p_item],
+                }
+
+        # Result sheet fitted curve overlay
+        if self.current_result is not None:
+            res_id = getattr(self.current_result, "sheet_id", "active_fit")
+            if res_id not in self.removed_layer_ids:
+                raw = self.current_result.raw_result_data
+                if "x_dense" in raw and "y_dense" in raw:
+                    x_dense = np.array(raw["x_dense"])
+                    y_dense = np.array(raw["y_dense"])
+                    fit_pen = pg.mkPen(color=QColor(20, 20, 20), width=2.5)
+                    name = raw.get("model_name", getattr(self.current_result, "title", "Fitted Curve"))
+                    curve_item = self.plot_widget.plot(
+                        x_dense,
+                        y_dense,
+                        pen=fit_pen,
+                        name=name,
+                    )
+                    self.analysis_layers[res_id] = {
+                        "name": name,
+                        "plot_items": [curve_item],
+                    }
+
+        self._rebuild_analysis_menu()
 
     def _render_xy_graph(self) -> None:
         """Renders XY points and fitted curve overlay with discrete colors or journal grayscale symbology."""
@@ -487,52 +554,22 @@ class ScientificPlotCanvas(QWidget):
 
             self.plot_widget.addItem(scatter)
 
-        # Custom registered continuous analysis curves
-        for layer_id, layer_data in list(self.custom_analysis_layers.items()):
-            if layer_id not in self.removed_layer_ids:
-                x_d = layer_data["x_dense"]
-                y_d = layer_data["y_dense"]
-                p_item = self.plot_widget.plot(
-                    x_d,
-                    y_d,
-                    pen=layer_data.get("pen", pg.mkPen(color=QColor(20, 20, 20), width=2.5)),
-                    name=layer_data.get("name", "Fitted Curve"),
-                )
-                self.analysis_layers[layer_id] = {
-                    "name": layer_data.get("name", "Fitted Curve"),
-                    "plot_items": [p_item],
-                }
-
-        # Result sheet fitted curve overlay
-        if self.current_result is not None:
-            res_id = getattr(self.current_result, "sheet_id", "active_fit")
-            if res_id not in self.removed_layer_ids:
-                raw = self.current_result.raw_result_data
-                if "x_dense" in raw and "y_dense" in raw:
-                    x_dense = np.array(raw["x_dense"])
-                    y_dense = np.array(raw["y_dense"])
-                    fit_pen = pg.mkPen(color=QColor(20, 20, 20), width=2.5)
-                    name = raw.get("model_name", getattr(self.current_result, "title", "Fitted Curve"))
-                    curve_item = self.plot_widget.plot(
-                        x_dense,
-                        y_dense,
-                        pen=fit_pen,
-                        name=name,
-                    )
-                    self.analysis_layers[res_id] = {
-                        "name": name,
-                        "plot_items": [curve_item],
-                    }
-
-        self._rebuild_analysis_menu()
+        self._render_analysis_overlays()
 
     def _render_column_graph(self) -> None:
-        """Renders column bars with Mean ± SEM/SD and overlaid scatter points."""
+        """Renders column bars with Mean ± SEM/SD/95% CI and overlaid scatter points."""
         table = self.current_table
         if table is None:
             return
 
-        error_label = "SD" if getattr(self, "error_style", "SEM") == "SD" else "SEM"
+        err_style = getattr(self, "error_style", "SEM")
+        if err_style == "SD":
+            error_label = "SD"
+        elif err_style == "95% CI":
+            error_label = "95% CI"
+        else:
+            error_label = "SEM"
+
         self.plot_widget.setLabel("bottom", "Groups", color="black")
         self.plot_widget.setLabel("left", f"Value (Mean ± {error_label})", color="black")
 
@@ -558,18 +595,31 @@ class ScientificPlotCanvas(QWidget):
                 pt_symbol = sym_spec["symbol"]
                 pt_pen = sym_spec["pen"]
                 pt_brush = sym_spec["brush"]
+                err_pen = pg.mkPen("k", width=1.5)
             else:
                 color = self.COLOR_PALETTE[pos % len(self.COLOR_PALETTE)]
                 bar_pen = pg.mkPen(color, width=1.5)
-                bar_brush = pg.mkBrush(color.red(), color.green(), color.blue(), 140)
+                bar_brush = pg.mkBrush(color.red(), color.green(), color.blue(), 130)
                 pt_symbol = "o"
-                pt_pen = pg.mkPen("k", width=1)
-                pt_brush = pg.mkBrush("w")
+                pt_pen = pg.mkPen(color.darker(140), width=1)
+                pt_brush = pg.mkBrush(color)
+                err_pen = pg.mkPen(color.darker(160), width=1.5)
 
             mean = float(np.mean(vals))
             if len(vals) > 1:
                 sd = float(np.std(vals, ddof=1))
-                err_val = sd if error_label == "SD" else sd / np.sqrt(len(vals))
+                sem = sd / np.sqrt(len(vals))
+                if error_label == "SD":
+                    err_val = sd
+                elif error_label == "95% CI":
+                    try:
+                        from scipy import stats
+                        t_crit = float(stats.t.ppf(0.975, df=len(vals) - 1))
+                        err_val = sem * t_crit
+                    except Exception:
+                        err_val = sem * 1.96
+                else:
+                    err_val = sem
             else:
                 err_val = 0.0
 
@@ -591,12 +641,12 @@ class ScientificPlotCanvas(QWidget):
                     top=np.array([err_val]),
                     bottom=np.array([err_val]),
                     beam=0.2,
-                    pen=pg.mkPen("k", width=1.5),
+                    pen=err_pen,
                 )
                 self.plot_widget.addItem(err)
 
             # Scatter points
-            jitter = (np.random.RandomState(42).rand(len(vals)) - 0.5) * 0.25
+            jitter = (np.random.RandomState(42 + pos).rand(len(vals)) - 0.5) * 0.25
             scatter = pg.ScatterPlotItem(
                 x=pos + jitter,
                 y=vals,
@@ -606,6 +656,241 @@ class ScientificPlotCanvas(QWidget):
                 size=6,
             )
             self.plot_widget.addItem(scatter)
+
+    def _render_grouped_bars_points(self) -> None:
+        """
+        Renders two-way grouped data (Factor A rows x Factor B columns)
+        displaying clustered bars with matched individual replicate points nested inside each category group.
+        Matches docs/graph_specs/1661_Points_and_grouped_bars.pzfx.
+        """
+        table = self.current_table
+        if table is None:
+            return
+
+        err_style = getattr(self, "error_style", "SEM")
+        if err_style == "SD":
+            error_label = "SD"
+        elif err_style == "95% CI":
+            error_label = "95% CI"
+        else:
+            error_label = "SEM"
+
+        self.plot_widget.setLabel("bottom", "Conditions", color="black")
+        self.plot_widget.setLabel("left", f"Value (Mean ± {error_label})", color="black")
+
+        num_groups = len(table.y_group_titles)
+        if num_groups == 0:
+            return
+
+        is_grayscale = self.is_grayscale_mode
+
+        # Determine active rows (Factor A)
+        active_rows = []
+        for r in range(table.num_rows):
+            has_data = False
+            for g in range(num_groups):
+                for s in range(table.num_replicates):
+                    if not table.is_excluded(r, "Y", g, s):
+                        val = table.y_data[g, r, s]
+                        if not np.isnan(val):
+                            has_data = True
+                            break
+                if has_data:
+                    break
+            if has_data or (r < len(table.row_titles) and table.row_titles[r].strip()):
+                active_rows.append(r)
+
+        if not active_rows:
+            active_rows = list(range(min(table.num_rows, 10)))
+
+        ticks = []
+        for idx, r in enumerate(active_rows):
+            title = table.row_titles[r] if r < len(table.row_titles) and table.row_titles[r].strip() else f"Row {r+1}"
+            ticks.append((idx, title))
+        self.plot_widget.getAxis("bottom").setTicks([ticks])
+
+        cluster_w = 0.8
+        sub_w = cluster_w / max(1, num_groups)
+
+        for g_idx, g_title in enumerate(table.y_group_titles):
+            if is_grayscale:
+                sym_spec = self.GRAYSCALE_SYMBOLS[g_idx % len(self.GRAYSCALE_SYMBOLS)]
+                gray_val = max(50, int(220 - (g_idx % 4) * 45))
+                bar_brush = pg.mkBrush(gray_val, gray_val, gray_val, 160)
+                bar_pen = pg.mkPen("k", width=1.5)
+                pt_symbol = sym_spec["symbol"]
+                pt_pen = sym_spec["pen"]
+                pt_brush = sym_spec["brush"]
+                err_pen = pg.mkPen("k", width=1.5)
+            else:
+                color = self.COLOR_PALETTE[g_idx % len(self.COLOR_PALETTE)]
+                bar_pen = pg.mkPen(color, width=1.5)
+                bar_brush = pg.mkBrush(color.red(), color.green(), color.blue(), 130)
+                pt_symbol = "o"
+                pt_pen = pg.mkPen(color.darker(140), width=1.0)
+                pt_brush = pg.mkBrush(color)
+                err_pen = pg.mkPen(color.darker(160), width=1.5)
+
+            if self.plot_widget.plotItem.legend is not None:
+                dummy = pg.PlotDataItem(pen=bar_pen, brush=bar_brush, symbol=pt_symbol, name=g_title)
+                self.plot_widget.plotItem.legend.addItem(dummy, g_title)
+
+            for x_idx, r in enumerate(active_rows):
+                x_pos = x_idx + (g_idx - (num_groups - 1) / 2.0) * sub_w
+
+                valid_vals = []
+                for s in range(table.num_replicates):
+                    if not table.is_excluded(r, "Y", g_idx, s):
+                        val = table.y_data[g_idx, r, s]
+                        if not np.isnan(val):
+                            valid_vals.append(float(val))
+
+                if not valid_vals:
+                    continue
+
+                mean = float(np.mean(valid_vals))
+                if len(valid_vals) > 1:
+                    sd = float(np.std(valid_vals, ddof=1))
+                    sem = sd / np.sqrt(len(valid_vals))
+                    if error_label == "SD":
+                        err_val = sd
+                    elif error_label == "95% CI":
+                        try:
+                            from scipy import stats
+                            t_crit = float(stats.t.ppf(0.975, df=len(valid_vals) - 1))
+                            err_val = sem * t_crit
+                        except Exception:
+                            err_val = sem * 1.96
+                    else:
+                        err_val = sem
+                else:
+                    err_val = 0.0
+
+                bar = pg.BarGraphItem(
+                    x=[x_pos],
+                    height=[mean],
+                    width=sub_w * 0.85,
+                    brush=bar_brush,
+                    pen=bar_pen,
+                )
+                self.plot_widget.addItem(bar)
+
+                if err_val > 0:
+                    err = pg.ErrorBarItem(
+                        x=np.array([x_pos]),
+                        y=np.array([mean]),
+                        top=np.array([err_val]),
+                        bottom=np.array([err_val]),
+                        beam=sub_w * 0.3,
+                        pen=err_pen,
+                    )
+                    self.plot_widget.addItem(err)
+
+                if len(valid_vals) > 1:
+                    rng = np.random.RandomState(42 + r * 13 + g_idx * 7)
+                    jitter = (rng.rand(len(valid_vals)) - 0.5) * (sub_w * 0.35)
+                else:
+                    jitter = np.zeros(len(valid_vals))
+
+                scatter = pg.ScatterPlotItem(
+                    x=x_pos + jitter,
+                    y=valid_vals,
+                    pen=pt_pen,
+                    brush=pt_brush,
+                    symbol=pt_symbol,
+                    size=6,
+                )
+                self.plot_widget.addItem(scatter)
+
+    def _render_xy_spikes_and_curve(self) -> None:
+        """
+        Renders hybrid XY graphs where one Y dataset renders as vertical bar spikes/columns
+        while an adjacent Y dataset renders as scatter points and a continuous non-linear regression curve.
+        Matches docs/graph_specs/bars_and_points_2.pzf & BarsandPointsStacked.pzf.
+        """
+        table = self.current_table
+        if table is None:
+            return
+
+        self.plot_widget.setLabel("bottom", table.x_title or "X", color="black")
+        self.plot_widget.setLabel("left", "Y Value", color="black")
+
+        y_datasets_dict = getattr(table, "y_datasets_dict", None)
+        if y_datasets_dict is None:
+            y_datasets_dict = {}
+            for g_idx, g_title in enumerate(table.y_group_titles):
+                y_datasets_dict[g_title] = table.get_clean_xy(g_idx)
+
+        is_grayscale = self.is_grayscale_mode
+
+        for col_idx, (g_title, (xs, ys)) in enumerate(y_datasets_dict.items()):
+            if len(xs) == 0:
+                continue
+
+            # Determine representation style for this series
+            rep_style = self.series_styles.get(g_title)
+            if rep_style is None:
+                rep_style = self.series_styles.get(col_idx)
+            if rep_style is None:
+                # Default for XY_SPIKES_CURVE: first dataset is bars/spikes, subsequent are scatter points
+                rep_style = "bars" if col_idx == 0 else "scatter"
+            else:
+                rep_style = rep_style.lower()
+
+            if is_grayscale:
+                sym_spec = self.GRAYSCALE_SYMBOLS[col_idx % len(self.GRAYSCALE_SYMBOLS)]
+                symbol = sym_spec["symbol"]
+                pen = sym_spec["pen"]
+                brush = sym_spec["brush"]
+                bar_pen = pg.mkPen("k", width=1.5)
+                bar_brush = pg.mkBrush(180, 180, 180, 160)
+            else:
+                color = self.COLOR_PALETTE[col_idx % len(self.COLOR_PALETTE)]
+                symbol = "o"
+                pen = pg.mkPen(color, width=1.0)
+                brush = pg.mkBrush(color)
+                bar_pen = pg.mkPen(color, width=1.5)
+                bar_brush = pg.mkBrush(color.red(), color.green(), color.blue(), 140)
+
+            if rep_style in ("bars", "columns", "spikes"):
+                if len(xs) > 1:
+                    diffs = np.diff(np.sort(np.unique(xs)))
+                    bar_w = float(np.min(diffs)) * 0.4 if len(diffs) > 0 else 0.5
+                else:
+                    bar_w = 0.5
+                if bar_w <= 0:
+                    bar_w = 0.5
+
+                bar_item = pg.BarGraphItem(
+                    x=xs,
+                    height=ys,
+                    width=bar_w,
+                    brush=bar_brush,
+                    pen=bar_pen,
+                )
+                self.plot_widget.addItem(bar_item)
+                if self.plot_widget.plotItem.legend is not None:
+                    dummy = pg.PlotDataItem(pen=bar_pen, brush=bar_brush, name=g_title)
+                    self.plot_widget.plotItem.legend.addItem(dummy, g_title)
+            else:
+                scatter = pg.ScatterPlotItem(
+                    x=xs,
+                    y=ys,
+                    pen=pen,
+                    brush=brush,
+                    symbol=symbol,
+                    size=8,
+                    name=g_title,
+                )
+                scatter.opts["pen"] = pen
+                scatter.opts["brush"] = brush
+                scatter.opts["symbol"] = symbol
+                scatter.opts["size"] = 8
+                scatter.opts["name"] = g_title
+                self.plot_widget.addItem(scatter)
+
+        # Continuous fitted curve overlays
+        self._render_analysis_overlays()
 
     def _render_superimposed_graph(self) -> None:
         """Combines bars and scatter/line plots on the same canvas."""

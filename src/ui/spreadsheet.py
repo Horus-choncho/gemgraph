@@ -10,6 +10,7 @@ import pandas as pd
 from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QBrush
 from PyQt6.QtWidgets import QTableView, QMenu, QInputDialog, QMessageBox
+import re
 from src.core.table import DataTable, TableType
 from src.core.undo import UndoStack, CellEditCommand, CellExcludeCommand
 from src.ui.mediator import WorkspaceMediator
@@ -81,6 +82,18 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
             self.mediator.notify_column_inserted(col, actual_title)
         return True
 
+    def insert_x_column(self, col: int, position: str = "left", title: Optional[str] = None) -> bool:
+        """Inserts a new X column left or right of col and notifies WorkspaceMediator."""
+        self.beginResetModel()
+        self.table.insert_x_column_at(col, position=position, title=title)
+        self.endResetModel()
+        self.layoutChanged.emit()
+        self.dataChangedSignal.emit()
+        actual_title = title or ("X" if len(self.table.x_columns) <= 1 else f"X{len(self.table.x_columns)}")
+        if self.mediator:
+            self.mediator.notify_column_inserted(col, actual_title)
+        return True
+
     def delete_column(self, col: int) -> bool:
         """Deletes column at col and notifies WorkspaceMediator."""
         self.beginResetModel()
@@ -104,59 +117,119 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
         if self.table.table_type == TableType.MULTIPLE_VARIABLES:
             return len(self.table.variables)
-        x_cols = 1 if self.table.x_data is not None else 0
-        y_cols = len(self.table.y_group_titles) * self.table.num_replicates
-        return x_cols + y_cols
+        return len(self.table.get_columns())
 
     def _col_to_cell_coords(self, col: int) -> Tuple[str, int, int]:
         """
         Translates a view column index into (col_type, group_idx, subcol_idx).
         """
-        has_x = self.table.x_data is not None
-        if has_x:
-            if col == 0:
-                return ("X", 0, 0)
-            col -= 1
+        cols = self.table.get_columns()
+        if 0 <= col < len(cols):
+            c = cols[col]
+            return (c.role, c.group_idx, c.subcol_idx)
+        return ("Y", 0, 0)
 
-        group_idx = col // self.table.num_replicates
-        subcol_idx = col % self.table.num_replicates
-        return ("Y", group_idx, subcol_idx)
+    @staticmethod
+    def _parse_x_value(val_str: str) -> Optional[float]:
+        """Parses numeric, date, or elapsed time inputs for X columns."""
+        s = val_str.strip()
+        if not s:
+            return np.nan
+        # 1. Plain numeric
+        try:
+            return float(s)
+        except ValueError:
+            pass
+
+        # 2. Elapsed time: e.g. "HH:MM:SS" or "MM:SS"
+        if ":" in s:
+            parts = s.split(":")
+            try:
+                if len(parts) == 2:  # MM:SS
+                    return float(parts[0]) * 60.0 + float(parts[1])
+                elif len(parts) == 3:  # HH:MM:SS
+                    return float(parts[0]) * 3600.0 + float(parts[1]) * 60.0 + float(parts[2])
+            except ValueError:
+                pass
+
+        # 3. Time with unit: e.g. "10h", "30m", "45s", "5d", "5 days"
+        m = re.match(r"^([+-]?\d+(?:\.\d+)?)\s*(d|day|days|h|hr|hours?|m|min|mins?|s|sec|secs?)$", s, re.IGNORECASE)
+        if m:
+            num = float(m.group(1))
+            unit = m.group(2).lower()
+            if unit.startswith("d"):
+                return num * 86400.0
+            elif unit.startswith("h"):
+                return num * 3600.0
+            elif unit.startswith("m"):
+                return num * 60.0
+            elif unit.startswith("s"):
+                return num
+
+        # 4. Date string e.g. YYYY-MM-DD
+        try:
+            ts = pd.to_datetime(s)
+            return float(ts.timestamp() / 86400.0)
+        except Exception:
+            pass
+
+        return None
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
-        if role == Qt.ItemDataRole.ForegroundRole:
-            return QBrush(QColor(0, 0, 0))
-        elif role == Qt.ItemDataRole.BackgroundRole:
-            return QBrush(QColor(240, 240, 240))
-
         if orientation == Qt.Orientation.Vertical:
-            if role == Qt.ItemDataRole.DisplayRole:
+            if role == Qt.ItemDataRole.ForegroundRole:
+                return QBrush(QColor(0, 0, 0))
+            elif role == Qt.ItemDataRole.BackgroundRole:
+                return QBrush(QColor(240, 240, 240))
+            elif role == Qt.ItemDataRole.DisplayRole:
                 rt = self.table.row_titles[section] if section < len(self.table.row_titles) else ""
                 return rt if rt else str(section + 1)
-        elif orientation == Qt.Orientation.Horizontal:
-            if role == Qt.ItemDataRole.DisplayRole:
+            return None
+
+        if orientation == Qt.Orientation.Horizontal:
+            if role == Qt.ItemDataRole.ForegroundRole:
+                return QBrush(QColor(0, 0, 0))
+            elif role == Qt.ItemDataRole.BackgroundRole:
+                return QBrush(QColor(240, 240, 240))
+            elif role == Qt.ItemDataRole.FontRole:
+                font = QFont()
+                if self.table.table_type != TableType.MULTIPLE_VARIABLES:
+                    cols = self.table.get_columns()
+                    if 0 <= section < len(cols) and cols[section].role == "X":
+                        font.setBold(True)
+                return font
+            elif role == Qt.ItemDataRole.DisplayRole:
                 if self.table.table_type == TableType.MULTIPLE_VARIABLES:
                     if 0 <= section < len(self.table.variables):
                         var = self.table.variables[section]
                         badge = "📊" if var.var_type.value == "Categorical" else ("🔔" if var.var_type.value == "Continuous" else "🏷️")
                         return f"{var.name} [{badge} {var.var_type.value}]"
                     return f"Var {section + 1}"
-                col_type, g_idx, s_idx = self._col_to_cell_coords(section)
-                if col_type == "X":
-                    return self.table.x_title or "X"
-                if 0 <= g_idx < len(self.table.y_group_titles):
-                    g_title = self.table.y_group_titles[g_idx]
-                else:
-                    g_title = f"Group {g_idx + 1}"
-                if self.table.table_type == TableType.NESTED:
-                    nested_title = self.table.get_nested_subcolumn_title(g_idx, s_idx)
-                    return f"{g_title}: {nested_title}"
-                if self.table.num_replicates > 1:
-                    return f"{g_title} [Y{s_idx + 1}]"
-                elif g_title.startswith("Group "):
-                    return f"{g_title} [Y{s_idx + 1}]"
-                elif g_title in ("Y", ""):
-                    return f"Y{s_idx + 1}"
-                return g_title
+
+                cols = self.table.get_columns()
+                if 0 <= section < len(cols):
+                    col_info = cols[section]
+                    if col_info.role == "X":
+                        if len(self.table.x_columns) > 1 and col_info.title in ("", "X"):
+                            return f"X{col_info.group_idx + 1}"
+                        return col_info.title or "X"
+
+                    g_idx = col_info.group_idx
+                    s_idx = col_info.subcol_idx
+                    if 0 <= g_idx < len(self.table.y_group_titles):
+                        g_title = self.table.y_group_titles[g_idx]
+                    else:
+                        g_title = f"Group {g_idx + 1}"
+                    if self.table.table_type == TableType.NESTED:
+                        nested_title = self.table.get_nested_subcolumn_title(g_idx, s_idx)
+                        return f"{g_title}: {nested_title}"
+                    if self.table.num_replicates > 1:
+                        return f"{g_title} [Y{s_idx + 1}]"
+                    elif g_title.startswith("Group "):
+                        return f"{g_title} [Y{s_idx + 1}]"
+                    elif g_title in ("Y", ""):
+                        return f"Y{s_idx + 1}"
+                    return g_title
         return None
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
@@ -252,10 +325,17 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
 
         new_val = np.nan
         if value is not None and str(value).strip() != "":
-            try:
-                new_val = float(str(value).strip())
-            except ValueError:
-                return False
+            raw_s = str(value).strip()
+            if col_type == "X":
+                parsed = self._parse_x_value(raw_s)
+                if parsed is None:
+                    return False
+                new_val = parsed
+            else:
+                try:
+                    new_val = float(raw_s)
+                except ValueError:
+                    return False
 
         if (np.isnan(old_val) and np.isnan(new_val)) or old_val == new_val:
             return False
@@ -375,6 +455,9 @@ class ScientificSpreadsheetView(QTableView):
         menu.exec(self.horizontalHeader().mapToGlobal(pos))
 
     def _populate_column_actions(self, menu: QMenu, col_idx: int) -> None:
+        act_add_x_left = menu.addAction("➕ Add X Column to Left")
+        act_add_x_right = menu.addAction("➕ Add X Column to Right")
+        act_add_y = menu.addAction("➕ Add Y Column / Replicate")
         act_ins_right = menu.addAction("➕ Insert Column to Right")
         act_ins_left = menu.addAction("➕ Insert Column to Left")
         act_rename = menu.addAction("✏️ Rename Column...")
@@ -382,7 +465,11 @@ class ScientificSpreadsheetView(QTableView):
 
         def on_action(act):
             model = self.get_model()
-            if act == act_ins_right:
+            if act == act_add_x_left:
+                model.insert_x_column(col_idx, position="left")
+            elif act == act_add_x_right:
+                model.insert_x_column(col_idx, position="right")
+            elif act in (act_add_y, act_ins_right):
                 model.insert_column(col_idx, position="right")
             elif act == act_ins_left:
                 model.insert_column(col_idx, position="left")
@@ -391,6 +478,9 @@ class ScientificSpreadsheetView(QTableView):
             elif act == act_delete:
                 model.delete_column(col_idx)
 
+        act_add_x_left.triggered.connect(lambda: on_action(act_add_x_left))
+        act_add_x_right.triggered.connect(lambda: on_action(act_add_x_right))
+        act_add_y.triggered.connect(lambda: on_action(act_add_y))
         act_ins_right.triggered.connect(lambda: on_action(act_ins_right))
         act_ins_left.triggered.connect(lambda: on_action(act_ins_left))
         act_rename.triggered.connect(lambda: on_action(act_rename))

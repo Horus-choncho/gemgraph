@@ -212,8 +212,12 @@ class ResultSheet(BaseSheet):
 class GraphType(enum.Enum):
     XY_SCATTER_CURVE = "XY Scatter & Fitted Curve"
     COLUMN_BAR_ERROR = "Column Bars (Mean ± SEM/SD)"
+    BARS_AND_POINTS = "Bars + Individual Points"
+    GROUPED_BARS_POINTS = "Grouped Bars + Replicate Points"
+    XY_SPIKES_CURVE = "Columns/Spikes + Curve Fit"
     BOX_WHISKER = "Box & Whisker"
     SURVIVAL_CURVE = "Kaplan-Meier Survival"
+
 
 
 class GraphSheet(BaseSheet):
