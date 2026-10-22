@@ -518,10 +518,15 @@ class MainWindow(QMainWindow):
             graph_sheet: GraphSheet = sheet  # type: ignore
             if graph_sheet.is_frozen and getattr(graph_sheet, "snapshot_table", None) is not None:
                 src_table = graph_sheet.snapshot_table
-                res_sheet = None
+                if getattr(graph_sheet, "snapshot_result_data", None):
+                    res_sheet = ResultSheet.from_dict(graph_sheet.snapshot_result_data)
+                elif graph_sheet.result_sheet_id:
+                    res_sheet = self.document.get_sheet(graph_sheet.result_sheet_id)
+                else:
+                    res_sheet = None
             else:
                 src_sheet = self.document.get_sheet(graph_sheet.source_sheet_id)
-                src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else None
+                src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else getattr(graph_sheet, "snapshot_table", None)
                 res_sheet = (
                     self.document.get_sheet(graph_sheet.result_sheet_id)
                     if graph_sheet.result_sheet_id
@@ -739,12 +744,14 @@ class MainWindow(QMainWindow):
         result = self.graph_canvas.current_result
 
         # Determine naming inputs
+        snapshot_result_data = None
         if result is not None:
             table_or_results_name = result.title
             analysis_model_name = getattr(result, "analysis_type", "Analysis")
             source_sheet_id = result.source_sheet_id
             result_sheet_id = result.sheet_id
             snapshot_table = table.clone() if table else None
+            snapshot_result_data = result.to_dict()
         elif table is not None:
             table_or_results_name = table.title or (active_sheet.title if active_sheet else "Data")
             analysis_model_name = "Raw"
@@ -806,6 +813,7 @@ class MainWindow(QMainWindow):
         )
         graph_sheet.is_pinned = True
         graph_sheet.snapshot_table = snapshot_table
+        graph_sheet.snapshot_result_data = snapshot_result_data
 
         self.navigator.populate(self.document)
         self.on_sheet_selected(graph_sheet.sheet_id)
@@ -816,14 +824,23 @@ class MainWindow(QMainWindow):
         active_sheet = self.document.get_sheet(self.document.active_sheet_id or "")
         if isinstance(active_sheet, GraphSheet):
             active_sheet.is_frozen = frozen
-            if frozen and getattr(active_sheet, "snapshot_table", None) is None:
-                src_sheet = self.document.get_sheet(active_sheet.source_sheet_id)
-                if isinstance(src_sheet, DataSheet):
-                    active_sheet.snapshot_table = src_sheet.table.clone()
+            if frozen:
+                if getattr(active_sheet, "snapshot_table", None) is None:
+                    src_sheet = self.document.get_sheet(active_sheet.source_sheet_id)
+                    if isinstance(src_sheet, DataSheet):
+                        active_sheet.snapshot_table = src_sheet.table.clone()
+                if getattr(active_sheet, "snapshot_result_data", None) is None and active_sheet.result_sheet_id:
+                    res_sheet = self.document.get_sheet(active_sheet.result_sheet_id)
+                    if isinstance(res_sheet, ResultSheet):
+                        active_sheet.snapshot_result_data = res_sheet.to_dict()
             elif not frozen:
-                active_sheet.snapshot_table = None
+                src_sheet = self.document.get_sheet(active_sheet.source_sheet_id)
+                if src_sheet is not None:
+                    active_sheet.snapshot_table = None
+                    active_sheet.snapshot_result_data = None
             self.navigator.populate(self.document)
             self.navigator.select_sheet(active_sheet.sheet_id)
+            self.on_sheet_selected(active_sheet.sheet_id)
 
     def action_new_project(self) -> None:
         self.document = PrismDocument("Untitled Project")

@@ -91,6 +91,31 @@ class CellExcludeCommand(Command):
         )
 
 
+class VariableCellEditCommand(Command):
+    """Command modifying a single cell in a Multiple Variables table."""
+
+    def __init__(
+        self,
+        table: DataTable,
+        row: int,
+        col: int,
+        old_val: Any,
+        new_val: Any,
+    ) -> None:
+        super().__init__("Edit Variable Cell")
+        self.table = table
+        self.row = row
+        self.col = col
+        self.old_val = old_val
+        self.new_val = new_val
+
+    def execute(self) -> None:
+        self.table.set_variable_value(self.row, self.col, self.new_val)
+
+    def undo(self) -> None:
+        self.table.set_variable_value(self.row, self.col, self.old_val)
+
+
 class UndoStack(QUndoStack):
     """Manages undo and redo stacks for a document or view, wrapping Qt QUndoStack."""
 

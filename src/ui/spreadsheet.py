@@ -12,7 +12,7 @@ from PyQt6.QtGui import QFont, QColor, QBrush, QKeyEvent, QUndoCommand
 from PyQt6.QtWidgets import QTableView, QMenu, QInputDialog, QMessageBox
 import re
 from src.core.table import DataTable, TableType
-from src.core.undo import UndoStack, CellEditCommand, CellExcludeCommand
+from src.core.undo import UndoStack, CellEditCommand, CellExcludeCommand, VariableCellEditCommand
 from src.ui.mediator import WorkspaceMediator
 
 
@@ -317,7 +317,11 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
         col = index.column()
 
         if self.table.table_type == TableType.MULTIPLE_VARIABLES:
-            self.table.set_variable_value(row, col, value)
+            old_val = self.table.get_variable_value(row, col)
+            if old_val == value or (value == "" and (old_val is None or (isinstance(old_val, float) and np.isnan(old_val)))):
+                return False
+            cmd = VariableCellEditCommand(self.table, row, col, old_val, value)
+            self.undo_stack.push(cmd)
             self.dataChanged.emit(index, index, [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
             self.dataChangedSignal.emit()
             return True
@@ -379,10 +383,14 @@ class BatchClearCellsCommand(QUndoCommand):
         self.entries: List[Tuple[int, int, Any]] = []
 
         if cells:
+            seen = set()
             if isinstance(cells[0], QModelIndex):
                 for idx in cells:
                     r = idx.row()
                     c = idx.column()
+                    if (r, c) in seen:
+                        continue
+                    seen.add((r, c))
                     if model.table.table_type == TableType.MULTIPLE_VARIABLES:
                         old_val = model.table.get_variable_value(r, c)
                     else:
@@ -391,7 +399,20 @@ class BatchClearCellsCommand(QUndoCommand):
                     self.entries.append((r, c, old_val))
             elif isinstance(cells[0], (tuple, list)):
                 for item in cells:
-                    self.entries.append((int(item[0]), int(item[1]), item[2]))
+                    r = int(item[0])
+                    c = int(item[1])
+                    if (r, c) in seen:
+                        continue
+                    seen.add((r, c))
+                    if len(item) >= 3:
+                        old_val = item[2]
+                    else:
+                        if model.table.table_type == TableType.MULTIPLE_VARIABLES:
+                            old_val = model.table.get_variable_value(r, c)
+                        else:
+                            col_type, g_idx, s_idx = model._col_to_cell_coords(c)
+                            old_val = model.table.get_cell_value(r, col_type, g_idx, s_idx)
+                    self.entries.append((r, c, old_val))
 
         self.cells = self.entries
 
@@ -701,7 +722,7 @@ class ScientificSpreadsheetView(QTableView):
             model.dataChangedSignal.emit()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+        if self.state() != self.State.EditingState and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             selection_model = self.selectionModel()
             if selection_model is not None:
                 indexes = selection_model.selectedIndexes()

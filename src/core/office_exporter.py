@@ -369,7 +369,16 @@ def render_graph_to_png_bytes(
         elif isinstance(target_sheet, GraphSheet):
             if target_sheet.is_frozen and getattr(target_sheet, "snapshot_table", None) is not None:
                 src_table = target_sheet.snapshot_table
-                res_sheet = None
+                if getattr(target_sheet, "snapshot_result_data", None):
+                    res_sheet = ResultSheet.from_dict(target_sheet.snapshot_result_data)
+                elif target_sheet.result_sheet_id:
+                    res_sheet = (
+                        doc.get_sheet(target_sheet.result_sheet_id)
+                        if doc
+                        else None
+                    )
+                else:
+                    res_sheet = None
             else:
                 src_sheet = doc.get_sheet(target_sheet.source_sheet_id) if doc else None
                 src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else None
@@ -483,7 +492,8 @@ class OfficeExporter:
         info_sheets, data_sheets, result_sheets, graph_sheets = self._get_export_items(selected_sheet_ids)
 
         graph_images: List[Tuple[str, bytes]] = []
-        for g in graph_sheets:
+        target_graphs = graph_sheets if graph_sheets else data_sheets
+        for g in target_graphs:
             try:
                 png_bytes = render_graph_to_png_bytes(g, self.document, self.graph_canvas)
                 graph_images.append((g.title, png_bytes))
@@ -682,7 +692,8 @@ class OfficeExporter:
         info_sheets, data_sheets, result_sheets, graph_sheets = self._get_export_items(selected_sheet_ids)
 
         graph_images: List[Tuple[str, bytes]] = []
-        for g in graph_sheets:
+        target_graphs = graph_sheets if graph_sheets else data_sheets
+        for g in target_graphs:
             try:
                 png_bytes = render_graph_to_png_bytes(g, self.document, self.graph_canvas)
                 graph_images.append((g.title, png_bytes))
@@ -922,7 +933,8 @@ class OfficeExporter:
         graph_images: List[Tuple[str, bytes]] = []
         graph_sheet_indices: List[Tuple[int, int]] = []  # (worksheet_idx_1based, image_idx_1based)
 
-        for g in graph_sheets:
+        target_graphs = graph_sheets if graph_sheets else data_sheets
+        for g in target_graphs:
             try:
                 png_bytes = render_graph_to_png_bytes(g, self.document, self.graph_canvas)
                 graph_images.append((g.title, png_bytes))
@@ -1139,7 +1151,8 @@ class OfficeExporter:
 
         # Render graph sheets to PNG bytes
         graph_images: List[Tuple[str, bytes]] = []
-        for g in graph_sheets:
+        target_graphs = graph_sheets if graph_sheets else data_sheets
+        for g in target_graphs:
             try:
                 png_bytes = render_graph_to_png_bytes(g, self.document, self.graph_canvas)
                 graph_images.append((g.title, png_bytes))
@@ -1342,7 +1355,8 @@ class OfficeExporter:
                     html_parts.append("</table>")
 
         # Graphs
-        for g in graph_sheets:
+        target_graphs = graph_sheets if graph_sheets else data_sheets
+        for g in target_graphs:
             html_parts.append(f"<h2>Graph: {sanitize_xml(g.title)}</h2>")
             try:
                 png_bytes = render_graph_to_png_bytes(g, self.document, self.graph_canvas)

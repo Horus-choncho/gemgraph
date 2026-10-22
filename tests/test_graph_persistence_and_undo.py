@@ -108,6 +108,23 @@ class TestSpreadsheetUndo(unittest.TestCase):
         self.assertEqual(self.table.get_cell_value(1, "Y", 0, 0), 30.5)
         self.assertEqual(self.table.get_cell_value(1, "Y", 0, 1), 40.5)
 
+    def test_batch_clear_discontinuous_selection_and_tuple_formats(self) -> None:
+        """Discontinuous cell clearing using 2-tuple coordinates clears cells and undoes cleanly."""
+        self.table.set_cell_value(0, "Y", 0, 0, 111.0)
+        self.table.set_cell_value(2, "Y", 0, 1, 222.0)
+
+        # Pass 2-tuples [(0, 0), (2, 1)] with a duplicate (0, 0)
+        cmd = BatchClearCellsCommand(self.model, [(0, 0), (2, 1), (0, 0)], "Clear Non-Adjacent")
+        self.view.undo_stack.push(cmd)
+
+        self.assertTrue(np.isnan(self.table.get_cell_value(0, "Y", 0, 0)))
+        self.assertTrue(np.isnan(self.table.get_cell_value(2, "Y", 0, 1)))
+
+        # Undo restores both cells
+        self.view.undo_stack.undo()
+        self.assertEqual(self.table.get_cell_value(0, "Y", 0, 0), 111.0)
+        self.assertEqual(self.table.get_cell_value(2, "Y", 0, 1), 222.0)
+
 
 class TestFocusAwareUndoRedo(unittest.TestCase):
     """Tests routing of Ctrl+Z / Ctrl+Y according to QApplication.focusWidget()."""
@@ -221,6 +238,22 @@ class TestPerSheetGraphStatePersistence(unittest.TestCase):
         self.assertEqual(canvas.plot_type_combo.currentText(), GraphType.COLUMN_BAR_ERROR.value)
         self.assertEqual(canvas.palette_combo.currentText(), "viridis")
         self.assertFalse(canvas.show_scatter_check.isChecked())
+
+    def test_navigation_switches_defaults_without_contamination(self) -> None:
+        """Navigating from a customized Column sheet to a new XY sheet resets to XY defaults without bleed."""
+        sheet1 = self.doc.create_data_sheet("Custom Column", TableType.COLUMN)
+        self.window.on_sheet_selected(sheet1.sheet_id)
+        canvas = self.window.graph_canvas
+        canvas.palette_combo.setCurrentIndex(1)  # Journal Grayscale
+        self.assertEqual(sheet1.plot_config["palette_index"], 1)
+
+        # Create new unconfigured XY sheet
+        sheet2 = self.doc.create_data_sheet("New XY", TableType.XY)
+        self.window.on_sheet_selected(sheet2.sheet_id)
+
+        # Regression check: must be XY Scatter & Curve with default color palette, NOT Column/Grayscale!
+        self.assertEqual(canvas.plot_type_combo.currentText(), GraphType.XY_SCATTER_CURVE.value)
+        self.assertEqual(canvas.palette_combo.currentIndex(), 0)
 
 
 class TestOfficeExportIsolation(unittest.TestCase):
@@ -352,6 +385,50 @@ class TestPinnedAndFrozenGraphs(unittest.TestCase):
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+    def test_freeze_graph_preserves_analysis_curves(self) -> None:
+        """Freezing an analysis graph preserves analysis_layers and snapshot_result_data."""
+        data_sheet = self.doc.create_data_sheet("Bioassay", TableType.XY, num_rows=5, num_replicates=1)
+        for i in range(5):
+            data_sheet.table.set_cell_value(i, "X", 0, 0, float(i))
+            data_sheet.table.set_cell_value(i, "Y", 0, 0, float(2 * i + 1))
+
+        self.window.on_sheet_selected(data_sheet.sheet_id)
+        self.window.action_run_linear()
+
+        res_sheet = [s for s in self.doc.sheets.values() if s.sheet_type == SheetType.RESULTS][0]
+        self.window.on_sheet_selected(res_sheet.sheet_id)
+
+        pinned_sheet = self.window.action_pin_graph()
+        self.assertIsNotNone(pinned_sheet.result_sheet_id)
+        self.assertIsNotNone(pinned_sheet.snapshot_result_data)
+        self.assertGreaterEqual(len(self.window.graph_canvas.analysis_layers), 1)
+
+        # Freeze graph
+        self.window.graph_canvas.btn_freeze.setChecked(True)
+        self.window.on_sheet_selected(pinned_sheet.sheet_id)
+
+        # Regression check: fitted curve MUST remain present on frozen graph!
+        self.assertGreaterEqual(len(self.window.graph_canvas.analysis_layers), 1)
+        self.assertTrue(pinned_sheet.is_frozen)
+
+    def test_unfreeze_orphaned_graph_preserves_snapshot_fallback(self) -> None:
+        """Unfreezing a graph whose upstream parent was deleted retains snapshot data fallback."""
+        data_sheet = self.doc.create_data_sheet("Parent", TableType.COLUMN)
+        data_sheet.table.set_cell_value(0, "Y", 0, 0, 77.0)
+
+        self.window.on_sheet_selected(data_sheet.sheet_id)
+        pinned = self.window.action_pin_graph()
+        self.window.graph_canvas.btn_freeze.setChecked(True)
+
+        # Delete upstream parent sheet
+        self.doc.remove_sheet(data_sheet.sheet_id)
+        pinned.is_orphaned = True
+
+        # Unfreeze
+        self.window.graph_canvas.btn_freeze.setChecked(False)
+        self.assertIsNotNone(pinned.snapshot_table)
+        self.assertEqual(pinned.snapshot_table.get_cell_value(0, "Y", 0, 0), 77.0)
 
 
 class TestProjectNavigatorContextMenus(unittest.TestCase):

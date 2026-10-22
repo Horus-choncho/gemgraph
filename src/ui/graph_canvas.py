@@ -411,10 +411,12 @@ class ScientificPlotCanvas(QWidget):
                     sheet.graph_type = gt
                     break
 
-    def load_plot_config(self, plot_config: Optional[Dict[str, Any]]) -> None:
+    def load_plot_config(
+        self,
+        plot_config: Optional[Dict[str, Any]] = None,
+        default_graph_type: Optional[str] = None,
+    ) -> None:
         """Loads saved plot_config onto toolbar controls and repaints."""
-        if not plot_config:
-            return
         controls = [
             self.type_combo,
             self.palette_combo,
@@ -424,8 +426,9 @@ class ScientificPlotCanvas(QWidget):
         for ctrl in controls:
             ctrl.blockSignals(True)
 
+        cfg = dict(plot_config or {})
         try:
-            ptype = plot_config.get("plot_type") or plot_config.get("graph_type")
+            ptype = cfg.get("plot_type") or cfg.get("graph_type") or default_graph_type
             if ptype:
                 val = ptype.value if hasattr(ptype, "value") else str(ptype)
                 idx = self.type_combo.findText(val)
@@ -442,9 +445,9 @@ class ScientificPlotCanvas(QWidget):
                 if idx >= 0:
                     self.type_combo.setCurrentIndex(idx)
 
-            pal_idx = plot_config.get("palette_index")
-            pal_text = plot_config.get("palette")
-            is_gray = plot_config.get("is_grayscale")
+            pal_idx = cfg.get("palette_index")
+            pal_text = cfg.get("palette")
+            is_gray = cfg.get("is_grayscale")
             if is_gray is True or pal_text in ("📄 Palette: Journal Grayscale", "grayscale", "gray") or pal_idx == 1:
                 self.palette_combo.setCurrentIndex(1)
             elif pal_text and pal_text not in ("🎨 Palette: Color", "color"):
@@ -454,30 +457,30 @@ class ScientificPlotCanvas(QWidget):
                     idx = self.palette_combo.findText(pal_text)
                 if idx >= 0:
                     self.palette_combo.setCurrentIndex(idx)
-            elif is_gray is False or pal_text in ("🎨 Palette: Color", "color") or pal_idx == 0:
+            else:
                 self.palette_combo.setCurrentIndex(0)
 
-            whisker_dir = plot_config.get("whisker_dir")
+            whisker_dir = cfg.get("whisker_dir")
             if whisker_dir:
                 idx = self.whisker_dir_combo.findText(whisker_dir)
                 if idx >= 0:
                     self.whisker_dir_combo.setCurrentIndex(idx)
+            else:
+                self.whisker_dir_combo.setCurrentIndex(0)
 
-            if "show_bar_scatter_points" in plot_config or "show_scatter" in plot_config:
-                val = bool(plot_config.get("show_bar_scatter_points", plot_config.get("show_scatter", True)))
-                self.show_bar_scatter_points = val
-                self.btn_toggle_scatter.setChecked(val)
+            val = bool(cfg.get("show_bar_scatter_points", cfg.get("show_scatter", True)))
+            self.show_bar_scatter_points = val
+            self.btn_toggle_scatter.setChecked(val)
 
-            if "error_style" in plot_config:
-                self.error_style = plot_config["error_style"]
-            if "series_styles" in plot_config:
-                self.series_styles = dict(plot_config["series_styles"])
-            if "series_colors" in plot_config:
+            self.error_style = cfg.get("error_style", "SEM")
+            self.series_styles = dict(cfg.get("series_styles", {}))
+            if "series_colors" in cfg:
                 self.custom_series_colors = {
-                    k: QColor(v) for k, v in plot_config["series_colors"].items()
+                    k: QColor(v) for k, v in cfg["series_colors"].items()
                 }
-            if "series_opacities" in plot_config:
-                self.custom_series_opacities = dict(plot_config["series_opacities"])
+            else:
+                self.custom_series_colors = {}
+            self.custom_series_opacities = dict(cfg.get("series_opacities", {}))
         finally:
             for ctrl in controls:
                 ctrl.blockSignals(False)
@@ -709,8 +712,23 @@ class ScientificPlotCanvas(QWidget):
         else:
             self.btn_freeze.setVisible(False)
 
-        if sheet is not None and getattr(sheet, "plot_config", None):
-            self.load_plot_config(sheet.plot_config)
+        if sheet is not None:
+            # Determine default graph type if none is saved in plot_config
+            def_gt = None
+            if graph_type:
+                def_gt = graph_type.value
+            elif isinstance(sheet, GraphSheet):
+                def_gt = sheet.graph_type.value
+            elif self.current_table:
+                if self.current_table.table_type == TableType.COLUMN:
+                    def_gt = GraphType.COLUMN_BAR_ERROR.value
+                elif self.current_table.table_type == TableType.GROUPED:
+                    def_gt = GraphType.GROUPED_BARS_POINTS.value
+                else:
+                    def_gt = GraphType.XY_SCATTER_CURVE.value
+
+            plot_cfg = getattr(sheet, "plot_config", None) or {}
+            self.load_plot_config(plot_cfg, default_graph_type=def_gt)
         else:
             if graph_type:
                 idx = self.type_combo.findText(graph_type.value)
