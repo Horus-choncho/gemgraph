@@ -31,73 +31,246 @@ class PrismIO:
 
     @classmethod
     def save(cls, document: PrismDocument, file_path: str) -> None:
-        """Serializes PrismDocument into a .prism PK-ZIP archive."""
+        """Serializes PrismDocument into a .bigo / .prism PK-ZIP archive compatible with GraphPad Prism 10."""
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
 
+        data_uids: List[str] = []
+        info_uids: List[str] = []
+        graph_uids: List[str] = []
+        result_uids: List[str] = []
+
+        for sid in document.sheet_order:
+            s = document.sheets.get(sid)
+            if s is None:
+                continue
+            if s.sheet_type == SheetType.DATA:
+                data_uids.append(sid)
+            elif s.sheet_type == SheetType.INFO:
+                info_uids.append(sid)
+            elif s.sheet_type == SheetType.GRAPH:
+                graph_uids.append(sid)
+            elif s.sheet_type == SheetType.RESULTS:
+                result_uids.append(sid)
+
+        active_data = None
+        if document.active_sheet_id and document.active_sheet_id in document.sheets:
+            act_s = document.sheets[document.active_sheet_id]
+            if act_s.sheet_type == SheetType.DATA:
+                active_data = act_s.sheet_id
+        if not active_data and data_uids:
+            active_data = data_uids[0]
+
+        manifest = {
+            "@class": "Document",
+            "$id": "document.schema.json",
+            "formatVersion": "1-4-1",
+            "minFormatVersion": "1-2-0",
+            "minPrismVersion": "10.1.0",
+            "generator": "GemGraph Clean-Room 1.0",
+            "doc_id": document.doc_id,
+            "title": document.title,
+            "sheetAttributesMap": {
+                s.sheet_id: {
+                    "title": s.title,
+                    "type": "table" if s.sheet_type == SheetType.DATA else (
+                        "info" if s.sheet_type == SheetType.INFO else (
+                            "graph" if s.sheet_type == SheetType.GRAPH else "result"
+                        )
+                    ),
+                }
+                for s in document.sheets.values()
+            },
+            "sheets": {
+                "data": data_uids,
+                "info": info_uids,
+                "graphs": graph_uids,
+                "results": result_uids,
+            },
+            "sheetOrder": document.sheet_order,
+            "uiSettings": {
+                "currentSheets": {
+                    "data": active_data or "",
+                }
+            },
+        }
+
         with zipfile.ZipFile(file_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-            # 1. document.json manifest
-            manifest = {
-                "format_version": cls.FORMAT_VERSION,
-                "generator": "GemGraph Clean-Room 1.0",
-                "doc_id": document.doc_id,
-                "title": document.title,
-                "active_sheet_id": document.active_sheet_id,
-                "sheet_order": document.sheet_order,
-                "sheets_manifest": [],
-            }
+            zf.writestr("document.json", json.dumps(manifest, indent=2))
 
             for sheet_id in document.sheet_order:
                 sheet = document.sheets[sheet_id]
-                manifest["sheets_manifest"].append({
-                    "sheet_id": sheet.sheet_id,
-                    "title": sheet.title,
-                    "sheet_type": sheet.sheet_type.value,
-                    "sheet_file": f"data/sheets/{sheet.sheet_id}.json",
-                })
-
-                # Write sheet json
-                sheet_dict = sheet.to_dict()
-                zf.writestr(
-                    f"data/sheets/{sheet.sheet_id}.json",
-                    json.dumps(sheet_dict, indent=2),
-                )
-
-                # If DataSheet, also export data.csv
                 if isinstance(sheet, DataSheet):
                     table = sheet.table
+                    t_uid = table.table_id
+
+                    format_map = {
+                        TableType.XY: ("XYDataTable", "xy"),
+                        TableType.COLUMN: ("OneWayDataTable", "one_way"),
+                        TableType.GROUPED: ("TwoWayDataTable", "two_way"),
+                        TableType.CONTINGENCY: ("ContingencyDataTable", "contingency"),
+                        TableType.SURVIVAL: ("SurvivalDataTable", "survival"),
+                        TableType.PARTS_OF_WHOLE: ("PartsOfWholeDataTable", "parts_of_whole"),
+                        TableType.MULTIPLE_VARIABLES: ("MultipleVariablesDataTable", "multiple_variables"),
+                        TableType.NESTED: ("NestedDataTable", "nested"),
+                    }
+                    cls_name, fmt_name = format_map.get(table.table_type, ("XYDataTable", "xy"))
+
+                    x_ds_id = f"X_{t_uid}" if table.x_data is not None else None
+                    y_ds_ids = [f"Y_{t_uid}_{g_idx}" for g_idx in range(len(table.y_group_titles))]
+
+                    # 1. data/sheets/<s_uid>/sheet.json
+                    sheet_meta: Dict[str, Any] = {
+                        "@class": "DataSheet",
+                        "$id": "sheets/data_sheet/data_sheet.schema.json",
+                        "uid": sheet.sheet_id,
+                        "title": sheet.title,
+                        "isCustomTitle": True,
+                        "table": {
+                            "@class": cls_name,
+                            "$id": "sheets/data_sheet/data_table/data_table.schema.json",
+                            "uid": t_uid,
+                            "format": fmt_name,
+                            "dataSets": y_ds_ids,
+                        },
+                    }
+                    if x_ds_id:
+                        sheet_meta["table"]["xDataSet"] = x_ds_id
+
                     zf.writestr(
-                        f"data/tables/{table.table_id}.json",
-                        json.dumps(table.to_dict(), indent=2),
+                        f"data/sheets/{sheet.sheet_id}/sheet.json",
+                        json.dumps(sheet_meta, indent=2),
                     )
-                    # Create readable CSV
-                    csv_buf = io.StringIO()
-                    col_names = []
-                    if table.x_data is not None:
-                        col_names.append(table.x_title or "X")
-                    for g_idx, g_title in enumerate(table.y_group_titles):
+
+                    # 2. data/sets/<x_ds_id>.json
+                    if x_ds_id:
+                        x_exclusions = [
+                            {"attributes": ["EXCLUDED"], "rows": str(r)}
+                            for r in range(table.num_rows)
+                            if table.is_excluded(r, "X", 0, 0)
+                        ]
+                        x_set_meta = {
+                            "@class": "DataSet",
+                            "$id": "sheets/data_sheet/data_table/data_set.schema.json",
+                            "uid": x_ds_id,
+                            "format": "y_single",
+                            "title": {"string": table.x_title or "X"},
+                            "attributes": ["DS_ATTR_X"],
+                            "replicates": [
+                                {
+                                    "@class": "DriverReplicate",
+                                    "valueType": "real",
+                                    "cellAttributes": x_exclusions,
+                                }
+                            ],
+                        }
+                        zf.writestr(f"data/sets/{x_ds_id}.json", json.dumps(x_set_meta, indent=2))
+
+                    # 3. data/sets/<y_ds_id>.json for each group
+                    for g_idx, y_ds_id in enumerate(y_ds_ids):
+                        g_title = table.y_group_titles[g_idx]
+                        reps = []
                         for s_idx in range(table.num_replicates):
-                            col_names.append(f"{g_title}:Y{s_idx + 1}")
+                            y_exclusions = [
+                                {"attributes": ["EXCLUDED"], "rows": str(r)}
+                                for r in range(table.num_rows)
+                                if table.is_excluded(r, "Y", g_idx, s_idx)
+                            ]
+                            reps.append({
+                                "@class": "DriverReplicate",
+                                "valueType": "real",
+                                "cellAttributes": y_exclusions,
+                            })
+                        y_set_meta = {
+                            "@class": "DataSet",
+                            "$id": "sheets/data_sheet/data_table/data_set.schema.json",
+                            "uid": y_ds_id,
+                            "format": "y_single",
+                            "title": {"string": g_title},
+                            "attributes": ["DS_ATTR_Y"],
+                            "replicates": reps,
+                        }
+                        zf.writestr(f"data/sets/{y_ds_id}.json", json.dumps(y_set_meta, indent=2))
 
-                    # Build rows
-                    rows_data = []
-                    for r in range(table.num_rows):
-                        row_vals = []
-                        if table.x_data is not None:
-                            row_vals.append(table.x_data[r])
-                        for g_idx in range(len(table.y_group_titles)):
-                            for s_idx in range(table.num_replicates):
-                                row_vals.append(table.y_data[g_idx, r, s_idx])
-                        rows_data.append(row_vals)
+                    # 4. data/tables/<t_uid>/content.json
+                    num_cols = (1 if table.x_data is not None else 0) + len(table.y_group_titles) * table.num_replicates
+                    if table.table_type == TableType.MULTIPLE_VARIABLES:
+                        num_cols = len(table.variables)
+                    content_meta = {
+                        "$id": "sheets/data_sheet/data_table/data_table_storage.schema.json",
+                        "numberOfColumns": num_cols,
+                        "numberOfRows": table.num_rows,
+                        "version": 1,
+                        "cellColors": [
+                            [r, c_type, g_idx, s_idx, color]
+                            for (r, c_type, g_idx, s_idx), color in table.cell_colors.items()
+                        ],
+                        "rowTitles": table.row_titles,
+                        "variables": [v.to_dict() for v in table.variables] if table.table_type == TableType.MULTIPLE_VARIABLES else None,
+                        "multiVarData": table.multi_var_data if table.table_type == TableType.MULTIPLE_VARIABLES else None,
+                        "nestedSubgroupTitles": {str(k): v for k, v in table.nested_subgroup_titles.items()},
+                    }
+                    zf.writestr(
+                        f"data/tables/{t_uid}/content.json",
+                        json.dumps(content_meta, indent=2),
+                    )
 
-                    df = pd.DataFrame(rows_data, columns=col_names)
-                    df.to_csv(csv_buf, index=False)
-                    zf.writestr(f"data/tables/{table.table_id}.csv", csv_buf.getvalue())
+                    # 5. data/tables/<t_uid>/data.csv
+                    csv_buf = io.StringIO()
+                    csv_writer = csv.writer(csv_buf)
+                    if table.table_type == TableType.MULTIPLE_VARIABLES:
+                        for row in table.multi_var_data:
+                            csv_writer.writerow([
+                                ("" if (v is None or (isinstance(v, float) and np.isnan(v))) else str(v))
+                                for v in row
+                            ])
+                    else:
+                        for r in range(table.num_rows):
+                            row_vals = []
+                            if table.x_data is not None:
+                                xv = table.x_data[r]
+                                row_vals.append("" if np.isnan(xv) else f"{xv:.8g}")
+                            for g_idx in range(len(table.y_group_titles)):
+                                for s_idx in range(table.num_replicates):
+                                    yv = table.y_data[g_idx, r, s_idx]
+                                    row_vals.append("" if np.isnan(yv) else f"{yv:.8g}")
+                            csv_writer.writerow(row_vals)
+                    zf.writestr(f"data/tables/{t_uid}/data.csv", csv_buf.getvalue())
 
-            zf.writestr("document.json", json.dumps(manifest, indent=2))
+                elif isinstance(sheet, InfoSheet):
+                    info_meta = {
+                        "@class": "InfoSheet",
+                        "uid": sheet.sheet_id,
+                        "title": sheet.title,
+                        "notesText": sheet.notes,
+                        "constants": sheet.constants,
+                    }
+                    zf.writestr(f"info/{sheet.sheet_id}/sheet.json", json.dumps(info_meta, indent=2))
+
+                elif isinstance(sheet, GraphSheet):
+                    graph_meta = {
+                        "@class": "GraphSheet",
+                        "uid": sheet.sheet_id,
+                        "title": sheet.title,
+                        "source_sheet_id": sheet.source_sheet_id,
+                        "inputDataSets": [f"Y_{sheet.source_sheet_id}_0"] if sheet.source_sheet_id else [],
+                    }
+                    zf.writestr(f"graphs/{sheet.sheet_id}/sheet.json", json.dumps(graph_meta, indent=2))
+
+                elif isinstance(sheet, ResultSheet):
+                    res_meta = {
+                        "@class": "ResultSheet",
+                        "uid": sheet.sheet_id,
+                        "title": sheet.title,
+                        "analysis_type": sheet.analysis_type,
+                        "source_sheet_id": sheet.source_sheet_id,
+                        "summary_tables": sheet.summary_tables,
+                        "raw_result_data": sheet.raw_result_data,
+                    }
+                    zf.writestr(f"results/{sheet.sheet_id}/sheet.json", json.dumps(res_meta, indent=2))
 
     @classmethod
     def load(cls, file_path: str) -> PrismDocument:
-        """Parses a project archive or data file (.prism, .pzfx, .xml, .csv) into a PrismDocument."""
+        """Parses a project archive or data file (.bigo, .prism, .pzfx, .xml, .csv) into a PrismDocument."""
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
 
@@ -108,16 +281,24 @@ class PrismIO:
             from src.io.xml_io import PrismXMLIO
             return PrismXMLIO.import_xml(file_path)
 
-        with zipfile.ZipFile(file_path, mode="r") as zf:
-            if "document.json" not in zf.namelist():
-                raise ValueError("Invalid .prism archive: missing document.json")
+        if zipfile.is_zipfile(file_path):
+            with zipfile.ZipFile(file_path, mode="r") as zf:
+                if "document.json" not in zf.namelist():
+                    raise ValueError(f"Invalid project archive ({ext}): missing document.json")
 
-            manifest = json.loads(zf.read("document.json").decode("utf-8"))
+                manifest = json.loads(zf.read("document.json").decode("utf-8"))
 
-            if "sheets_manifest" in manifest:
-                return cls._load_cleanroom(zf, manifest)
-            else:
-                return cls._load_prism10(zf, manifest)
+                if "sheets_manifest" in manifest:
+                    return cls._load_cleanroom(zf, manifest)
+                else:
+                    return cls._load_prism10(zf, manifest)
+
+        # Fallback: try XML or CSV
+        try:
+            from src.io.xml_io import PrismXMLIO
+            return PrismXMLIO.import_xml(file_path)
+        except Exception:
+            return cls.load_csv(file_path)
 
     @classmethod
     def load_csv(cls, file_path: str) -> PrismDocument:
@@ -431,6 +612,12 @@ class PrismIO:
                 t_type = TableType.CONTINGENCY
             elif "survival" in raw_fmt:
                 t_type = TableType.SURVIVAL
+            elif "parts_of_whole" in raw_fmt or "fraction" in raw_fmt:
+                t_type = TableType.PARTS_OF_WHOLE
+            elif "multiple_variables" in raw_fmt:
+                t_type = TableType.MULTIPLE_VARIABLES
+            elif "nested" in raw_fmt:
+                t_type = TableType.NESTED
             else:
                 t_type = TableType.XY
 
@@ -577,6 +764,26 @@ class PrismIO:
                 table.set_excluded(r_idx, "X", 0, 0, True)
             for r_idx, g_idx, s_idx in y_exclusions:
                 table.set_excluded(r_idx, "Y", g_idx, s_idx, True)
+
+            # Restore content metadata (cell colors, row titles, variables, nested titles)
+            content_json_path = f"data/tables/{t_uid}/content.json"
+            if content_json_path in zf.namelist():
+                try:
+                    cj = json.loads(zf.read(content_json_path).decode("utf-8"))
+                    for item in cj.get("cellColors", []):
+                        if len(item) == 5:
+                            table.cell_colors[(item[0], item[1], item[2], item[3])] = item[4]
+                    if cj.get("rowTitles"):
+                        table.row_titles = cj["rowTitles"]
+                    if cj.get("variables"):
+                        from src.core.table import VariableMetadata
+                        table.variables = [VariableMetadata.from_dict(v) for v in cj["variables"]]
+                    if cj.get("multiVarData"):
+                        table.multi_var_data = cj["multiVarData"]
+                    if cj.get("nestedSubgroupTitles"):
+                        table.nested_subgroup_titles = {int(k): v for k, v in cj["nestedSubgroupTitles"].items()}
+                except Exception:
+                    pass
 
             data_sheet = DataSheet(sheet_id=s_uid, title=s_title, table=table)
             doc.sheets[s_uid] = data_sheet

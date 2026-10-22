@@ -266,6 +266,325 @@ class DataTable:
         self.nested_subgroup_titles = new_nested
         return True
 
+    def insert_y_group(self, group_idx: int, title: Optional[str] = None) -> int:
+        """Inserts a new Y column group at group_idx, shifting subsequent groups and masks."""
+        group_idx = max(0, min(group_idx, len(self.y_group_titles)))
+        if not title:
+            i = 0
+            while True:
+                candidate = f"Group {chr(ord('A') + i)}" if i < 26 else f"Group {i + 1}"
+                if candidate not in self.y_group_titles:
+                    title = candidate
+                    break
+                i += 1
+        self.y_group_titles.insert(group_idx, title)
+
+        new_group_data = np.full(
+            (1, self.num_rows, self.num_replicates), np.nan, dtype=np.float64
+        )
+        if self.y_data.size == 0 or self.y_data.shape[0] == 0:
+            self.y_data = new_group_data
+        else:
+            self.y_data = np.insert(self.y_data, group_idx, new_group_data[0], axis=0)
+
+        # Shift excluded points for g_idx >= group_idx
+        new_excluded = set()
+        for r, c_type, g_idx, s_idx in self.excluded_points:
+            if c_type == "Y" and g_idx >= group_idx:
+                new_excluded.add((r, c_type, g_idx + 1, s_idx))
+            else:
+                new_excluded.add((r, c_type, g_idx, s_idx))
+        self.excluded_points = new_excluded
+
+        # Shift cell colors for g_idx >= group_idx
+        new_colors = {}
+        for (r, c_type, g_idx, s_idx), col in self.cell_colors.items():
+            if c_type == "Y" and g_idx >= group_idx:
+                new_colors[(r, c_type, g_idx + 1, s_idx)] = col
+            else:
+                new_colors[(r, c_type, g_idx, s_idx)] = col
+        self.cell_colors = new_colors
+
+        # Shift nested titles
+        new_nested = {}
+        for g_i, titles in self.nested_subgroup_titles.items():
+            if g_i >= group_idx:
+                new_nested[g_i + 1] = titles
+            else:
+                new_nested[g_i] = titles
+        self.nested_subgroup_titles = new_nested
+
+        return group_idx
+
+    def rename_group(self, group_idx: int, new_title: str) -> None:
+        """Renames a Y group."""
+        if 0 <= group_idx < len(self.y_group_titles):
+            self.y_group_titles[group_idx] = new_title
+
+    def insert_variable(
+        self,
+        var_idx: int,
+        name: Optional[str] = None,
+        var_type: VariableType = VariableType.CONTINUOUS,
+        levels: Optional[List[str]] = None,
+    ) -> int:
+        """Inserts a new variable column at var_idx in a Multiple Variables table."""
+        var_idx = max(0, min(var_idx, len(self.variables)))
+        if not name:
+            name = f"Var {len(self.variables) + 1}"
+        var = VariableMetadata(name, var_type, levels)
+        self.variables.insert(var_idx, var)
+        for row in self.multi_var_data:
+            row.insert(var_idx, "" if var_type != VariableType.CONTINUOUS else np.nan)
+
+        # Shift cell colors for VAR columns >= var_idx
+        new_colors = {}
+        for (r, c_type, g_idx, s_idx), col in self.cell_colors.items():
+            if c_type == "VAR" and g_idx >= var_idx:
+                new_colors[(r, c_type, g_idx + 1, s_idx)] = col
+            else:
+                new_colors[(r, c_type, g_idx, s_idx)] = col
+        self.cell_colors = new_colors
+
+        return var_idx
+
+    def remove_variable(self, var_idx: int) -> bool:
+        """Removes a variable column from a Multiple Variables table."""
+        if var_idx < 0 or var_idx >= len(self.variables):
+            return False
+        if len(self.variables) <= 1:
+            return False
+        del self.variables[var_idx]
+        for row in self.multi_var_data:
+            if var_idx < len(row):
+                del row[var_idx]
+
+        # Shift and prune cell colors for VAR columns
+        new_colors = {}
+        for (r, c_type, g_idx, s_idx), col in self.cell_colors.items():
+            if c_type == "VAR":
+                if g_idx == var_idx:
+                    continue
+                elif g_idx > var_idx:
+                    new_colors[(r, c_type, g_idx - 1, s_idx)] = col
+                else:
+                    new_colors[(r, c_type, g_idx, s_idx)] = col
+            else:
+                new_colors[(r, c_type, g_idx, s_idx)] = col
+        self.cell_colors = new_colors
+
+        return True
+
+    def rename_variable(self, var_idx: int, new_name: str) -> None:
+        """Renames a variable in a Multiple Variables table."""
+        if 0 <= var_idx < len(self.variables):
+            self.variables[var_idx].name = new_name
+
+    def get_column_title(self, col_idx: int) -> str:
+        """Returns the editable column title for a view column index."""
+        if self.table_type == TableType.MULTIPLE_VARIABLES:
+            if 0 <= col_idx < len(self.variables):
+                return self.variables[col_idx].name
+            return f"Var {col_idx + 1}"
+        if self.x_data is not None:
+            if col_idx == 0:
+                return self.x_title or "X"
+            g_idx = (col_idx - 1) // self.num_replicates
+        else:
+            g_idx = col_idx // self.num_replicates
+        if 0 <= g_idx < len(self.y_group_titles):
+            return self.y_group_titles[g_idx]
+        return f"Group {g_idx + 1}"
+
+    def rename_column(self, col_idx: int, new_title: str) -> bool:
+        """Renames a column by view column index."""
+        if not new_title or not new_title.strip():
+            return False
+        new_title = new_title.strip()
+        if self.table_type == TableType.MULTIPLE_VARIABLES:
+            if 0 <= col_idx < len(self.variables):
+                self.rename_variable(col_idx, new_title)
+                return True
+            return False
+        if self.x_data is not None:
+            if col_idx == 0:
+                self.x_title = new_title
+                return True
+            g_idx = (col_idx - 1) // self.num_replicates
+        else:
+            g_idx = col_idx // self.num_replicates
+        if 0 <= g_idx < len(self.y_group_titles):
+            self.rename_group(g_idx, new_title)
+            return True
+        return False
+
+    def insert_column(self, col_idx: int, position: str = "right", title: Optional[str] = None) -> int:
+        """Inserts a column to the left or right of col_idx."""
+        if self.table_type == TableType.MULTIPLE_VARIABLES:
+            target = col_idx + 1 if position == "right" else col_idx
+            return self.insert_variable(target, name=title)
+
+        if self.x_data is not None:
+            if col_idx == 0:
+                target_g = 0
+            else:
+                curr_g = (col_idx - 1) // self.num_replicates
+                target_g = curr_g + 1 if position == "right" else curr_g
+        else:
+            curr_g = col_idx // self.num_replicates
+            target_g = curr_g + 1 if position == "right" else curr_g
+        return self.insert_y_group(target_g, title=title)
+
+    def delete_column(self, col_idx: int) -> bool:
+        """Deletes column at col_idx. Returns False if operation disallowed."""
+        if self.table_type == TableType.MULTIPLE_VARIABLES:
+            return self.remove_variable(col_idx)
+
+        if self.x_data is not None:
+            if col_idx == 0:
+                return False
+            g_idx = (col_idx - 1) // self.num_replicates
+        else:
+            g_idx = col_idx // self.num_replicates
+        return self.remove_y_group(g_idx)
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """Converts DataTable representation into a pandas DataFrame."""
+        if self.table_type == TableType.MULTIPLE_VARIABLES:
+            cols = [v.name for v in self.variables]
+            return pd.DataFrame(self.multi_var_data, columns=cols)
+
+        cols = []
+        if self.x_data is not None:
+            cols.append(self.x_title or "X")
+        for g_idx, g_title in enumerate(self.y_group_titles):
+            if self.num_replicates == 1:
+                cols.append(g_title)
+            else:
+                for s_idx in range(self.num_replicates):
+                    cols.append(f"{g_title}:Y{s_idx + 1}")
+
+        rows = []
+        for r in range(self.num_rows):
+            row_vals = []
+            if self.x_data is not None:
+                row_vals.append(self.x_data[r])
+            for g_idx in range(len(self.y_group_titles)):
+                for s_idx in range(self.num_replicates):
+                    row_vals.append(self.y_data[g_idx, r, s_idx])
+            rows.append(row_vals)
+
+        return pd.DataFrame(rows, columns=cols)
+
+    def update_from_dataframe(self, df: pd.DataFrame) -> None:
+        """Updates DataTable content, column names, and dimensions from a pandas DataFrame."""
+        if df is None or not isinstance(df, pd.DataFrame):
+            return
+
+        if self.table_type == TableType.MULTIPLE_VARIABLES:
+            self.num_rows = len(df)
+            self.row_titles = ["" for _ in range(self.num_rows)]
+            self.variables = []
+            for col_name in df.columns:
+                series = df[col_name]
+                if pd.api.types.is_numeric_dtype(series):
+                    v_type = VariableType.CONTINUOUS
+                    levels = []
+                else:
+                    v_type = VariableType.CATEGORICAL
+                    levels = [str(x) for x in series.dropna().unique().tolist()]
+                self.variables.append(VariableMetadata(str(col_name), v_type, levels))
+            self.multi_var_data = []
+            for _, row in df.iterrows():
+                row_vals = []
+                for v_idx, col_name in enumerate(df.columns):
+                    val = row[col_name]
+                    if self.variables[v_idx].var_type == VariableType.CONTINUOUS:
+                        row_vals.append(np.nan if pd.isna(val) else float(val))
+                    else:
+                        row_vals.append("" if pd.isna(val) else str(val))
+                self.multi_var_data.append(row_vals)
+            return
+
+        cols = list(df.columns)
+        num_rows = len(df)
+        if num_rows > 0:
+            if num_rows > self.num_rows:
+                self.add_row(num_rows - self.num_rows)
+            elif num_rows < self.num_rows:
+                self.num_rows = num_rows
+                self.row_titles = self.row_titles[:num_rows]
+                if self.x_data is not None:
+                    self.x_data = self.x_data[:num_rows]
+                self.y_data = self.y_data[:, :num_rows, :]
+
+        col_start = 0
+        if self.x_data is not None and len(cols) > 0:
+            self.x_title = str(cols[0])
+            self.x_data[:num_rows] = pd.to_numeric(df.iloc[:num_rows, 0], errors="coerce").to_numpy()
+            col_start = 1
+
+        y_cols = cols[col_start:]
+        if y_cols:
+            import re
+            rep_matches = [re.match(r"^(.*?):Y(\d+)$", str(c)) for c in y_cols]
+            if any(m is not None for m in rep_matches):
+                groups_dict: Dict[str, List[Tuple[int, str]]] = {}
+                for c in y_cols:
+                    m = re.match(r"^(.*?):Y(\d+)$", str(c))
+                    if m:
+                        g_name, rep_idx = m.group(1), int(m.group(2))
+                        groups_dict.setdefault(g_name, []).append((rep_idx, c))
+                    else:
+                        groups_dict.setdefault(str(c), []).append((1, str(c)))
+                new_groups = list(groups_dict.keys())
+                max_reps = max(len(v) for v in groups_dict.values())
+                self.y_group_titles = new_groups
+                self.num_replicates = max(1, max_reps)
+                self.y_data = np.full(
+                    (len(new_groups), self.num_rows, self.num_replicates),
+                    np.nan,
+                    dtype=np.float64,
+                )
+                for g_idx, g_name in enumerate(new_groups):
+                    for s_idx, (_, c_name) in enumerate(groups_dict[g_name]):
+                        if s_idx < self.num_replicates:
+                            self.y_data[g_idx, :num_rows, s_idx] = pd.to_numeric(
+                                df[c_name].iloc[:num_rows], errors="coerce"
+                            ).to_numpy()
+            else:
+                self.y_group_titles = [str(c) for c in y_cols]
+                self.num_replicates = 1
+                self.y_data = np.full(
+                    (len(self.y_group_titles), self.num_rows, 1),
+                    np.nan,
+                    dtype=np.float64,
+                )
+                for g_idx, c_name in enumerate(y_cols):
+                    self.y_data[g_idx, :num_rows, 0] = pd.to_numeric(
+                        df[c_name].iloc[:num_rows], errors="coerce"
+                    ).to_numpy()
+
+    @classmethod
+    def from_dataframe(
+        cls,
+        df: pd.DataFrame,
+        table_id: str = "data_df",
+        title: str = "DataFrame Table",
+        table_type: TableType = TableType.XY,
+    ) -> DataTable:
+        """Creates a DataTable from a pandas DataFrame."""
+        tbl = cls(
+            table_id=table_id,
+            title=title,
+            table_type=table_type,
+            num_rows=max(1, len(df)),
+            num_replicates=1,
+            y_group_titles=["Group A"],
+        )
+        tbl.update_from_dataframe(df)
+        return tbl
+
     def set_replicates(self, new_replicates: int) -> None:
         """Expands or trims the number of subcolumn replicates."""
         if new_replicates <= 0:

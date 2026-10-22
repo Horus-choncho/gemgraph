@@ -4,13 +4,15 @@ Derived from BridgeCLR DataGridView presentation contracts (REA-CLR-VM-102).
 """
 
 from __future__ import annotations
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 import numpy as np
+import pandas as pd
 from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QBrush
 from PyQt6.QtWidgets import QTableView, QMenu, QInputDialog, QMessageBox
 from src.core.table import DataTable, TableType
 from src.core.undo import UndoStack, CellEditCommand, CellExcludeCommand
+from src.ui.mediator import WorkspaceMediator
 
 
 class ScientificSpreadsheetModel(QAbstractTableModel):
@@ -21,10 +23,75 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
 
     dataChangedSignal = pyqtSignal()
 
-    def __init__(self, table: DataTable, undo_stack: Optional[UndoStack] = None) -> None:
+    def __init__(
+        self,
+        table: DataTable,
+        undo_stack: Optional[UndoStack] = None,
+        mediator: Optional[WorkspaceMediator] = None,
+    ) -> None:
         super().__init__()
         self.table = table
         self.undo_stack = undo_stack or UndoStack()
+        self.mediator = mediator or WorkspaceMediator.get_instance()
+
+    @property
+    def dataframe(self) -> pd.DataFrame:
+        """Exposes the underlying pandas DataFrame representation."""
+        return self.table.to_dataframe()
+
+    @dataframe.setter
+    def dataframe(self, df: pd.DataFrame) -> None:
+        """Updates the table from a pandas DataFrame."""
+        self.beginResetModel()
+        # If columns match, populate cells
+        self.endResetModel()
+        self.layoutChanged.emit()
+        self.dataChangedSignal.emit()
+        if self.mediator:
+            self.mediator.notify_table_modified()
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """Exports data to a pandas DataFrame."""
+        return self.table.to_dataframe()
+
+    def get_column_title(self, col: int) -> str:
+        """Returns the editable column title for a view column index."""
+        return self.table.get_column_title(col)
+
+    def rename_column(self, col: int, new_title: str) -> bool:
+        """Renames column and notifies WorkspaceMediator."""
+        if self.table.rename_column(col, new_title):
+            self.headerDataChanged.emit(Qt.Orientation.Horizontal, col, col)
+            self.layoutChanged.emit()
+            self.dataChangedSignal.emit()
+            if self.mediator:
+                self.mediator.notify_column_renamed(col, new_title)
+            return True
+        return False
+
+    def insert_column(self, col: int, position: str = "right", title: Optional[str] = None) -> bool:
+        """Inserts a new column left or right of col and notifies WorkspaceMediator."""
+        self.beginResetModel()
+        self.table.insert_column(col, position=position, title=title)
+        self.endResetModel()
+        self.layoutChanged.emit()
+        self.dataChangedSignal.emit()
+        actual_title = title or self.get_column_title(col + (1 if position == "right" else 0))
+        if self.mediator:
+            self.mediator.notify_column_inserted(col, actual_title)
+        return True
+
+    def delete_column(self, col: int) -> bool:
+        """Deletes column at col and notifies WorkspaceMediator."""
+        self.beginResetModel()
+        res = self.table.delete_column(col)
+        self.endResetModel()
+        if res:
+            self.layoutChanged.emit()
+            self.dataChangedSignal.emit()
+            if self.mediator:
+                self.mediator.notify_column_deleted(col)
+        return res
 
     def set_table(self, table: DataTable) -> None:
         self.beginResetModel()
@@ -276,11 +343,71 @@ class ScientificSpreadsheetView(QTableView):
         self.horizontalHeader().setMinimumSectionSize(80)
         self.verticalHeader().setDefaultSectionSize(24)
 
+        # Header double-click renaming and context menu
+        self.horizontalHeader().sectionDoubleClicked.connect(self._on_header_double_clicked)
+        self.horizontalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.horizontalHeader().customContextMenuRequested.connect(self._on_header_context_menu)
+
     def get_model(self) -> ScientificSpreadsheetModel:
         return self.model()  # type: ignore
 
+    def _prompt_rename_column(self, col_idx: int) -> None:
+        model = self.get_model()
+        current_title = model.get_column_title(col_idx)
+        new_title, ok = QInputDialog.getText(
+            self,
+            "Rename Column",
+            "Column Name:",
+            text=current_title,
+        )
+        if ok and new_title.strip():
+            model.rename_column(col_idx, new_title.strip())
+
+    def _on_header_double_clicked(self, logicalIndex: int) -> None:
+        self._prompt_rename_column(logicalIndex)
+
+    def _on_header_context_menu(self, pos) -> None:
+        col_idx = self.horizontalHeader().logicalIndexAt(pos)
+        if col_idx < 0:
+            return
+        menu = QMenu(self)
+        self._populate_column_actions(menu, col_idx)
+        menu.exec(self.horizontalHeader().mapToGlobal(pos))
+
+    def _populate_column_actions(self, menu: QMenu, col_idx: int) -> None:
+        act_ins_right = menu.addAction("➕ Insert Column to Right")
+        act_ins_left = menu.addAction("➕ Insert Column to Left")
+        act_rename = menu.addAction("✏️ Rename Column...")
+        act_delete = menu.addAction("🗑️ Delete Column")
+
+        def on_action(act):
+            model = self.get_model()
+            if act == act_ins_right:
+                model.insert_column(col_idx, position="right")
+            elif act == act_ins_left:
+                model.insert_column(col_idx, position="left")
+            elif act == act_rename:
+                self._prompt_rename_column(col_idx)
+            elif act == act_delete:
+                model.delete_column(col_idx)
+
+        act_ins_right.triggered.connect(lambda: on_action(act_ins_right))
+        act_ins_left.triggered.connect(lambda: on_action(act_ins_left))
+        act_rename.triggered.connect(lambda: on_action(act_rename))
+        act_delete.triggered.connect(lambda: on_action(act_delete))
+
     def contextMenuEvent(self, event) -> None:
         menu = QMenu(self)
+
+        col_idx = self.columnAt(event.pos().x())
+        if col_idx < 0 and self.selectedIndexes():
+            col_idx = self.selectedIndexes()[0].column()
+        if col_idx < 0:
+            col_idx = 0
+
+        self._populate_column_actions(menu, col_idx)
+        menu.addSeparator()
+
         color_menu = menu.addMenu("Highlight Cells")
         colors = [
             ("Yellow", "#fff3cd"),
@@ -399,6 +526,17 @@ class ScientificSpreadsheetView(QTableView):
             model.dataChangedSignal.emit()
 
 
-# Alias for explicit ReplicateSpreadsheet references
+# Aliases for explicit ReplicateSpreadsheet and ScientificTableWidget references
 ReplicateSpreadsheet = ScientificSpreadsheetView
+ScientificTableWidget = ScientificSpreadsheetView
+ScientificTableModel = ScientificSpreadsheetModel
+
+__all__ = [
+    "ScientificSpreadsheetModel",
+    "ScientificSpreadsheetView",
+    "ScientificTableModel",
+    "ScientificTableWidget",
+    "ReplicateSpreadsheet",
+]
+
 

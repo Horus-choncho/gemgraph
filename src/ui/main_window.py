@@ -65,6 +65,7 @@ from src.ui.results_view import ResultTabsWidget
 from src.ui.analyze_dialog import AnalyzeDataDialog, AnalysisChecklistDialog
 from src.ui.format_table_dialog import FormatDataTableDialog
 from src.ui.dialogs import NonlinearRegressionDialog, OutlierDialog, AnovaDialog
+from src.ui.mediator import WorkspaceMediator
 
 # Compatibility alias
 ResultSheetWidget = ResultTabsWidget
@@ -161,9 +162,12 @@ class MainWindow(QMainWindow):
         # Center Pane: Dynamic Stack
         self.center_stack = QStackedWidget()
 
+        # Workspace Mediator
+        self.mediator = WorkspaceMediator.get_instance(self)
+
         # Data Sheet View
         init_sheet = self.document.get_sheets_by_type(SheetType.DATA)[0]
-        self.spreadsheet_model = ScientificSpreadsheetModel(init_sheet.table, self.undo_stack)  # type: ignore
+        self.spreadsheet_model = ScientificSpreadsheetModel(init_sheet.table, self.undo_stack, self.mediator)  # type: ignore
         self.spreadsheet_view = ScientificSpreadsheetView(self.spreadsheet_model)
         self.spreadsheet_model.dataChangedSignal.connect(self._on_table_data_modified)
         self.spreadsheet_view.cellExclusionToggled.connect(self._on_table_data_modified)
@@ -201,12 +205,16 @@ class MainWindow(QMainWindow):
         new_act.triggered.connect(self.action_new_project)
         file_menu.addAction(new_act)
 
-        open_act = QAction("&Open Project (.prism)...", self)
+        open_act = QAction("&Open Project...", self)
         open_act.setShortcut(QKeySequence.StandardKey.Open)
         open_act.triggered.connect(self.action_open_project)
         file_menu.addAction(open_act)
 
-        save_act = QAction("&Save Project (.prism)", self)
+        open_sample_act = QAction("Open Sample Project (.bigo)", self)
+        open_sample_act.triggered.connect(self.action_open_sample_project)
+        file_menu.addAction(open_sample_act)
+
+        save_act = QAction("&Save Project (.bigo)", self)
         save_act.setShortcut(QKeySequence.StandardKey.Save)
         save_act.triggered.connect(self.action_save_project)
         file_menu.addAction(save_act)
@@ -605,9 +613,9 @@ class MainWindow(QMainWindow):
         initial_dir = self.get_smart_initial_dir()
         dialog = QFileDialog(
             self,
-            "Open Prism Project",
+            "Open GemGraph Project",
             initial_dir,
-            "Prism Files (*.prism *.pzfx *.csv);;Prism Native (*.prism);;Prism XML (*.pzfx *.xml *.pzm);;CSV Data (*.csv);;All Files (*)",
+            "GemGraph Projects (*.bigo);;GraphPad Prism Projects (*.prism *.pzfx);;All Supported (*.bigo *.prism *.pzfx);;All Files (*)",
         )
         dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
         sidebar_urls = list(dialog.sidebarUrls())
@@ -621,14 +629,14 @@ class MainWindow(QMainWindow):
 
     def open_project(self, filepath: str) -> None:
         """
-        Loads dataset from filepath (.prism, .pzfx/.xml, .csv),
+        Loads dataset from filepath (.bigo, .prism, .pzfx/.xml, .csv),
         populates the spreadsheet, and renders the initial plot.
         """
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"File not found: {filepath}")
 
         ext = os.path.splitext(filepath)[1].lower()
-        if ext == ".prism":
+        if ext in (".bigo", ".prism"):
             self.document = PrismIO.load(filepath)
         elif ext in (".pzfx", ".xml", ".pzm"):
             self.document = PrismXMLIO.import_xml(filepath)
@@ -663,6 +671,18 @@ class MainWindow(QMainWindow):
 
         self.status.showMessage(f"Opened: {filepath}")
 
+    def action_open_sample_project(self) -> None:
+        """Loads bundled textbook sample project (samples/textbook_sample.bigo) directly into workspace."""
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        sample_path = os.path.join(project_root, "samples", "textbook_sample.bigo")
+        if not os.path.exists(sample_path):
+            sample_path = os.path.join(os.getcwd(), "samples", "textbook_sample.bigo")
+        if not os.path.exists(sample_path):
+            from src.data_engine.sample_generator import generate_textbook_sample
+            generate_textbook_sample(sample_path)
+        self.open_project(sample_path)
+        self.status.showMessage("Loaded Textbook Sample Project (.bigo)")
+
     def action_open_project(self, dialog: Optional[QFileDialog] = None) -> None:
         dlg = dialog or self.create_open_project_dialog()
         if dlg.exec():
@@ -675,9 +695,12 @@ class MainWindow(QMainWindow):
 
     def action_save_project(self) -> None:
         initial_dir = self.get_smart_initial_dir()
-        default_path = os.path.join(initial_dir, f"{self.document.title}.prism")
+        default_path = os.path.join(initial_dir, f"{self.document.title}.bigo")
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Prism Project", default_path, "Prism Files (*.prism)"
+            self,
+            "Save Project",
+            default_path,
+            "GemGraph Projects (*.bigo);;GraphPad Prism Projects (*.prism *.pzfx);;All Supported (*.bigo *.prism *.pzfx);;All Files (*)",
         )
         if file_path:
             try:
@@ -735,7 +758,7 @@ class MainWindow(QMainWindow):
         if mime and mime.hasUrls():
             for url in mime.urls():
                 filepath = unquote(url.toLocalFile() or url.path())
-                if any(filepath.lower().endswith(ext) for ext in (".prism", ".pzfx", ".csv")):
+                if any(filepath.lower().endswith(ext) for ext in (".bigo", ".prism", ".pzfx", ".csv")):
                     event.acceptProposedAction()
                     return
         event.ignore()
@@ -745,7 +768,7 @@ class MainWindow(QMainWindow):
         if mime and mime.hasUrls():
             for url in mime.urls():
                 filepath = unquote(url.toLocalFile() or url.path())
-                if any(filepath.lower().endswith(ext) for ext in (".prism", ".pzfx", ".csv")):
+                if any(filepath.lower().endswith(ext) for ext in (".bigo", ".prism", ".pzfx", ".csv")):
                     event.acceptProposedAction()
                     return
         event.ignore()
@@ -759,7 +782,7 @@ class MainWindow(QMainWindow):
                 target_url = urls[0]
                 for u in urls:
                     fp = unquote(u.toLocalFile() or u.path())
-                    if any(fp.lower().endswith(ext) for ext in (".prism", ".pzfx", ".csv")):
+                    if any(fp.lower().endswith(ext) for ext in (".bigo", ".prism", ".pzfx", ".csv")):
                         target_url = u
                         break
 
