@@ -11,10 +11,17 @@ from src.ui.main_window import MainWindow
 from src.app import create_app, main
 
 
-def init_interface_shell(window: MainWindow) -> None:
+def init_interface_shell(
+    window: Optional[MainWindow] = None,
+    self: Optional[MainWindow] = None,
+) -> MainWindow:
     """Configures or re-applies stable 3-pane layout shell on MainWindow."""
-    if hasattr(window, "init_interface_shell"):
-        window.init_interface_shell()
+    target = window or self
+    if target is None:
+        target = MainWindow()
+    if hasattr(target, "init_interface_shell"):
+        target.init_interface_shell()
+    return target
 
 
 __all__ = ["MainWindow", "create_app", "main", "init_interface_shell"]

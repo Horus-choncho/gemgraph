@@ -236,7 +236,7 @@ class TestColorAndGrayscaleSymbology(unittest.TestCase):
             self.assertAlmostEqual(pen.widthF(), exp_width, delta=0.1, msg=f"Mismatch on Col {idx+1} pen width")
 
     def test_legend_mirroring(self) -> None:
-        """Verifies scatter item options are correctly mirrored into pyqtgraph legend."""
+        """Verifies scatter item options and shapes are correctly mirrored into pyqtgraph legend."""
         self.canvas.set_grayscale_mode(True)
         self.canvas.update_data(self.table)
 
@@ -246,6 +246,90 @@ class TestColorAndGrayscaleSymbology(unittest.TestCase):
         for title in self.table.y_group_titles:
             self.assertIn(title, legend_labels)
 
+        expected = [
+            ("o", QColor(0, 0, 0), 1.0),       # Col 1: Solid Circle
+            ("s", QColor(255, 255, 255), 1.5), # Col 2: Open Square
+            ("t", QColor(0, 0, 0), 1.0),       # Col 3: Solid Triangle
+            ("d", QColor(255, 255, 255), 1.5), # Col 4: Open Diamond
+            ("t1", QColor(0, 0, 0), 1.0),      # Col 5: Solid Inverted Triangle
+            ("o", QColor(255, 255, 255), 1.5), # Col 6: Open Circle
+        ]
+
+        for idx, (sample, label) in enumerate(legend.items):
+            item = sample.item
+            opts = item.opts
+            exp_sym, exp_brush_col, exp_width = expected[idx]
+            self.assertEqual(opts["symbol"], exp_sym, f"Legend symbol mismatch on item {idx+1}")
+            self.assertEqual(
+                opts["brush"].color().name(),
+                exp_brush_col.name(),
+                f"Legend brush mismatch on item {idx+1}",
+            )
+            self.assertEqual(
+                opts["pen"].color().name(),
+                QColor(0, 0, 0).name(),
+                f"Legend pen color mismatch on item {idx+1}",
+            )
+            self.assertAlmostEqual(
+                opts["pen"].widthF(),
+                exp_width,
+                delta=0.1,
+                msg=f"Legend pen width mismatch on item {idx+1}",
+            )
+
+    def test_palette_switch_preserves_user_zoom(self) -> None:
+        """Verifies switching palette mode preserves custom user zoom and axis ranges."""
+        self.canvas.update_data(self.table)
+        self.canvas.plot_widget.setRange(xRange=(2.0, 4.0), yRange=(10.0, 30.0), padding=0)
+        view_before = self.canvas.plot_widget.viewRange()
+
+        self.canvas.set_grayscale_mode(True)
+        view_after = self.canvas.plot_widget.viewRange()
+        self.assertAlmostEqual(view_before[0][0], view_after[0][0], places=3)
+        self.assertAlmostEqual(view_before[0][1], view_after[0][1], places=3)
+        self.assertAlmostEqual(view_before[1][0], view_after[1][0], places=3)
+        self.assertAlmostEqual(view_before[1][1], view_after[1][1], places=3)
+
+        self.canvas.set_grayscale_mode(False)
+        view_color = self.canvas.plot_widget.viewRange()
+        self.assertAlmostEqual(view_before[0][0], view_color[0][0], places=3)
+        self.assertAlmostEqual(view_before[0][1], view_color[0][1], places=3)
+
+    def test_mediator_no_duplicate_signals(self) -> None:
+        """Verifies mediator signals are emitted exactly once and do not re-enter recursively."""
+        mediator = WorkspaceMediator()
+        canvas = ScientificPlotCanvas(mediator=mediator)
+        canvas.add_fitted_curve("layer_x", "Curve X", np.array([1, 2]), np.array([3, 4]))
+        received_removals = []
+        mediator.analysisLayerRemoved.connect(lambda lid: received_removals.append(lid))
+
+        canvas.remove_analysis_layer("layer_x")
+        self.assertEqual(received_removals, ["layer_x"])
+        self.assertNotIn("layer_x", canvas.analysis_layers)
+
+        canvas.add_fitted_curve("layer_y", "Curve Y", np.array([1, 2]), np.array([3, 4]))
+        received_clears = []
+        mediator.allAnalysisLayersCleared.connect(lambda: received_clears.append(True))
+        canvas.clear_all_analysis_layers()
+        self.assertEqual(len(received_clears), 1)
+        self.assertEqual(len(canvas.analysis_layers), 0)
+        canvas.close()
+
+    def test_init_interface_shell_no_args(self) -> None:
+        """Verifies init_interface_shell can be called without arguments and returns a configured window."""
+        win = init_interface_shell()
+        self.assertIsInstance(win, MainWindow)
+        self.assertFalse(win.inner_splitter.childrenCollapsible())
+        self.assertFalse(win.outer_splitter.childrenCollapsible())
+        win.close()
+
+    def test_y_datasets_dict_duplicate_and_empty_titles(self) -> None:
+        """Verifies table.y_datasets_dict does not clobber duplicate or empty group titles."""
+        tbl = DataTable("tbl_dup", table_type=TableType.XY, num_rows=3, num_replicates=1, y_group_titles=["A", "A", ""])
+        d = tbl.y_datasets_dict
+        self.assertEqual(len(d), 3)
+
 
 if __name__ == "__main__":
     unittest.main()
+

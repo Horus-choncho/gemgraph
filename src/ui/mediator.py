@@ -67,7 +67,7 @@ class WorkspaceMediator(QObject):
         if self.main_window and hasattr(self.main_window, "graph_canvas"):
             canvas = getattr(self.main_window, "graph_canvas")
             if hasattr(canvas, "analysis_layers") and layer_id in canvas.analysis_layers:
-                canvas.remove_analysis_layer(layer_id)
+                canvas.remove_analysis_layer(layer_id, notify=False)
 
     def notify_clear_all_analysis_layers(self) -> None:
         """Notifies workspace that all analysis overlay layers should be cleared."""
@@ -76,4 +76,4 @@ class WorkspaceMediator(QObject):
             canvas = getattr(self.main_window, "graph_canvas")
             if hasattr(canvas, "clear_all_analysis_layers"):
                 if hasattr(canvas, "analysis_layers") and canvas.analysis_layers:
-                    canvas.clear_all_analysis_layers()
+                    canvas.clear_all_analysis_layers(notify=False)

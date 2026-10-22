@@ -171,6 +171,19 @@ class ScientificPlotCanvas(QWidget):
         self.current_result: Optional[ResultSheet] = None
         self._rebuild_analysis_menu()
 
+        # Context menu integration on plot ViewBox
+        if hasattr(self.plot_widget.plotItem, "vb") and hasattr(self.plot_widget.plotItem.vb, "menu"):
+            try:
+                self.plot_widget.plotItem.vb.menu.addSeparator()
+                self.plot_widget.plotItem.vb.menu.addMenu(self.analysis_menu)
+            except Exception:
+                pass
+
+    def contextMenuEvent(self, event) -> None:
+        """Shows context menu with Clear Analysis options."""
+        self._rebuild_analysis_menu()
+        self.analysis_menu.exec(event.globalPos())
+
     def _setup_plot_style(self) -> None:
         """Configures publication-grade white-background scientific styling with outward ticks."""
         self.plot_widget.setBackground("w")
@@ -206,7 +219,7 @@ class ScientificPlotCanvas(QWidget):
             self.current_palette = self.GRAYSCALE_PALETTE
         else:
             self.current_palette = self.COLOR_PALETTE
-        self.refresh_plot()
+        self.refresh_plot(preserve_range=True)
 
     def _on_type_changed(self) -> None:
         self.refresh_plot()
@@ -273,7 +286,7 @@ class ScientificPlotCanvas(QWidget):
         self.add_analysis_layer(analysis_id, name, [curve_item])
         return curve_item
 
-    def remove_analysis_layer(self, layer_id: str) -> bool:
+    def remove_analysis_layer(self, layer_id: str, notify: bool = True) -> bool:
         """
         Removes the corresponding items from self.plot_widget.plotItem via removeItem().
         Deletes the key from self.analysis_layers.
@@ -301,18 +314,23 @@ class ScientificPlotCanvas(QWidget):
                 except Exception:
                     pass
 
+        # Ensure raw dataset scatter items remain visible and restored
+        for item in plot_item.items:
+            if isinstance(item, pg.ScatterPlotItem):
+                item.setVisible(True)
+
         self._rebuild_analysis_menu()
 
-        if self.mediator is not None:
+        if notify and self.mediator is not None:
             self.mediator.notify_analysis_layer_removed(layer_id)
 
         return True
 
-    def clear_all_analysis_layers(self) -> None:
+    def clear_all_analysis_layers(self, notify: bool = True) -> None:
         """Removes all active fitted curves and statistical overlays."""
         for layer_id in list(self.analysis_layers.keys()):
-            self.remove_analysis_layer(layer_id)
-        if self.mediator is not None:
+            self.remove_analysis_layer(layer_id, notify=False)
+        if notify and self.mediator is not None:
             self.mediator.notify_clear_all_analysis_layers()
 
     def clear_all_fitted_curves(self) -> None:
@@ -381,8 +399,15 @@ class ScientificPlotCanvas(QWidget):
                 self.type_combo.setCurrentIndex(idx)
         self.refresh_plot()
 
-    def refresh_plot(self) -> None:
+    def refresh_plot(self, preserve_range: bool = False) -> None:
         """Clears and redraws graph according to current data, hooked elements, and settings."""
+        range_before = None
+        if preserve_range:
+            try:
+                range_before = self.plot_widget.viewRange()
+            except Exception:
+                range_before = None
+
         self.plot_widget.clear()
         if self.plot_widget.plotItem.legend is not None:
             self.plot_widget.plotItem.legend.clear()
@@ -407,6 +432,11 @@ class ScientificPlotCanvas(QWidget):
 
         # Render Embedded Tables
         self._render_embedded_tables()
+
+        if preserve_range and range_before is not None:
+            self.plot_widget.setRange(xRange=range_before[0], yRange=range_before[1], padding=0)
+        else:
+            self.plot_widget.autoRange()
 
     def _render_xy_graph(self) -> None:
         """Renders XY points and fitted curve overlay with discrete colors or journal grayscale symbology."""
@@ -495,7 +525,6 @@ class ScientificPlotCanvas(QWidget):
                     }
 
         self._rebuild_analysis_menu()
-        self.plot_widget.autoRange()
 
     def _render_column_graph(self) -> None:
         """Renders column bars with Mean ± SEM/SD and overlaid scatter points."""
@@ -577,8 +606,6 @@ class ScientificPlotCanvas(QWidget):
                 size=6,
             )
             self.plot_widget.addItem(scatter)
-
-        self.plot_widget.autoRange()
 
     def _render_superimposed_graph(self) -> None:
         """Combines bars and scatter/line plots on the same canvas."""

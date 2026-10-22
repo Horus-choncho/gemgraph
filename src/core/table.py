@@ -817,8 +817,11 @@ class DataTable:
         """Returns mapping of column/group title to (xs, ys) clean coordinates."""
         result = {}
         for g_idx, title in enumerate(self.y_group_titles):
+            key = title if title else f"Group {chr(65 + g_idx) if g_idx < 26 else g_idx + 1}"
+            if key in result:
+                key = f"{key} ({g_idx + 1})"
             xs, ys = self.get_clean_xy(g_idx)
-            result[title] = (xs, ys)
+            result[key] = (xs, ys)
         return result
 
     def get_group_replicate_summary(self, group_idx: int = 0) -> Dict[str, np.ndarray]:
