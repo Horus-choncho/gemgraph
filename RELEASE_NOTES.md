@@ -1,114 +1,70 @@
-# GemGraph v0.1.0-alpha Release Notes
+# 🧬 GemGraph v0.1.1-alpha — Comprehensive Scientific Release
 
-Welcome to the first alpha release of **GemGraph**, the clean-room, open-source scientific data analysis and curve fitting application designed as a transparent alternative to GraphPad Prism.
-
-This release brings core statistical algorithms, 8 laboratory table formats, and publication-ready vector graphing directly to your desktop.
+Welcome to **GemGraph v0.1.1-alpha**, a clean-room, free, and open-source scientific desktop platform for biostatistics, non-linear curve fitting, and publication-ready vector graphing built as an alternative to GraphPad Prism 10.
 
 ---
 
-## 🔬 What Works Right Now
+### 🚀 What's New in v0.1.1-alpha (October 20–22, 2026 Sprints)
 
-- **8 Scientific Table Paradigms:**
-  - **XY Tables** with replicate subcolumns, automatic SD/SEM error bars, and non-destructive exclusion masking.
-  - **Column Tables** for comparing groups (Control vs. Treated) with box-whisker or bar-scatter displays.
-  - **Grouped (2-Way) Tables** for two-factor experimental layouts with replicate subcolumns.
-  - **Contingency Tables** for Chi-Square and Fisher's exact categorical testing.
-  - **Survival Tables** for Kaplan-Meier product-limit survival analysis.
-  - **Parts of Whole Tables** for fractional distributions.
-  - **Multiple Variables Tables** with interactive badges for Categorical (📊), Continuous (🔔), and Label (🏷️) columns.
-  - **Nested Tables** for hierarchical laboratory samples.
+#### 1. Complete Undo/Redo Engine & Spreadsheet Usability
+* **Batch Cell Deletion with Undo:** Pressing `Delete` or `Backspace` now clears all highlighted cells wrapped inside an atomic `BatchClearCellsCommand(QUndoCommand)`. Full cell contents and dependent curves are restored instantly with `Ctrl+Z` / `Edit > Undo`.
+* **Focus-Aware Undo Routing:** `Ctrl+Z` and `Ctrl+Y` detect active widget focus: text edits in Info Sheets route to native text history without touching spreadsheet cells.
+* **In-Sheet Column Renaming & Creation:** Double-clicking any column header opens an inline rename dialog; header context menus support adding X/Y columns left and right.
 
-- **Nonlinear Regression & Curve Fitting:**
-  - Levenberg-Marquardt solver with **Standard (10⁻⁴)** and **Strict (10⁻⁶)** convergence presets.
-  - Standard models: Sigmoidal 4PL Dose-Response (variable slope), One-site binding (hyperbola), Exponential decay, and Straight line.
-  - Goodness-of-fit metrics ($R^2$, $S_{y.x}$, $AIC_c$) and parameter dependency checks.
+#### 2. Multi-X Column Architecture
+* **Multi-Coordinate Tables:** Tables support multiple distinct X coordinate columns ($X_1, X_2, \dots$) with independent time scales or concentrations.
+* **Dynamic Preceding-X Binding:** Consecutive Y replicate groups bind to their immediately preceding X column, allowing staggered kinetics or multi-curve experiments to plot concurrently.
 
-- **Hypothesis Testing (ANOVA):**
-  - Ordinary One-Way, Two-Way (Row, Column, Interaction), and Repeated Measures ANOVA.
-  - Exact post-hoc **Dunnett's test** (comparisons against control) and **Tukey-Kramer HSD** (all pairwise comparisons).
+#### 3. Advanced Hybrid Graphing Engine (`docs/graph_specs/`)
+* **Bars + Individual Points (Column Format):** Overlays individual biological replicate points directly on summary bars with horizontal scatter jitter (`bars_and_points_overlaying_two_graphs.pzf`).
+* **Grouped Bars + Replicate Scatter (Two-Factor Format):** Renders clustered grouped bars with individual replicate points nested over each sub-bar (`1661_Points_and_grouped_bars.pzfx`).
+* **Columns / Spikes + Curve Fit (XY Format):** Mixed per-series representations on a shared coordinate plane: one series renders as baseline vertical spikes while an adjacent series renders as scatter points with an overlying regression curve (`bars_and_points_2.pzf`).
+* **Per-Graph Scatter Point Toggle:** Toolbar button ("⚪ Show Scatter Points") and canvas context menu option to toggle scatter overlays on bar charts.
+* **Binary PCFF (`.pzf`) & XML (`.pzfx`) Engine:** Native binary stream parser for legacy GraphPad Prism 4/5 `.pzf` binary files alongside modern `.pzfx` XML archive compatibility.
 
-- **Outlier Detection:**
-  - Automated **ROUT** (Robust Regression and Outlier Removal) with False Discovery Rate $Q = 1\%$.
-  - Single-sample **Grubbs ESD** test.
+#### 4. Pinned & Frozen Graphs Architecture
+* **📌 Pin Graph:** Captures an active graph view, linked dataset, and display configuration as an independent `GraphSheet` under `📈 Graphs`.
+* **❄ Freeze Graph:** Locks pinned graphs against upstream table edits and serializes snapshot data, preserving regression curve overlays.
+* **Per-Sheet Graph Persistence:** Switching between sheets retains custom graph selections, whisker settings, and colors without resetting to default XY scatter.
+* **Export State Isolation:** Report exporters render graphs in an isolated pipeline, ensuring document exports never mutate the active on-screen graph view.
 
-- **Publication Vector Graphing:**
-  - Interactive plot canvas with high-contrast grayscale journal styling.
-  - Dynamic **Constant Hooking (`s` button)** to link computed parameters directly to graph lines.
-  - Live table overlays embedded directly on plot sheets.
-  - Direct vector export to **SVG** and high-resolution **PNG**.
+#### 5. Publication Grayscale & Visual Formatting Polish
+* **Opaque Journal Grayscale Palette:** 5 publication-grade monochromatic fills: Solid Black, Pure White with bold Black border, Medium Gray, Light Gray, and Diagonal Cross-Hatch patterns.
+* **High-Contrast Scatter Symbology:** Scatter points plotted over dark bars invert to white fills with black borders (`symbolBrush='w', symbolPen='k'`).
+* **Configurable Error Whiskers:** Canvas controls support toggling between bidirectional `Both (±)` whiskers and unilateral `Upper (+) Only` whiskers.
+* **Per-Series Formatting Dialog:** Right-clicking any series opens `FormatSeriesDialog` with a custom color picker and a 0–100% opacity slider.
+* **Analysis Layer Registry & Clearing:** "🧹 Clear Analysis" toolbar menu allows removing individual fitted curves or clearing all overlays without resetting raw scatter data.
 
-- **Multi-Tab Results & Live Recalculation:**
-  - Clean distinction between Green Grids (analyzable/plottable data) and Red Grids (summary statistics).
-  - DAG-based automatic recalculation when raw data changes.
+#### 6. Rich Text Editor & Scientific Info Sheets (GLP Metadata)
+* **Interactive Scientific Info Sheets:** Structured GLP metadata tracking Experiment Title, Study ID, Scientist, PI, Notebook Page Ref, Date, Organism/Strain, Cell Line/Passage, Compound Batch/Lot Number, and SOP Protocol ID.
+* **Rich Text Formatting Toolbar:** Integrated rich text editor for experimental notes with Sans-Serif, Serif, and Monospace fonts, 3 preset sizes (10pt, 12pt, 16pt), Bold, Italic, Underline, Bullet Lists, `- ` + `Space` auto-bullets, and `Tab`/`Shift+Tab` indentation.
+
+#### 7. Granular Office & PDF Export Suite
+Built a zero-subprocess, pure-Python export engine (`File > Export Report / Office Document...`):
+* **Word Document (`.docx`):** Packages OpenXML ZIP archives with rich text formatting, structured data tables, and embedded high-DPI drawings (`DrawingML`).
+* **OpenDocument Text (`.odt`):** OASIS XML package with standard text styles, tables, and embedded graph images in `Pictures/`.
+* **Excel Workbook (`.xlsx`) & OpenDocument Spreadsheet (`.ods`):** Multi-sheet workbooks cleanly separating raw data and statistical results tables.
+* **Publication PDF (`.pdf`):** Multi-page 300 DPI (A4) publication report rendered via `QTextDocument` + `QPdfWriter`.
+* **Granular Scope Selector:** `ExportProjectDialog` allows selecting or deselecting individual Info Sheets, Data Tables, Analysis Ledgers, and Graphs.
+
+#### 8. Native `.bigo` Format & Bundled Textbook Datasets
+* **Native `.bigo` Format:** Primary project file format (`.bigo`), matching Prism 10's internal XML/ZIP archive architecture.
+* **Quick-Load Textbook Projects:** `File > Open Sample Project (.bigo)` shipping with calibrated benchmark datasets (Dose-Response 4PL, One-Way ANOVA, Kaplan-Meier Survival).
+* **Project Navigator Context Menus:** Specific rename/delete labels per category and `"➕ Add Info Sheet"` on the `📁 Info Sheets` root node.
 
 ---
 
-## 🚀 Easy Installation
+### 🔬 Feedback & Incident Reporting
 
-### 1. Standalone Portable Packages (No Admin Rights Needed)
-- **Linux (`.tar.gz`):** Download `GemGraph-Linux-x86_64-Portable.tar.gz`, unpack, and run `./GemGraph`.
-- **Windows (`.zip`):** Download `GemGraph-Windows-Portable.zip`, unpack, and run `GemGraph.exe`.
-- **macOS (`.tar.gz`):** Download `GemGraph-macOS-Portable.tar.gz`, unpack, and open `GemGraph.app`.
+* **Email Feedback & Incident Reports:** Send reports or feature suggestions to **[gemgraph@outlook.com](mailto:gemgraph@outlook.com)**.
+* **Bug Report Template:** Refer to `docs/FEEDBACK_TEMPLATE.md` in the repository for structured reporting guidelines.
+* **GitHub Issues:** Open an issue at [https://github.com/Horus-choncho/gemgraph/issues](https://github.com/Horus-choncho/gemgraph/issues).
 
-### 2. Debian / Ubuntu Package
+---
+
+### 🔒 Cryptographic Verification (SHA-256)
+
+All binary releases are signed in the `SHA256SUMS.txt` manifest attached to this release:
 ```bash
-apt install ./gemgraph_0.1.0-alpha_amd64.deb
-```
-*(On locked institutional workstations without root, extract directly into user space via `dpkg -x gemgraph_0.1.0-alpha_amd64.deb ./gemgraph_app`)*.
-
-### 3. Run from Source (Python 3.10+)
-```bash
-git clone https://github.com/nicolauda/gemgraph.git
-cd gemgraph
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python -m src.app
-```
-### 4. Fedora / RHEL (.rpm):
-- Download `gemgraph-0.1.0-alpha.x86_64.rpm` and install via:
-`sudo dnf install ./gemgraph-0.1.0-alpha.x86_64.rpm`
-
-### 5. Flatpak (.flatpak):
-- Standard Flatpak installation:
-Download `gemgraph_0.1.0-alpha.flatpak` and install:
-```
-flatpak install --user gemgraph_0.1.0-alpha.flatpak
-flatpak run org.gemgraph.GemGraph
-```
-- Note to Flatpak users: 
-You may need to run GemGraph from the terminal after installation if the app does not launch on normal click (should be working, though):
-`flatpak run org.gemgraph.GemGraph`
-
-### 6. Windows 
-- Windows Portable (.zip):
-Download `GemGraph-0.1.0-alpha-Windows-Portable.zip`, unzip to a folder, and double-click `GemGraph.exe` (no administrator privileges required).
-
-### 7. macOS Users 🍎🍎🍏🍏
-
-- macOS 15 Sequoia and later:
-
-1. Double-click `GemGraph-0.1.0-alpha-macOS.dmg` to mount the disk image.
-2. Drag GemGraph.app into the Applications folder shortcut.
-3. Attempt to open GemGraph.app from Applications. macOS will display a warning that the app cannot be opened because the developer cannot be verified. Click Done (or Cancel).
-4. Open System Settings > Privacy & Security.
-5. Scroll down to the Security section. You will see: `"GemGraph.app was blocked to protect your Mac."`
-6. Click the Open Anyway button next to it, enter your Mac user password or Touch ID, and confirm by clicking Open. macOS will permanently whitelist the app for all subsequent launches.
-
-
-- macOS 14 Sonoma or older:
-1. Drag `GemGraph.app` into Applications.
-2. Do not double-click it directly on first launch.
-3. Right-click (or Control-click) on `GemGraph.app` and select Open.
-4. In the dialog that appears, click the Open button. macOS will whitelist the application for all future double-clicks.
-
-
-- (Alternative for all macOS via Terminal): Run `xattr -cr /Applications/GemGraph.app` to clear the quarantine flag.
-
----
-
-## 💬 Community Feedback & Call-to-Action
-
-We invite experimental researchers, pharmacologists, and statisticians to put GemGraph to the test:
-1. **Test with your real laboratory data:** Load your experimental tables and compare curve fits, IC₅₀ values, and ANOVA results with Prism.
-2. **Report edge cases & discrepancies:** If any calculation differs from expected values, open an issue on GitHub using our issue template and include your anonymized test table.
-3. **Request models & features:** Tell us which regression equations, post-hoc corrections, or plot styles you need next!
+sha256sum -c SHA256SUMS.txt
+License: Distributed under the GNU General Public License v3.0 (GPLv3).
