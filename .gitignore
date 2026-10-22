@@ -15,3 +15,6 @@ tests/*.png
 # Build staging directories
 flatpak-repo/
 rpmbuild/
+
+# In-development web container and stream staging
+gemgraph-web/
