@@ -418,10 +418,11 @@ def render_layout_to_image(
 
     painter = QPainter(img)
     try:
-        if painter.isActive():
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        if not painter.isActive():
+            return img
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         from src.core.office_exporter import render_graph_to_png_bytes
 
@@ -589,11 +590,13 @@ def render_layout_to_svg(
 
     painter = QPainter(generator)
     try:
-        if painter.isActive():
-            from src.core.office_exporter import render_graph_to_png_bytes
+        if not painter.isActive():
+            return file_path
 
-            # White page background
-            painter.fillRect(QRectF(0, 0, pt_w, pt_h), QColor(255, 255, 255))
+        from src.core.office_exporter import render_graph_to_png_bytes
+
+        # White page background
+        painter.fillRect(QRectF(0, 0, pt_w, pt_h), QColor(255, 255, 255))
 
         for p in layout.placeholders:
             rx, ry, rw, rh = p.rect

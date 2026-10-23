@@ -7,7 +7,7 @@ dimension equalization, page setup controls, rich text boxes, global undo/redo, 
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QAction, QIcon, QUndoCommand, QUndoStack
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -391,8 +391,6 @@ class LayoutView(QWidget):
         super().showEvent(event)
         self.canvas.fit_page_to_window()
         QTimer.singleShot(0, self._refresh_hot_placeholders)
-        if QThread.currentThread().loopLevel() == 0:
-            self._refresh_hot_placeholders()
 
     def push_move_resize_command(
         self,
@@ -438,8 +436,6 @@ class LayoutView(QWidget):
         """Loads active layout and defers hot placeholder refresh."""
         self.set_layout(layout, document)
         QTimer.singleShot(0, self._refresh_hot_placeholders)
-        if QThread.currentThread().loopLevel() == 0:
-            self._refresh_hot_placeholders()
 
     def _refresh_hot_placeholders(self) -> None:
         """Iterates across all placeholders and triggers snapshot refresh for unfrozen/hot graphs."""

@@ -360,15 +360,21 @@ def render_graph_to_png_bytes(
 
     created_canvas = False
     saved_state = None
-    is_live_visible = getattr(canvas, "isVisible", lambda: False)() if canvas is not None else False
-    if canvas is None or (is_live_visible and getattr(canvas, "active_sheet", None) != target_sheet):
+    is_live = False
+    if canvas is not None:
+        if getattr(canvas, "isVisible", lambda: False)():
+            is_live = True
+        elif hasattr(canvas, "parent") and canvas.parent() is not None:
+            is_live = True
+
+    if canvas is None or (is_live and getattr(canvas, "active_sheet", None) != target_sheet):
         from src.ui.graph_canvas import GraphCanvasWidget
         canvas = GraphCanvasWidget()
         canvas.resize(width, height)
         canvas.plot_widget.setGeometry(0, 0, width, height)
         created_canvas = True
     else:
-        if not is_live_visible:
+        if not is_live:
             saved_state = _save_canvas_state(canvas)
             canvas.resize(width, height)
             if hasattr(canvas, "plot_widget"):
@@ -452,7 +458,7 @@ def render_graph_to_png_bytes(
         if res_sheet is None and canvas is not None and getattr(canvas, "current_result", None) is not None:
             res_sheet = canvas.current_result
 
-        if created_canvas or not is_live_visible or getattr(canvas, "active_sheet", None) != target_sheet:
+        if created_canvas or (not is_live and getattr(canvas, "active_sheet", None) != target_sheet):
             canvas.update_data(
                 src_table,
                 result=res_sheet if isinstance(res_sheet, ResultSheet) else None,
@@ -461,13 +467,14 @@ def render_graph_to_png_bytes(
             )
 
         # Generous axis margin padding to prevent multi-line categorical/group label truncation
-        try:
-            bottom_ax = canvas.plot_widget.getAxis("bottom")
-            left_ax = canvas.plot_widget.getAxis("left")
-            bottom_ax.setHeight(max(60, int(height * 0.12)))
-            left_ax.setWidth(max(60, int(width * 0.10)))
-        except Exception:
-            pass
+        if not is_live:
+            try:
+                bottom_ax = canvas.plot_widget.getAxis("bottom")
+                left_ax = canvas.plot_widget.getAxis("left")
+                bottom_ax.setHeight(max(60, int(height * 0.12)))
+                left_ax.setWidth(max(60, int(width * 0.10)))
+            except Exception:
+                pass
 
         plot_widget = getattr(canvas, "plot_widget", canvas)
         img = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
@@ -484,7 +491,7 @@ def render_graph_to_png_bytes(
                     if scene_rect.isEmpty() or scene_rect.isNull():
                         scene_rect = QRectF(0, 0, width, height)
                     scene.render(painter, QRectF(0, 0, width, height), scene_rect)
-                else:
+                elif not is_live:
                     plot_widget.render(painter)
         finally:
             if painter.isActive():

@@ -1921,12 +1921,13 @@ class ScientificPlotCanvas(QWidget):
 
         painter = QPainter(generator)
         try:
-            if painter.isActive():
-                scene = self.plot_widget.scene() if hasattr(self.plot_widget, "scene") else None
-                if scene is not None:
-                    scene.render(painter, QRectF(self.plot_widget.rect()), scene.sceneRect())
-                else:
-                    self.plot_widget.render(painter)
+            if not painter.isActive():
+                return
+            scene = self.plot_widget.scene() if hasattr(self.plot_widget, "scene") else None
+            if scene is not None:
+                scene.render(painter, QRectF(self.plot_widget.rect()), scene.sceneRect())
+            else:
+                self.plot_widget.render(painter)
         finally:
             if painter.isActive():
                 painter.end()

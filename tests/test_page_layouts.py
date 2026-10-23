@@ -17,7 +17,7 @@ import zipfile
 import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, QEvent
 from PyQt6.QtGui import QColor, QImage, QMouseEvent, QKeyEvent, QFocusEvent, QPainter
-from PyQt6.QtWidgets import QApplication, QGraphicsItem
+from PyQt6.QtWidgets import QApplication, QGraphicsItem, QWidget
 
 from src.core.document import PrismDocument
 from src.core.table import TableType, DataTable
@@ -796,6 +796,7 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
         from PyQt6.QtGui import QShowEvent
         event = QShowEvent()
         view.showEvent(event)
+        QApplication.processEvents()
 
         # showEvent must have regenerated the cached pixmap
         self.assertIsNotNone(item.cached_pixmap)
@@ -1018,6 +1019,85 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
 
         self.assertGreater(text_item.annotation.get("x", 0), 0)
         view.close()
+
+    def test_graph_placeholder_item_drag_and_resize_without_grab_mouse(self) -> None:
+        """Verifies GraphPlaceholderItem drag and resize functions cleanly without invoking grabMouse()."""
+        layout = self.doc.create_layout("Placeholder Wayland Safety Layout")
+        layout.placeholders.clear()
+        p = Placeholder(slot_id="slot_wl", rect=(0.1, 0.1, 0.35, 0.35), graph_id=self.graph_sheet.sheet_id)
+        layout.add_placeholder(p)
+
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        item = view.canvas.placeholder_items[0]
+
+        # Verify ItemIsMovable flag is set for native QGraphicsScene event routing
+        self.assertTrue(bool(item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsMovable))
+
+        with patch.object(item, "grabMouse", MagicMock()) as mock_grab:
+            ev_press = MagicMock()
+            ev_press.button.return_value = Qt.MouseButton.LeftButton
+            item.mousePressEvent(ev_press)
+            item.setPos(50, 60)
+            ev_rel = MagicMock()
+            ev_rel.button.return_value = Qt.MouseButton.LeftButton
+            item.mouseReleaseEvent(ev_rel)
+            mock_grab.assert_not_called()
+
+        item = view.canvas.placeholder_items[0]
+        with patch.object(item, "grabMouse", MagicMock()) as mock_grab:
+            handle = item.handles[7]  # BR handle
+            h_press = MagicMock()
+            h_press.button.return_value = Qt.MouseButton.LeftButton
+            h_press.scenePos.return_value = QPointF(200, 200)
+            handle.mousePressEvent(h_press)
+
+            h_move = MagicMock()
+            h_move.scenePos.return_value = QPointF(250, 250)
+            handle.mouseMoveEvent(h_move)
+
+            h_rel = MagicMock()
+            h_rel.button.return_value = Qt.MouseButton.LeftButton
+            handle.mouseReleaseEvent(h_rel)
+            mock_grab.assert_not_called()
+
+        view.close()
+
+    def test_render_graph_to_png_bytes_isolates_live_canvas_completely(self) -> None:
+        """Verifies render_graph_to_png_bytes NEVER resizes, mutates axes, or calls render() on live widget."""
+        from src.ui.graph_canvas import GraphCanvasWidget
+
+        parent_win = QWidget()
+        live_canvas = GraphCanvasWidget(parent=parent_win)
+        parent_win.show()
+        live_canvas.show()
+        live_canvas.resize(700, 500)
+
+        live_canvas.update_data(self.data_sheet.table, sheet=self.graph_sheet)
+        orig_size = live_canvas.size()
+        orig_plot_geo = live_canvas.plot_widget.geometry()
+        orig_bottom_h = live_canvas.plot_widget.getAxis("bottom").height()
+        orig_left_w = live_canvas.plot_widget.getAxis("left").width()
+
+        with patch.object(live_canvas.plot_widget, "render", MagicMock()) as mock_render:
+            png_bytes = render_graph_to_png_bytes(
+                self.graph_sheet,
+                document=self.doc,
+                graph_canvas=live_canvas,
+                width=1400,
+                height=900,
+            )
+            # Must NOT invoke widget-level render() on live widget
+            mock_render.assert_not_called()
+
+        self.assertTrue(png_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
+        # Live canvas geometry and axis properties must remain completely untouched
+        self.assertEqual(live_canvas.size(), orig_size)
+        self.assertEqual(live_canvas.plot_widget.geometry(), orig_plot_geo)
+        self.assertEqual(live_canvas.plot_widget.getAxis("bottom").height(), orig_bottom_h)
+        self.assertEqual(live_canvas.plot_widget.getAxis("left").width(), orig_left_w)
+
+        parent_win.close()
 
 
 if __name__ == "__main__":

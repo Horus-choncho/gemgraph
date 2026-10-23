@@ -106,23 +106,33 @@ class ResizeHandleItem(QGraphicsRectItem):
         self._handle_start_rect: Optional[Tuple[float, float, float, float]] = None
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_start_pos = event.scenePos()
+        if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
+            self.drag_start_pos = event.scenePos() if hasattr(event, "scenePos") else None
             self._handle_start_rect = self.parent_placeholder.placeholder.rect
-            event.accept()
+            if hasattr(event, "accept"):
+                event.accept()
         else:
-            super().mousePressEvent(event)
+            try:
+                super().mousePressEvent(event)
+            except (TypeError, RuntimeError):
+                pass
 
     def mouseMoveEvent(self, event) -> None:
         if self.drag_start_pos is not None:
-            shift_pressed = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-            self.parent_placeholder.handle_resize(self.handle_index, event.scenePos(), shift_pressed)
-            event.accept()
+            modifiers = event.modifiers() if hasattr(event, "modifiers") else Qt.KeyboardModifier.NoModifier
+            shift_pressed = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+            pos = event.scenePos() if hasattr(event, "scenePos") else event.pos()
+            self.parent_placeholder.handle_resize(self.handle_index, pos, shift_pressed)
+            if hasattr(event, "accept"):
+                event.accept()
         else:
-            super().mouseMoveEvent(event)
+            try:
+                super().mouseMoveEvent(event)
+            except (TypeError, RuntimeError):
+                pass
 
     def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
+        if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
             self.drag_start_pos = None
             old_rect = self._handle_start_rect
             new_rect = self.parent_placeholder.placeholder.rect
@@ -130,9 +140,13 @@ class ResizeHandleItem(QGraphicsRectItem):
                 layout_view = getattr(self.parent_placeholder.canvas, "layout_view", None)
                 if layout_view is not None and hasattr(layout_view, "push_move_resize_command"):
                     layout_view.push_move_resize_command(self.parent_placeholder.placeholder, old_rect, new_rect)
-            event.accept()
+            if hasattr(event, "accept"):
+                event.accept()
         else:
-            super().mouseReleaseEvent(event)
+            try:
+                super().mouseReleaseEvent(event)
+            except (TypeError, RuntimeError):
+                pass
 
 
 class GraphPlaceholderItem(QGraphicsRectItem):
@@ -160,6 +174,7 @@ class GraphPlaceholderItem(QGraphicsRectItem):
 
         self.cached_pixmap: Optional[QPixmap] = None
         self._snapshot_pending = False
+        self._snapshot_attempted = False
 
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -249,6 +264,8 @@ class GraphPlaceholderItem(QGraphicsRectItem):
     def invalidate_cache(self) -> None:
         """Forces recreation of cached high-DPI graph snapshot."""
         self.cached_pixmap = None
+        self._snapshot_pending = False
+        self._snapshot_attempted = False
         self.update()
 
     def _deferred_snapshot_update(self) -> None:
@@ -258,6 +275,7 @@ class GraphPlaceholderItem(QGraphicsRectItem):
     def update_snapshot(self) -> None:
         """Forces an immediate snapshot refresh with the latest data from upstream table."""
         self._snapshot_pending = False
+        self._snapshot_attempted = True
         doc = (
             self.document
             or getattr(self.canvas, "current_document", None)
@@ -372,13 +390,20 @@ class GraphPlaceholderItem(QGraphicsRectItem):
             self.canvas.layoutModifiedSignal.emit()
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
+        if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_rect = self.placeholder.rect
-            event.accept()
-        super().mousePressEvent(event)
+            if hasattr(event, "accept"):
+                event.accept()
+        try:
+            super().mousePressEvent(event)
+        except (TypeError, RuntimeError):
+            pass
 
     def mouseReleaseEvent(self, event) -> None:
-        super().mouseReleaseEvent(event)
+        try:
+            super().mouseReleaseEvent(event)
+        except (TypeError, RuntimeError):
+            pass
         self._sync_placeholder_from_geometry()
         old_rect = getattr(self, "_drag_start_rect", None)
         new_rect = self.placeholder.rect
@@ -430,17 +455,20 @@ class GraphPlaceholderItem(QGraphicsRectItem):
             return
         r = self.rect()
 
-        if self.placeholder.graph_id and self.document is not None:
+        doc = (
+            self.document
+            or getattr(self.canvas, "current_document", None)
+            or getattr(self.canvas, "document", None)
+        )
+        if self.placeholder.graph_id and doc is not None:
             # Assigned state: render graph snapshot
             if self.cached_pixmap is None:
-                if not getattr(self, "_snapshot_pending", False):
+                if not getattr(self, "_snapshot_attempted", False) and not getattr(self, "_snapshot_pending", False):
                     self._snapshot_pending = True
                     from PyQt6.QtCore import QTimer
                     QTimer.singleShot(0, self._deferred_snapshot_update)
                 self._paint_empty_state(painter, r)
-                return
-
-            if self.cached_pixmap is not None:
+            elif not self.cached_pixmap.isNull():
                 painter.save()
                 try:
                     painter.setClipRect(r)
