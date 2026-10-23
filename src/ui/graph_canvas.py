@@ -336,9 +336,21 @@ class ScientificPlotCanvas(QWidget):
             ax = self.plot_widget.getAxis(axis_name)
             ax.setPen(axis_pen)
             ax.setTextPen("k")
-            ax.setStyle(tickFont=font, tickLength=-6)  # Outward ticks
+            if axis_name == "bottom":
+                ax.setStyle(tickFont=font, tickLength=-6, tickTextOffset=15)
+            else:
+                ax.setStyle(tickFont=font, tickLength=-6)
 
         self.plot_widget.addLegend(offset=(30, 30))
+
+    def set_axis_titles(self, x_title: Optional[str] = None, y_title: Optional[str] = None) -> None:
+        """Sets X and Y axis titles with vertical spacing margin for high-DPI export legibility."""
+        if x_title is not None:
+            # Prepend newline and set CSS padding-top to avoid tick label overlap
+            formatted_x = f"\n{x_title}" if not x_title.startswith("\n") else x_title
+            self.plot_widget.setLabel("bottom", formatted_x, color="black", **{"padding-top": "10px"})
+        if y_title is not None:
+            self.plot_widget.setLabel("left", y_title, color="black")
 
     @property
     def is_grayscale_mode(self) -> bool:
@@ -851,8 +863,7 @@ class ScientificPlotCanvas(QWidget):
         if table is None or table.x_data is None:
             return
 
-        self.plot_widget.setLabel("bottom", table.x_title or "X", color="black")
-        self.plot_widget.setLabel("left", "Y Value", color="black")
+        self.set_axis_titles(x_title=table.x_title or "X", y_title="Y Value")
 
         y_datasets_dict = getattr(table, "y_datasets_dict", None)
         if y_datasets_dict is None:
@@ -915,8 +926,7 @@ class ScientificPlotCanvas(QWidget):
         else:
             error_label = "SEM"
 
-        self.plot_widget.setLabel("bottom", "Groups", color="black")
-        self.plot_widget.setLabel("left", f"Value (Mean ± {error_label})", color="black")
+        self.set_axis_titles(x_title="Groups", y_title=f"Value (Mean ± {error_label})")
 
         group_data = table.get_all_group_values()
         names = list(group_data.keys())
@@ -1055,8 +1065,7 @@ class ScientificPlotCanvas(QWidget):
         else:
             error_label = "SEM"
 
-        self.plot_widget.setLabel("bottom", "Conditions", color="black")
-        self.plot_widget.setLabel("left", f"Value (Mean ± {error_label})", color="black")
+        self.set_axis_titles(x_title="Conditions", y_title=f"Value (Mean ± {error_label})")
 
         num_groups = len(table.y_group_titles)
         if num_groups == 0:
@@ -1294,8 +1303,7 @@ class ScientificPlotCanvas(QWidget):
             if num_groups == 0:
                 return
 
-            self.plot_widget.setLabel("bottom", f"Value (Mean ± {error_label})", color="black")
-            self.plot_widget.setLabel("left", vert_lbl, color="black")
+            self.set_axis_titles(x_title=f"Value (Mean ± {error_label})", y_title=vert_lbl)
 
             active_rows = []
             for r in range(table.num_rows):
@@ -1419,8 +1427,7 @@ class ScientificPlotCanvas(QWidget):
             if num_cols == 0:
                 return
 
-            self.plot_widget.setLabel("bottom", f"Value (Mean ± {error_label})", color="black")
-            self.plot_widget.setLabel("left", vert_lbl, color="black")
+            self.set_axis_titles(x_title=f"Value (Mean ± {error_label})", y_title=vert_lbl)
 
             ticks = [(pos, name) for pos, name in enumerate(names)]
             self.plot_widget.getAxis("left").setTicks([ticks])
@@ -1508,12 +1515,11 @@ class ScientificPlotCanvas(QWidget):
             if num_groups == 0:
                 return
 
-            self.plot_widget.setLabel("left", vert_lbl, color="black")
             if num_groups == 1 and table.y_group_titles[0]:
                 x_lbl = f"{table.y_group_titles[0]} (Mean ± {error_label})"
             else:
                 x_lbl = f"Measurement (Mean ± {error_label})"
-            self.plot_widget.setLabel("bottom", x_lbl, color="black")
+            self.set_axis_titles(x_title=x_lbl, y_title=vert_lbl)
 
             x_vals = table.x_data
 
@@ -1628,8 +1634,7 @@ class ScientificPlotCanvas(QWidget):
         if not names:
             return
 
-        self.plot_widget.setLabel("bottom", "Groups", color="black")
-        self.plot_widget.setLabel("left", "Value (Min to Max)", color="black")
+        self.set_axis_titles(x_title="Groups", y_title="Value (Min to Max)")
 
         ticks = [(pos, name) for pos, name in enumerate(names)]
         self.plot_widget.getAxis("bottom").setTicks([ticks])
@@ -1706,8 +1711,7 @@ class ScientificPlotCanvas(QWidget):
         if table is None:
             return
 
-        self.plot_widget.setLabel("bottom", table.x_title or "X", color="black")
-        self.plot_widget.setLabel("left", "Y Value", color="black")
+        self.set_axis_titles(x_title=table.x_title or "X", y_title="Y Value")
 
         y_datasets_dict = getattr(table, "y_datasets_dict", None)
         if y_datasets_dict is None:

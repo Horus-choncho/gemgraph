@@ -345,8 +345,10 @@ class GraphSheet(BaseSheet):
         is_pinned: bool = False,
         snapshot_table: Optional[DataTable] = None,
         snapshot_result_data: Optional[Dict[str, Any]] = None,
+        is_frozen: bool = False,
     ) -> None:
         super().__init__(sheet_id, title, SheetType.GRAPH, plot_config=plot_config)
+        self.is_frozen: bool = is_frozen
         self.graph_type = graph_type
         self.source_sheet_id = source_sheet_id
         self.result_sheet_id = result_sheet_id

@@ -145,6 +145,7 @@ class MainWindow(QMainWindow):
         init_sheet = self.document.get_sheets_by_type(SheetType.DATA)[0]
         self.spreadsheet_model = ScientificSpreadsheetModel(init_sheet.table, self.undo_stack, self.mediator)  # type: ignore
         self.spreadsheet_view = ScientificSpreadsheetView(self.spreadsheet_model)
+        self.table_view = self.spreadsheet_view
         self.spreadsheet_model.dataChangedSignal.connect(self._on_table_data_modified)
         self.spreadsheet_view.cellExclusionToggled.connect(self._on_table_data_modified)
         self.center_stack.addWidget(self.spreadsheet_view)
@@ -514,7 +515,9 @@ class MainWindow(QMainWindow):
 
         if sheet.sheet_type == SheetType.DATA:
             data_sheet: DataSheet = sheet  # type: ignore
-            self.spreadsheet_model.set_table(data_sheet.table)
+            is_frozen = getattr(data_sheet, "is_frozen", False)
+            self.spreadsheet_model.set_table(data_sheet.table, is_frozen=is_frozen)
+            self.spreadsheet_view.set_frozen(is_frozen)
             self.center_stack.setCurrentWidget(self.spreadsheet_view)
             self.graph_canvas.update_data(data_sheet.table, sheet=data_sheet)
             self._update_contextual_toolbar(data_sheet.table.table_type)
@@ -540,7 +543,8 @@ class MainWindow(QMainWindow):
 
         elif sheet.sheet_type == SheetType.GRAPH:
             graph_sheet: GraphSheet = sheet  # type: ignore
-            if graph_sheet.is_frozen and getattr(graph_sheet, "snapshot_table", None) is not None:
+            is_frozen = bool(graph_sheet.is_frozen)
+            if is_frozen and getattr(graph_sheet, "snapshot_table", None) is not None:
                 src_table = graph_sheet.snapshot_table
                 if getattr(graph_sheet, "snapshot_result_data", None):
                     res_sheet = ResultSheet.from_dict(graph_sheet.snapshot_result_data)
@@ -557,7 +561,8 @@ class MainWindow(QMainWindow):
                     else None
                 )
             if src_table:
-                self.spreadsheet_model.set_table(src_table)
+                self.spreadsheet_model.set_table(src_table, is_frozen=is_frozen)
+                self.spreadsheet_view.set_frozen(is_frozen)
                 self.center_stack.setCurrentWidget(self.spreadsheet_view)
             self.graph_canvas.update_data(
                 src_table,
@@ -730,7 +735,11 @@ class MainWindow(QMainWindow):
         if isinstance(active_sheet, DataSheet):
             GLOBAL_REGISTRY.extract_from_table(active_sheet.table)
             self.document.recalculate_downstream(active_sheet.sheet_id)
-            self.graph_canvas.update_data(active_sheet.table, sheet=active_sheet)
+            canvas_sheet = getattr(self.graph_canvas, "active_sheet", None) or getattr(self.graph_canvas, "current_graph_sheet", None)
+            if canvas_sheet and getattr(canvas_sheet, "is_frozen", False):
+                pass
+            else:
+                self.graph_canvas.update_data(active_sheet.table, sheet=active_sheet)
         elif isinstance(active_sheet, GraphSheet):
             if not active_sheet.is_frozen:
                 src_sheet = self.document.get_sheet(active_sheet.source_sheet_id)

@@ -1524,6 +1524,130 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
 
         view.close()
 
+    def test_layout_text_item_2d_resize_and_context_menu_formatting(self) -> None:
+        """Verifies 2D text box resizing across both dimensions and context menu font/deletion actions."""
+        from src.ui.layout_view import LayoutView
+        from PyQt6.QtWidgets import QMenu
+
+        layout = self.doc.create_layout("2D Resize & Context Menu Test", template_preset="1")
+        ann = {
+            "id": "ann-text-2d-1",
+            "type": "text",
+            "text": "Initial Publication Legend",
+            "x": 0.2,
+            "y": 0.2,
+            "w": 0.3,
+            "h": 0.1,
+            "font_size": 12,
+            "bold": False,
+            "italic": False,
+            "font_family": "Helvetica",
+        }
+        layout.annotations = [ann]
+
+        view = LayoutView(document=self.doc)
+        view.set_layout(layout)
+        view.resize(1024, 768)
+        view.show()
+        app.processEvents()
+
+        self.assertEqual(len(view.canvas.text_items), 1)
+        text_item = view.canvas.text_items[0]
+
+        # 1. Verify 6 resize handles: TL(0), TR(1), TC(2), BL(3), BR(4), BC(5)
+        self.assertEqual(len(text_item.handles), 6)
+        initial_br = text_item.boundingRect()
+        start_w = initial_br.width()
+        start_h = initial_br.height()
+
+        # 2. Test vertical resize via Top-Center handle (index 2)
+        text_item.handle_resize(
+            handle_index=2,
+            scene_pos=QPointF(0, -30),
+            drag_start=QPointF(0, 0),
+            start_width=start_w,
+            start_pos=text_item.pos(),
+            start_height=start_h,
+        )
+        new_br = text_item.boundingRect()
+        self.assertGreater(new_br.height(), start_h)
+        self.assertAlmostEqual(text_item.annotation["h"], new_br.height() / view.canvas.current_layout.get_dimensions_pt()[1], places=2)
+
+        # 3. Test 2D diagonal resize via Bottom-Right handle (index 4)
+        cur_w = new_br.width()
+        cur_h = new_br.height()
+        text_item.handle_resize(
+            handle_index=4,
+            scene_pos=QPointF(100, 50),
+            drag_start=QPointF(0, 0),
+            start_width=cur_w,
+            start_pos=text_item.pos(),
+            start_height=cur_h,
+        )
+        resized_br = text_item.boundingRect()
+        self.assertGreater(resized_br.width(), cur_w)
+        self.assertGreater(resized_br.height(), cur_h)
+
+        # 4. Test paint() execution with custom height and scaled background/border
+        from PyQt6.QtWidgets import QStyleOptionGraphicsItem
+        img = QImage(300, 200, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.white)
+        p = QPainter(img)
+        text_item.paint(p, QStyleOptionGraphicsItem(), None)
+        p.end()
+
+        # 5. Test context menu generation and font formatting actions
+        menu = text_item.create_context_menu()
+        self.assertIsInstance(menu, QMenu)
+
+        # Find font size sub-menu actions
+        actions = menu.actions()
+        size_menu_action = next((a for a in actions if a.text() == "Font Size"), None)
+        self.assertIsNotNone(size_menu_action)
+        self.assertIsNotNone(size_menu_action.menu())
+        size_actions = {a.text(): a for a in size_menu_action.menu().actions()}
+        self.assertIn("10pt", size_actions)
+        self.assertIn("12pt", size_actions)
+        self.assertIn("14pt", size_actions)
+        self.assertIn("16pt", size_actions)
+
+        # Trigger 16pt
+        size_actions["16pt"].trigger()
+        app.processEvents()
+        text_item = view.canvas.text_items[0]
+        self.assertEqual(text_item.annotation.get("font_size"), 16)
+        self.assertEqual(text_item.font().pointSize(), 16)
+
+        # Find Bold action on new item context menu and trigger toggle
+        menu = text_item.create_context_menu()
+        bold_act = next((a for a in menu.actions() if a.text() == "Bold"), None)
+        self.assertIsNotNone(bold_act)
+        bold_act.trigger()
+        app.processEvents()
+        text_item = view.canvas.text_items[0]
+        self.assertTrue(text_item.annotation.get("bold"))
+        self.assertTrue(text_item.font().bold())
+
+        # Find Italic action on new item context menu and trigger toggle
+        menu = text_item.create_context_menu()
+        italic_act = next((a for a in menu.actions() if a.text() == "Italic"), None)
+        self.assertIsNotNone(italic_act)
+        italic_act.trigger()
+        app.processEvents()
+        text_item = view.canvas.text_items[0]
+        self.assertTrue(text_item.annotation.get("italic"))
+        self.assertTrue(text_item.font().italic())
+
+        # Find Delete Text Box action and trigger
+        menu = text_item.create_context_menu()
+        del_act = next((a for a in menu.actions() if "Delete Text Box" in a.text()), None)
+        self.assertIsNotNone(del_act)
+        del_act.trigger()
+        app.processEvents()
+        self.assertEqual(len(layout.annotations), 0)
+
+        view.close()
+
 
 if __name__ == "__main__":
     unittest.main()

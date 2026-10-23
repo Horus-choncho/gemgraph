@@ -1227,6 +1227,10 @@ class DataTable:
             "multi_var_data": self.multi_var_data,
         }
 
+    def copy(self) -> DataTable:
+        """Creates a deep copy of this DataTable."""
+        return DataTable.from_dict(self.to_dict())
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> DataTable:
         """Deserializes DataTable from JSON-compatible dictionary."""

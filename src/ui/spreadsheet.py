@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QBrush, QKeyEvent, QUndoCommand
-from PyQt6.QtWidgets import QTableView, QMenu, QInputDialog, QMessageBox
+from PyQt6.QtWidgets import QAbstractItemView, QTableView, QMenu, QInputDialog, QMessageBox
 import re
 from src.core.table import DataTable, TableType
 from src.core.undo import UndoStack, CellEditCommand, CellExcludeCommand, VariableCellEditCommand
@@ -29,11 +29,14 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
         table: DataTable,
         undo_stack: Optional[UndoStack] = None,
         mediator: Optional[WorkspaceMediator] = None,
+        is_frozen: bool = False,
     ) -> None:
         super().__init__()
         self.table = table
         self.undo_stack = undo_stack if undo_stack is not None else UndoStack()
         self.mediator = mediator or WorkspaceMediator.get_instance()
+        self.is_frozen: bool = bool(is_frozen or getattr(table, "is_frozen", False) or getattr(table, "is_snapshot", False))
+        self.is_frozen_snapshot: bool = self.is_frozen
 
     @property
     def dataframe(self) -> pd.DataFrame:
@@ -106,9 +109,14 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
                 self.mediator.notify_column_deleted(col)
         return res
 
-    def set_table(self, table: DataTable) -> None:
+    def set_table(self, table: DataTable, is_frozen: Optional[bool] = None) -> None:
         self.beginResetModel()
         self.table = table
+        if is_frozen is not None:
+            self.is_frozen = bool(is_frozen)
+        else:
+            self.is_frozen = bool(getattr(table, "is_frozen", False) or getattr(table, "is_snapshot", False))
+        self.is_frozen_snapshot = self.is_frozen
         self.endResetModel()
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -237,6 +245,8 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
         if not index.isValid():
             return Qt.ItemFlag.NoItemFlags
+        if getattr(self, "is_frozen", False) or getattr(self, "is_frozen_snapshot", False) or getattr(self.table, "is_frozen", False) or getattr(self.table, "is_snapshot", False):
+            return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
         return (
             Qt.ItemFlag.ItemIsEnabled
             | Qt.ItemFlag.ItemIsSelectable
@@ -311,6 +321,8 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
 
     def setData(self, index: QModelIndex, value, role: int = Qt.ItemDataRole.EditRole) -> bool:
         if not index.isValid() or role != Qt.ItemDataRole.EditRole:
+            return False
+        if getattr(self, "is_frozen", False) or getattr(self, "is_frozen_snapshot", False) or getattr(self.table, "is_frozen", False) or getattr(self.table, "is_snapshot", False):
             return False
 
         row = index.row()
@@ -473,11 +485,13 @@ class ScientificSpreadsheetView(QTableView):
 
     def __init__(self, model: ScientificSpreadsheetModel, parent=None) -> None:
         super().__init__(parent)
+        self.table_view = self
         self.setModel(model)
         self.undo_stack = model.undo_stack
         self.setAlternatingRowColors(True)
         self.horizontalHeader().setStretchLastSection(False)
         self.setSelectionMode(QTableView.SelectionMode.ExtendedSelection)
+        self.update_edit_triggers()
 
         # Explicit scientific spreadsheet styling (GraphPad standard) to guarantee
         # high-contrast readability under both light and dark OS desktop themes.
@@ -534,11 +548,60 @@ class ScientificSpreadsheetView(QTableView):
         self.horizontalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.horizontalHeader().customContextMenuRequested.connect(self._on_header_context_menu)
 
+    def setModel(self, model) -> None:
+        super().setModel(model)
+        if hasattr(self, "table_view"):
+            self.update_edit_triggers()
+
+    def update_edit_triggers(self) -> None:
+        """Sets edit triggers: NoEditTriggers for frozen snapshot tables, standard triggers otherwise."""
+        model = self.model()
+        is_frozen = False
+        if model is not None:
+            is_frozen = (
+                getattr(model, "is_frozen", False)
+                or getattr(model, "is_frozen_snapshot", False)
+                or getattr(getattr(model, "table", None), "is_frozen", False)
+                or getattr(getattr(model, "table", None), "is_snapshot", False)
+            )
+        if is_frozen:
+            self.table_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        else:
+            self.table_view.setEditTriggers(
+                QAbstractItemView.EditTrigger.DoubleClicked
+                | QAbstractItemView.EditTrigger.EditKeyPressed
+                | QAbstractItemView.EditTrigger.AnyKeyPressed
+            )
+
+    def set_frozen(self, frozen: bool) -> None:
+        """Explicitly sets frozen status on view and model, updating edit triggers."""
+        model = self.model()
+        if model is not None:
+            setattr(model, "is_frozen", bool(frozen))
+            setattr(model, "is_frozen_snapshot", bool(frozen))
+            if getattr(model, "table", None) is not None:
+                setattr(model.table, "is_frozen", bool(frozen))
+        self.update_edit_triggers()
+
+    def load_sheet(self, sheet: Any) -> None:
+        """Loads a DataSheet or GraphSheet snapshot into the view, applying frozen isolation if needed."""
+        is_frozen = getattr(sheet, "is_frozen", False)
+        table = getattr(sheet, "snapshot_table", None) if is_frozen else getattr(sheet, "table", None)
+        if table is None and hasattr(sheet, "table"):
+            table = sheet.table
+        if table is not None:
+            model = self.get_model()
+            if model is not None:
+                model.set_table(table, is_frozen=is_frozen)
+        self.update_edit_triggers()
+
     def get_model(self) -> ScientificSpreadsheetModel:
         return self.model()  # type: ignore
 
     def _prompt_rename_column(self, col_idx: int) -> None:
         model = self.get_model()
+        if getattr(model, "is_frozen", False) or getattr(model, "is_frozen_snapshot", False) or getattr(getattr(model, "table", None), "is_frozen", False):
+            return
         current_title = model.get_column_title(col_idx)
         new_title, ok = QInputDialog.getText(
             self,
@@ -550,9 +613,15 @@ class ScientificSpreadsheetView(QTableView):
             model.rename_column(col_idx, new_title.strip())
 
     def _on_header_double_clicked(self, logicalIndex: int) -> None:
+        model = self.get_model()
+        if getattr(model, "is_frozen", False) or getattr(model, "is_frozen_snapshot", False) or getattr(getattr(model, "table", None), "is_frozen", False):
+            return
         self._prompt_rename_column(logicalIndex)
 
     def _on_header_context_menu(self, pos) -> None:
+        model = self.get_model()
+        if getattr(model, "is_frozen", False) or getattr(model, "is_frozen_snapshot", False) or getattr(getattr(model, "table", None), "is_frozen", False):
+            return
         col_idx = self.horizontalHeader().logicalIndexAt(pos)
         if col_idx < 0:
             return
@@ -571,6 +640,8 @@ class ScientificSpreadsheetView(QTableView):
 
         def on_action(act):
             model = self.get_model()
+            if getattr(model, "is_frozen", False) or getattr(model, "is_frozen_snapshot", False) or getattr(getattr(model, "table", None), "is_frozen", False):
+                return
             if act == act_add_x_left:
                 model.insert_x_column(col_idx, position="left")
             elif act == act_add_x_right:
@@ -593,6 +664,13 @@ class ScientificSpreadsheetView(QTableView):
         act_delete.triggered.connect(lambda: on_action(act_delete))
 
     def contextMenuEvent(self, event) -> None:
+        model = self.get_model()
+        if getattr(model, "is_frozen", False) or getattr(model, "is_frozen_snapshot", False) or getattr(getattr(model, "table", None), "is_frozen", False):
+            menu = QMenu(self)
+            action = menu.addAction("🔒 Frozen Snapshot (Read-Only)")
+            action.setEnabled(False)
+            menu.exec(event.globalPos())
+            return
         menu = QMenu(self)
 
         col_idx = self.columnAt(event.pos().x())

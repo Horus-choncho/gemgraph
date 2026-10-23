@@ -9,13 +9,14 @@ Covers:
 
 from __future__ import annotations
 import unittest
+from unittest.mock import MagicMock
 import numpy as np
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QAbstractItemView
 from PyQt6.QtGui import QKeyEvent, QColor
 from PyQt6.QtCore import Qt, QEvent, QItemSelectionModel, QItemSelection
 
 from src.core.table import DataTable, TableType
-from src.core.sheet import GraphType
+from src.core.sheet import GraphType, GraphSheet, SheetType
 from src.ui.spreadsheet import ScientificSpreadsheetModel, ScientificSpreadsheetView
 from src.ui.graph_canvas import ScientificPlotCanvas
 from src.ui.dialogs import FormatSeriesDialog
@@ -321,6 +322,94 @@ class TestDepthGraphParityRefinements(unittest.TestCase):
         lbl_col = canvas.plot_widget.getAxis("left").labelText
         self.assertEqual(lbl_col, "Substrate Strata")
         self.assertNotIn("Depth in meters", lbl_col)
+
+
+class TestFrozenGraphIsolationAndAxisSpacing(unittest.TestCase):
+    """
+    Regression unit tests verifying:
+    1. Frozen snapshot tables initialize with NoEditTriggers.
+    2. Frozen graphs do not invoke refresh_plot upon upstream data changes.
+    3. X-Axis label vertical spacing margin for exports.
+    """
+
+    def test_frozen_snapshot_table_initializes_with_no_edit_triggers(self) -> None:
+        """Verifies that frozen snapshot tables are read-only with NoEditTriggers."""
+        from src.core.sheet import GraphSheet
+
+        table = DataTable(table_id="snap_1", title="Snapshot Table", table_type=TableType.XY, num_rows=3, num_replicates=1)
+        table.set_cell_value(0, "Y", 0, 0, 100.0)
+
+        # 1. Direct model and view with is_frozen=True
+        model = ScientificSpreadsheetModel(table, is_frozen=True)
+        view = ScientificSpreadsheetView(model)
+
+        self.assertEqual(view.editTriggers(), QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.assertEqual(view.table_view.editTriggers(), QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.assertEqual(model.flags(model.index(0, 0)) & Qt.ItemFlag.ItemIsEditable, Qt.ItemFlag.NoItemFlags)
+        self.assertFalse(model.setData(model.index(0, 0), 200.0))
+
+        # 2. Editable table has standard triggers
+        editable_model = ScientificSpreadsheetModel(table, is_frozen=False)
+        editable_view = ScientificSpreadsheetView(editable_model)
+        self.assertNotEqual(editable_view.editTriggers(), QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.assertTrue(bool(editable_model.flags(editable_model.index(0, 0)) & Qt.ItemFlag.ItemIsEditable))
+
+        # 3. Loading a frozen GraphSheet via load_sheet sets NoEditTriggers
+        frozen_graph = GraphSheet(sheet_id="g_froz", title="Frozen Graph", source_sheet_id="src_1", is_frozen=True)
+        frozen_graph.snapshot_table = table
+        editable_view.load_sheet(frozen_graph)
+        self.assertEqual(editable_view.editTriggers(), QAbstractItemView.EditTrigger.NoEditTriggers)
+
+    def test_frozen_graphs_do_not_invoke_refresh_plot_upon_upstream_data_changes(self) -> None:
+        """Verifies that upstream table mutations never trigger refresh_plot on frozen graphs."""
+        from src.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win.resize(1024, 768)
+
+        # Data Sheet & Graph
+        data_sheet = win.document.get_sheets_by_type(SheetType.DATA)[0]
+        data_sheet.table.set_cell_value(0, "Y", 0, 0, 10.0)
+
+        graph_sheet = win.document.create_graph_sheet("Test Graph", source_sheet_id=data_sheet.sheet_id)
+        graph_sheet.snapshot_table = data_sheet.table.copy()
+        graph_sheet.is_frozen = True
+
+        # Select frozen graph
+        win.on_sheet_selected(graph_sheet.sheet_id)
+        app.processEvents()
+
+        # Mock refresh_plot and update_data on graph canvas
+        win.graph_canvas.refresh_plot = MagicMock()
+        win.graph_canvas.update_data = MagicMock()
+
+        # Modify upstream table data and notify mediator
+        data_sheet.table.set_cell_value(0, "Y", 0, 0, 999.0)
+        win.mediator.notify_data_changed(data_sheet.table)
+        app.processEvents()
+
+        # Severed upstream link must prevent refresh_plot and update_data
+        win.graph_canvas.refresh_plot.assert_not_called()
+        win.graph_canvas.update_data.assert_not_called()
+
+        win.close()
+
+    def test_x_axis_label_vertical_spacing_margin_for_exports(self) -> None:
+        """Verifies that set_axis_titles and bottom axis style inject export margins to prevent tick overlap."""
+        canvas = ScientificPlotCanvas()
+
+        # Bottom axis must have outward ticks and tickTextOffset=15
+        bottom_axis = canvas.plot_widget.getAxis("bottom")
+        offset = bottom_axis.style.get("tickTextOffset")
+        self.assertTrue(offset == 15 or (isinstance(offset, (list, tuple)) and offset[-1] == 15))
+
+        # Calling set_axis_titles injects newline margin and padding
+        canvas.set_axis_titles(x_title="Concentration (uM)", y_title="Fluorescence")
+        x_label = bottom_axis.labelText
+        self.assertTrue(x_label.startswith("\nConcentration (uM)"))
+
+        y_label = canvas.plot_widget.getAxis("left").labelText
+        self.assertEqual(y_label, "Fluorescence")
 
 
 if __name__ == "__main__":

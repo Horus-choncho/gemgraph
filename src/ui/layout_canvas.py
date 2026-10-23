@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QGraphicsTextItem,
     QGraphicsView,
     QMenu,
+    QStyleOptionGraphicsItem,
     QWidget,
 )
 
@@ -567,19 +568,22 @@ class TextResizeHandleItem(QGraphicsRectItem):
         cursors = {
             0: Qt.CursorShape.SizeFDiagCursor,  # TL
             1: Qt.CursorShape.SizeBDiagCursor,  # TR
-            2: Qt.CursorShape.SizeHorCursor,    # MR
+            2: Qt.CursorShape.SizeVerCursor,    # TC
             3: Qt.CursorShape.SizeBDiagCursor,  # BL
             4: Qt.CursorShape.SizeFDiagCursor,  # BR
+            5: Qt.CursorShape.SizeVerCursor,    # BC
         }
         self.setCursor(cursors.get(handle_index, Qt.CursorShape.ArrowCursor))
         self.drag_start_pos: Optional[QPointF] = None
         self._start_width: float = 0.0
+        self._start_height: float = 0.0
         self._start_pos: Optional[QPointF] = None
 
     def mousePressEvent(self, event) -> None:
         if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
             self.drag_start_pos = event.scenePos() if hasattr(event, "scenePos") else None
             self._start_width = self.parent_text_item.boundingRect().width()
+            self._start_height = self.parent_text_item.boundingRect().height()
             self._start_pos = self.parent_text_item.pos()
             if hasattr(event, "accept"):
                 event.accept()
@@ -598,6 +602,7 @@ class TextResizeHandleItem(QGraphicsRectItem):
                 self.drag_start_pos,
                 self._start_width,
                 self._start_pos,
+                self._start_height,
             )
             if hasattr(event, "accept"):
                 event.accept()
@@ -643,6 +648,7 @@ class LayoutTextItem(QGraphicsTextItem):
         self._syncing_geometry = False
         self._drag_start_pos: Optional[Tuple[float, float]] = None
         self._resize_old_state: Optional[Dict[str, Any]] = None
+        self._custom_height: Optional[float] = None
 
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -655,14 +661,20 @@ class LayoutTextItem(QGraphicsTextItem):
         self._apply_annotation_properties()
         self._sync_geometry_from_annotation()
 
-        # Create 5 transform handles (TL, TR, MR, BL, BR)
+        # Create 6 transform handles (TL, TR, TC, BL, BR, BC)
         self.handles: List[TextResizeHandleItem] = [
-            TextResizeHandleItem(i, self) for i in range(5)
+            TextResizeHandleItem(i, self) for i in range(6)
         ]
         self._update_handle_positions()
         self._update_handle_visibility()
 
         self.document().contentsChanged.connect(self._on_contents_changed)
+
+    def boundingRect(self) -> QRectF:
+        br = super().boundingRect()
+        if getattr(self, "_custom_height", None) is not None:
+            return QRectF(br.x(), br.y(), br.width(), max(20.0, float(self._custom_height)))
+        return br
 
     def _apply_annotation_properties(self) -> None:
         font_family = self.annotation.get("font_family", "Helvetica")
@@ -697,6 +709,11 @@ class LayoutTextItem(QGraphicsTextItem):
                 self.setTextWidth(float(w_norm) * self.page_width)
             else:
                 self.setTextWidth(-1)
+            h_norm = self.annotation.get("h", self.annotation.get("height"))
+            if h_norm is not None and float(h_norm) > 0:
+                self._custom_height = float(h_norm) * self.page_height
+            else:
+                self._custom_height = None
         finally:
             self._syncing_geometry = False
         self._update_handle_positions()
@@ -723,9 +740,10 @@ class LayoutTextItem(QGraphicsTextItem):
         positions = [
             (0.0, 0.0),       # 0: TL
             (w, 0.0),         # 1: TR
-            (w, h / 2.0),     # 2: MR
+            (w / 2.0, 0.0),   # 2: TC
             (0.0, h),         # 3: BL
             (w, h),           # 4: BR
+            (w / 2.0, h),     # 5: BC
         ]
         if hasattr(self, "handles"):
             for idx, (hx, hy) in enumerate(positions):
@@ -839,13 +857,14 @@ class LayoutTextItem(QGraphicsTextItem):
 
     def handle_resize(
         self,
-        handle_index: int,
+        handle_index: Any,
         scene_pos: QPointF,
         drag_start: QPointF,
         start_width: float,
         start_pos: Optional[QPointF],
+        start_height: Optional[float] = None,
     ) -> None:
-        """Adjusts QTextDocument text width dynamically based on handle drag, re-wrapping text."""
+        """Adjusts text box width and height dynamically based on handle drag."""
         if getattr(self, "_resize_old_state", None) is None:
             self._resize_old_state = {
                 "w": self.annotation.get("w"),
@@ -856,16 +875,61 @@ class LayoutTextItem(QGraphicsTextItem):
                 "y": self.annotation.get("y"),
             }
         delta_x = scene_pos.x() - drag_start.x()
+        delta_y = scene_pos.y() - drag_start.y()
 
-        if handle_index in (1, 2, 4):  # TR, MR, BR
-            new_width = max(30.0, start_width + delta_x)
-            self.setTextWidth(new_width)
-        elif handle_index in (0, 3):  # TL, BL
+        if start_height is None:
+            start_height = self.boundingRect().height()
+        if start_pos is None:
+            start_pos = self.pos()
+
+        # Handle indices:
+        # 0: TL (Top-Left)
+        # 1: TR (Top-Right)
+        # 2: TC (Top-Center)
+        # 3: BL (Bottom-Left)
+        # 4: BR (Bottom-Right)
+        # 5: BC (Bottom-Center)
+        if handle_index in (0, "TL", "tl", "top_left"):
             new_width = max(30.0, start_width - delta_x)
-            if start_pos is not None:
-                new_x = start_pos.x() + (start_width - new_width)
-                self.setPos(new_x, start_pos.y())
+            new_height = max(20.0, start_height - delta_y)
+            new_x = start_pos.x() + (start_width - new_width)
+            new_y = start_pos.y() + (start_height - new_height)
+            self.prepareGeometryChange()
+            self.setPos(new_x, new_y)
             self.setTextWidth(new_width)
+            self._custom_height = new_height
+        elif handle_index in (1, "TR", "tr", "top_right"):
+            new_width = max(30.0, start_width + delta_x)
+            new_height = max(20.0, start_height - delta_y)
+            new_y = start_pos.y() + (start_height - new_height)
+            self.prepareGeometryChange()
+            self.setPos(start_pos.x(), new_y)
+            self.setTextWidth(new_width)
+            self._custom_height = new_height
+        elif handle_index in (2, "TC", "tc", "top_center"):
+            new_height = max(20.0, start_height - delta_y)
+            new_y = start_pos.y() + (start_height - new_height)
+            self.prepareGeometryChange()
+            self.setPos(start_pos.x(), new_y)
+            self._custom_height = new_height
+        elif handle_index in (3, "BL", "bl", "bottom_left"):
+            new_width = max(30.0, start_width - delta_x)
+            new_height = max(20.0, start_height + delta_y)
+            new_x = start_pos.x() + (start_width - new_width)
+            self.prepareGeometryChange()
+            self.setPos(new_x, start_pos.y())
+            self.setTextWidth(new_width)
+            self._custom_height = new_height
+        elif handle_index in (4, 7, "BR", "br", "bottom_right"):
+            new_width = max(30.0, start_width + delta_x)
+            new_height = max(20.0, start_height + delta_y)
+            self.prepareGeometryChange()
+            self.setTextWidth(new_width)
+            self._custom_height = new_height
+        elif handle_index in (5, 6, "BC", "bc", "bottom_center"):
+            new_height = max(20.0, start_height + delta_y)
+            self.prepareGeometryChange()
+            self._custom_height = new_height
 
         self._sync_annotation_from_geometry()
         self._update_handle_positions()
@@ -919,7 +983,9 @@ class LayoutTextItem(QGraphicsTextItem):
             self.setFont(f)
             self.update()
 
-    def set_font_bold(self, bold: bool) -> None:
+    def set_font_bold(self, bold: Optional[bool] = None) -> None:
+        if bold is None:
+            bold = not bool(self.annotation.get("bold", False))
         old_bold = self.annotation.get("bold", False)
         if old_bold == bold:
             return
@@ -936,7 +1002,9 @@ class LayoutTextItem(QGraphicsTextItem):
             self.setFont(f)
             self.update()
 
-    def set_font_italic(self, italic: bool) -> None:
+    def set_font_italic(self, italic: Optional[bool] = None) -> None:
+        if italic is None:
+            italic = not bool(self.annotation.get("italic", False))
         old_italic = self.annotation.get("italic", False)
         if old_italic == italic:
             return
@@ -970,14 +1038,82 @@ class LayoutTextItem(QGraphicsTextItem):
             self.setFont(f)
             self.update()
 
+    def create_context_menu(self) -> QMenu:
+        """Constructs right-click context menu for font formatting and text box deletion."""
+        menu = QMenu()
+
+        # Font Size sub-menu
+        size_menu = menu.addMenu("Font Size")
+        current_size = int(self.annotation.get("font_size", 14))
+        for size in [10, 12, 14, 16]:
+            act = size_menu.addAction(f"{size}pt")
+            act.setCheckable(True)
+            act.setChecked(current_size == size)
+            act.triggered.connect(lambda checked, s=size: self.set_font_size(s))
+
+        # Bold & Italic toggle actions
+        bold_act = menu.addAction("Bold")
+        bold_act.setCheckable(True)
+        bold_act.setChecked(bool(self.annotation.get("bold", False)))
+        bold_act.triggered.connect(lambda checked: self.set_font_bold(checked))
+
+        italic_act = menu.addAction("Italic")
+        italic_act.setCheckable(True)
+        italic_act.setChecked(bool(self.annotation.get("italic", False)))
+        italic_act.triggered.connect(lambda checked: self.set_font_italic(checked))
+
+        menu.addSeparator()
+
+        del_act = menu.addAction("🗑️ Delete Text Box")
+        del_act.triggered.connect(self._action_delete_text_box)
+
+        return menu
+
+    def _action_delete_text_box(self) -> None:
+        layout_view = getattr(self.canvas, "layout_view", None)
+        if layout_view is not None and hasattr(layout_view, "push_delete_text_command"):
+            layout_view.push_delete_text_command(self.annotation)
+        elif self.canvas and getattr(self.canvas, "current_layout", None):
+            self.canvas.current_layout.annotations = [
+                a for a in self.canvas.current_layout.annotations
+                if a.get("id") != self.annotation.get("id")
+            ]
+            self.canvas.rebuild_scene()
+        if hasattr(self.canvas, "layoutModifiedSignal"):
+            self.canvas.layoutModifiedSignal.emit()
+
+    def contextMenuEvent(self, event) -> None:
+        menu = self.create_context_menu()
+        screen_pos = event.screenPos() if hasattr(event, "screenPos") else None
+        if screen_pos is not None:
+            menu.exec(screen_pos)
+        else:
+            menu.exec(QCursor.pos())
+        if hasattr(event, "accept"):
+            event.accept()
+
     def paint(self, painter: QPainter, option: Any, widget: Optional[QWidget] = None) -> None:
         if not painter or not painter.isActive():
             return
+        if option is None:
+            option = QStyleOptionGraphicsItem()
+        br = self.boundingRect()
+        bg_col = self.annotation.get("background_color") or self.annotation.get("bg_color")
+        if bg_col:
+            painter.save()
+            painter.fillRect(br, QColor(bg_col))
+            painter.restore()
+        border_col = self.annotation.get("border_color")
+        if border_col:
+            painter.save()
+            painter.setPen(QPen(QColor(border_col), 1.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(br)
+            painter.restore()
         super().paint(painter, option, widget)
         if self.isSelected() and painter.isActive():
             painter.save()
             try:
-                br = self.boundingRect()
                 pen = QPen(QColor(0, 120, 212), 1.0, Qt.PenStyle.DashLine)
                 painter.setPen(pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
