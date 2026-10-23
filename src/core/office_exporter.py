@@ -360,17 +360,19 @@ def render_graph_to_png_bytes(
 
     created_canvas = False
     saved_state = None
-    if canvas is None:
+    is_live_visible = getattr(canvas, "isVisible", lambda: False)() if canvas is not None else False
+    if canvas is None or (is_live_visible and getattr(canvas, "active_sheet", None) != target_sheet):
         from src.ui.graph_canvas import GraphCanvasWidget
         canvas = GraphCanvasWidget()
         canvas.resize(width, height)
         canvas.plot_widget.setGeometry(0, 0, width, height)
         created_canvas = True
     else:
-        saved_state = _save_canvas_state(canvas)
-        canvas.resize(width, height)
-        if hasattr(canvas, "plot_widget"):
-            canvas.plot_widget.setGeometry(0, 0, width, height)
+        if not is_live_visible:
+            saved_state = _save_canvas_state(canvas)
+            canvas.resize(width, height)
+            if hasattr(canvas, "plot_widget"):
+                canvas.plot_widget.setGeometry(0, 0, width, height)
 
     try:
         if isinstance(target_sheet, DataSheet):
@@ -450,12 +452,13 @@ def render_graph_to_png_bytes(
         if res_sheet is None and canvas is not None and getattr(canvas, "current_result", None) is not None:
             res_sheet = canvas.current_result
 
-        canvas.update_data(
-            src_table,
-            result=res_sheet if isinstance(res_sheet, ResultSheet) else None,
-            graph_type=gt,
-            sheet=target_sheet,
-        )
+        if created_canvas or not is_live_visible or getattr(canvas, "active_sheet", None) != target_sheet:
+            canvas.update_data(
+                src_table,
+                result=res_sheet if isinstance(res_sheet, ResultSheet) else None,
+                graph_type=gt,
+                sheet=target_sheet,
+            )
 
         # Generous axis margin padding to prevent multi-line categorical/group label truncation
         try:
@@ -466,18 +469,26 @@ def render_graph_to_png_bytes(
         except Exception:
             pass
 
-        from PyQt6.QtCore import QCoreApplication
-        app = QCoreApplication.instance()
-        if app is not None:
-            app.processEvents()
-
-        img = QImage(width, height, QImage.Format.Format_ARGB32)
-        img.fill(QColor(255, 255, 255))
+        plot_widget = getattr(canvas, "plot_widget", canvas)
+        img = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.white)
         painter = QPainter(img)
         try:
-            canvas.plot_widget.render(painter)
+            if painter.isActive():
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                scene = plot_widget.scene() if hasattr(plot_widget, "scene") else None
+                if scene is not None:
+                    scene_rect = scene.sceneRect()
+                    if scene_rect.isEmpty() or scene_rect.isNull():
+                        scene_rect = scene.itemsBoundingRect()
+                    if scene_rect.isEmpty() or scene_rect.isNull():
+                        scene_rect = QRectF(0, 0, width, height)
+                    scene.render(painter, QRectF(0, 0, width, height), scene_rect)
+                else:
+                    plot_widget.render(painter)
         finally:
-            painter.end()
+            if painter.isActive():
+                painter.end()
 
         buffer = QBuffer()
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
@@ -1401,22 +1412,25 @@ class OfficeExporter:
             writer.setResolution(300)
             painter = QPainter(writer)
             try:
-                for idx, l in enumerate(layout_sheets):
-                    if idx > 0:
-                        writer.newPage()
-                    pt_w, pt_h = l.get_dimensions_pt()
-                    writer.setPageSize(QPageSize(QSizeF(pt_w, pt_h), QPageSize.Unit.Point))
+                if painter.isActive():
+                    for idx, l in enumerate(layout_sheets):
+                        if idx > 0:
+                            writer.newPage()
+                        pt_w, pt_h = l.get_dimensions_pt()
+                        writer.setPageSize(QPageSize(QSizeF(pt_w, pt_h), QPageSize.Unit.Point))
 
-                    if l.orientation.lower() == "landscape":
-                        writer.setPageOrientation(QPageLayout.Orientation.Landscape)
-                    else:
-                        writer.setPageOrientation(QPageLayout.Orientation.Portrait)
+                        if l.orientation.lower() == "landscape":
+                            writer.setPageOrientation(QPageLayout.Orientation.Landscape)
+                        else:
+                            writer.setPageOrientation(QPageLayout.Orientation.Portrait)
 
-                    img = render_layout_to_image(l, document=self.document, dpi=300, graph_canvas=self.graph_canvas)
-                    page_rect = QRectF(0, 0, writer.width(), writer.height())
-                    painter.drawImage(page_rect, img)
+                        img = render_layout_to_image(l, document=self.document, dpi=300, graph_canvas=self.graph_canvas)
+                        page_rect = QRectF(0, 0, writer.width(), writer.height())
+                        if painter.isActive():
+                            painter.drawImage(page_rect, img)
             finally:
-                painter.end()
+                if painter.isActive():
+                    painter.end()
             return file_path
 
         html_parts: List[str] = [

@@ -14,7 +14,7 @@ Includes:
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple, Set
 import numpy as np
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
 from PyQt6.QtGui import QColor, QFont, QBrush, QPolygonF, QPen
 from PyQt6.QtWidgets import (
     QWidget,
@@ -1921,9 +1921,15 @@ class ScientificPlotCanvas(QWidget):
 
         painter = QPainter(generator)
         try:
-            self.plot_widget.render(painter)
+            if painter.isActive():
+                scene = self.plot_widget.scene() if hasattr(self.plot_widget, "scene") else None
+                if scene is not None:
+                    scene.render(painter, QRectF(self.plot_widget.rect()), scene.sceneRect())
+                else:
+                    self.plot_widget.render(painter)
         finally:
-            painter.end()
+            if painter.isActive():
+                painter.end()
 
 
 GraphCanvasWidget = ScientificPlotCanvas

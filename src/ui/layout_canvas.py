@@ -53,6 +53,8 @@ class LayoutPageItem(QGraphicsItem):
         return QRectF(-20, -20, self.page_width + 40, self.page_height + 40)
 
     def paint(self, painter: QPainter, option: Any, widget: Optional[QWidget] = None) -> None:
+        if not painter or not painter.isActive():
+            return
         # Drop shadow layers
         for offset, alpha in [(8, 20), (5, 35), (2, 50)]:
             shadow_rect = QRectF(offset, offset, self.page_width, self.page_height)
@@ -157,6 +159,7 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         self._drag_start_rect: Optional[Tuple[float, float, float, float]] = None
 
         self.cached_pixmap: Optional[QPixmap] = None
+        self._snapshot_pending = False
 
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -248,8 +251,13 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         self.cached_pixmap = None
         self.update()
 
+    def _deferred_snapshot_update(self) -> None:
+        self._snapshot_pending = False
+        self.update_snapshot()
+
     def update_snapshot(self) -> None:
         """Forces an immediate snapshot refresh with the latest data from upstream table."""
+        self._snapshot_pending = False
         doc = (
             self.document
             or getattr(self.canvas, "current_document", None)
@@ -418,46 +426,59 @@ class GraphPlaceholderItem(QGraphicsRectItem):
             super().mouseDoubleClickEvent(event)
 
     def paint(self, painter: QPainter, option: Any, widget: Optional[QWidget] = None) -> None:
+        if not painter or not painter.isActive():
+            return
         r = self.rect()
 
         if self.placeholder.graph_id and self.document is not None:
             # Assigned state: render graph snapshot
             if self.cached_pixmap is None:
-                self.update_snapshot()
+                if not getattr(self, "_snapshot_pending", False):
+                    self._snapshot_pending = True
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(0, self._deferred_snapshot_update)
+                self._paint_empty_state(painter, r)
+                return
 
             if self.cached_pixmap is not None:
                 painter.save()
-                painter.setClipRect(r)
-                rot = getattr(self.placeholder, "rotation", 0)
-                if rot:
-                    painter.translate(r.center())
-                    painter.rotate(rot)
-                    painter.translate(-r.center())
-                scale = max(0.1, min(5.0, getattr(self.placeholder, "custom_scale", 1.0)))
-                if abs(scale - 1.0) > 1e-4:
-                    cx = r.center().x()
-                    cy = r.center().y()
-                    sw = r.width() * scale
-                    sh = r.height() * scale
-                    draw_rect = QRectF(cx - sw / 2.0, cy - sh / 2.0, sw, sh)
-                else:
-                    draw_rect = r
-                painter.drawPixmap(draw_rect.toRect(), self.cached_pixmap)
-                painter.restore()
-                painter.setPen(QPen(QColor(215, 215, 215), 1.0))
-                painter.drawRect(r)
+                try:
+                    painter.setClipRect(r)
+                    rot = getattr(self.placeholder, "rotation", 0)
+                    if rot:
+                        painter.translate(r.center())
+                        painter.rotate(rot)
+                        painter.translate(-r.center())
+                    scale = max(0.1, min(5.0, getattr(self.placeholder, "custom_scale", 1.0)))
+                    if abs(scale - 1.0) > 1e-4:
+                        cx = r.center().x()
+                        cy = r.center().y()
+                        sw = r.width() * scale
+                        sh = r.height() * scale
+                        draw_rect = QRectF(cx - sw / 2.0, cy - sh / 2.0, sw, sh)
+                    else:
+                        draw_rect = r
+                    if painter.isActive():
+                        painter.drawPixmap(draw_rect.toRect(), self.cached_pixmap)
+                finally:
+                    painter.restore()
+                if painter.isActive():
+                    painter.setPen(QPen(QColor(215, 215, 215), 1.0))
+                    painter.drawRect(r)
             else:
                 self._paint_empty_state(painter, r)
         else:
             self._paint_empty_state(painter, r)
 
         # Highlight outline when selected
-        if self.isSelected():
+        if self.isSelected() and painter.isActive():
             painter.setPen(QPen(QColor(0, 120, 212), 2.0, Qt.PenStyle.SolidLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(r)
 
     def _paint_empty_state(self, painter: QPainter, r: QRectF) -> None:
+        if not painter or not painter.isActive():
+            return
         painter.fillRect(r, QColor(248, 249, 250))
         pen = QPen(QColor(170, 175, 180), 1.5, Qt.PenStyle.DashLine)
         painter.setPen(pen)
@@ -875,15 +896,19 @@ class LayoutTextItem(QGraphicsTextItem):
             self.update()
 
     def paint(self, painter: QPainter, option: Any, widget: Optional[QWidget] = None) -> None:
+        if not painter or not painter.isActive():
+            return
         super().paint(painter, option, widget)
-        if self.isSelected():
+        if self.isSelected() and painter.isActive():
             painter.save()
-            br = self.boundingRect()
-            pen = QPen(QColor(0, 120, 212), 1.0, Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(br)
-            painter.restore()
+            try:
+                br = self.boundingRect()
+                pen = QPen(QColor(0, 120, 212), 1.0, Qt.PenStyle.DashLine)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(br)
+            finally:
+                painter.restore()
 
 
 class LayoutCanvas(QGraphicsView):

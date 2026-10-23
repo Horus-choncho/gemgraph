@@ -11,11 +11,12 @@ import math
 import os
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 import zipfile
 
 import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, QEvent
-from PyQt6.QtGui import QColor, QImage, QMouseEvent, QKeyEvent, QFocusEvent
+from PyQt6.QtGui import QColor, QImage, QMouseEvent, QKeyEvent, QFocusEvent, QPainter
 from PyQt6.QtWidgets import QApplication, QGraphicsItem
 
 from src.core.document import PrismDocument
@@ -31,7 +32,7 @@ from src.core.layout import (
     render_layout_to_png_bytes,
     render_layout_to_svg,
 )
-from src.core.office_exporter import OfficeExporter, ExportFormat
+from src.core.office_exporter import OfficeExporter, ExportFormat, render_graph_to_png_bytes
 from src.core.sheet import DataSheet, GraphSheet, GraphType, SheetType
 from src.core.table import TableType
 from src.io.prism_io import PrismIO
@@ -914,6 +915,109 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
         left_label_text3 = canvas.plot_widget.getAxis("left").labelText
         self.assertEqual(left_label_text3, "Sediment Depth (cm)")
         self.assertNotIn("Depth in meters", left_label_text3)
+
+    def test_freeze_multiple_graphs_no_unended_painters(self) -> None:
+        """Verifies creating, assigning, and freezing multiple graphs does not leave un-ended painters."""
+        layout = self.doc.create_layout("Multi-Frozen Regression Layout")
+        layout.placeholders.clear()
+
+        # Create multiple graphs, assign and freeze them
+        graphs = []
+        for i in range(3):
+            gs = self.doc.create_graph_sheet(f"FrozenGraph_{i}", source_sheet_id=self.data_sheet.sheet_id)
+            gs.is_frozen = True
+            gs.snapshot_table = self.data_sheet.table
+            graphs.append(gs)
+            p = Placeholder(slot_id=f"slot_frz_{i}", rect=(0.05 + 0.3 * i, 0.1, 0.25, 0.35), graph_id=gs.sheet_id)
+            layout.add_placeholder(p)
+
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+
+        for item in view.canvas.placeholder_items:
+            item.update_snapshot()
+            self.assertIsNotNone(item.cached_pixmap)
+            self.assertFalse(item.cached_pixmap.isNull())
+
+        # Render layout canvas scene to an offscreen image and verify no active painter leaks
+        img = QImage(800, 600, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.white)
+        test_painter = QPainter(img)
+        self.assertTrue(test_painter.isActive())
+        view.canvas.scene.render(test_painter)
+        test_painter.end()
+        self.assertFalse(test_painter.isActive())
+        view.close()
+
+    def test_render_graph_to_png_bytes_rapid_consecutive_calls(self) -> None:
+        """Verifies render_graph_to_png_bytes safely handles rapid consecutive calls without paint device conflicts."""
+        for i in range(12):
+            gs = self.doc.create_graph_sheet(f"RapidGraph_{i}", source_sheet_id=self.data_sheet.sheet_id)
+            if i % 2 == 0:
+                gs.is_frozen = True
+                gs.snapshot_table = self.data_sheet.table
+            png_bytes = render_graph_to_png_bytes(
+                gs,
+                document=self.doc,
+                width=600 + i * 20,
+                height=400 + i * 15,
+            )
+            self.assertTrue(png_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
+            self.assertGreater(len(png_bytes), 500)
+
+    def test_layout_text_item_drag_and_resize_without_grab_mouse(self) -> None:
+        """Verifies LayoutTextItem drag and resize functions cleanly without invoking grabMouse()."""
+        layout = self.doc.create_layout("Wayland Text Item Test Layout")
+        ann = {
+            "id": "ann_wayland_spec",
+            "type": "text",
+            "text": "Figure Legend Wayland Safe",
+            "x": 0.15,
+            "y": 0.20,
+            "w": 0.35,
+            "font_size": 13,
+        }
+        layout.annotations = [ann]
+
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        text_item = view.canvas.text_items[0]
+
+        # Verify item flags rely on ItemIsMovable without manual mouse grab
+        self.assertTrue(bool(text_item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsMovable))
+
+        with patch.object(text_item, "grabMouse", MagicMock()) as mock_grab:
+            # 1. Native mouse press & drag event propagation
+            ev_press = MagicMock()
+            ev_press.button.return_value = Qt.MouseButton.LeftButton
+            text_item.mousePressEvent(ev_press)
+            text_item.setPos(QPointF(120, 140))
+            ev_rel = MagicMock()
+            ev_rel.button.return_value = Qt.MouseButton.LeftButton
+            text_item.mouseReleaseEvent(ev_rel)
+            mock_grab.assert_not_called()
+
+        # Retrieve current text item after move commit
+        text_item = view.canvas.text_items[0]
+        with patch.object(text_item, "grabMouse", MagicMock()) as mock_grab:
+            # 2. Resize handle drag propagation
+            mr_handle = text_item.handles[2]
+            h_press = MagicMock()
+            h_press.button.return_value = Qt.MouseButton.LeftButton
+            h_press.scenePos.return_value = QPointF(200, 140)
+            mr_handle.mousePressEvent(h_press)
+
+            h_move = MagicMock()
+            h_move.scenePos.return_value = QPointF(260, 140)
+            mr_handle.mouseMoveEvent(h_move)
+
+            h_rel = MagicMock()
+            h_rel.button.return_value = Qt.MouseButton.LeftButton
+            mr_handle.mouseReleaseEvent(h_rel)
+            mock_grab.assert_not_called()
+
+        self.assertGreater(text_item.annotation.get("x", 0), 0)
+        view.close()
 
 
 if __name__ == "__main__":

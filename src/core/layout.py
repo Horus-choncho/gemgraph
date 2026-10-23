@@ -413,15 +413,16 @@ def render_layout_to_image(
     px_w = int(round(in_w * dpi))
     px_h = int(round(in_h * dpi))
 
-    img = QImage(px_w, px_h, QImage.Format.Format_ARGB32)
-    img.fill(QColor(255, 255, 255))
+    img = QImage(px_w, px_h, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(Qt.GlobalColor.white)
 
     painter = QPainter(img)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-
     try:
+        if painter.isActive():
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
         from src.core.office_exporter import render_graph_to_png_bytes
 
         for p in layout.placeholders:
@@ -508,7 +509,8 @@ def render_layout_to_image(
                 painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
     finally:
-        painter.end()
+        if painter.isActive():
+            painter.end()
 
     return img
 
@@ -558,10 +560,12 @@ def render_layout_to_pdf(
 
     painter = QPainter(writer)
     try:
-        page_rect = QRectF(0, 0, writer.width(), writer.height())
-        painter.drawImage(page_rect, img)
+        if painter.isActive():
+            page_rect = QRectF(0, 0, writer.width(), writer.height())
+            painter.drawImage(page_rect, img)
     finally:
-        painter.end()
+        if painter.isActive():
+            painter.end()
 
     return file_path
 
@@ -585,10 +589,11 @@ def render_layout_to_svg(
 
     painter = QPainter(generator)
     try:
-        from src.core.office_exporter import render_graph_to_png_bytes
+        if painter.isActive():
+            from src.core.office_exporter import render_graph_to_png_bytes
 
-        # White page background
-        painter.fillRect(QRectF(0, 0, pt_w, pt_h), QColor(255, 255, 255))
+            # White page background
+            painter.fillRect(QRectF(0, 0, pt_w, pt_h), QColor(255, 255, 255))
 
         for p in layout.placeholders:
             rx, ry, rw, rh = p.rect
@@ -661,6 +666,7 @@ def render_layout_to_svg(
                 painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
     finally:
-        painter.end()
+        if painter.isActive():
+            painter.end()
 
     return file_path

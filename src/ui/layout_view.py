@@ -7,7 +7,7 @@ dimension equalization, page setup controls, rich text boxes, global undo/redo, 
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt6.QtGui import QAction, QIcon, QUndoCommand, QUndoStack
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -390,7 +390,9 @@ class LayoutView(QWidget):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.canvas.fit_page_to_window()
-        self.refresh_hot_placeholders()
+        QTimer.singleShot(0, self._refresh_hot_placeholders)
+        if QThread.currentThread().loopLevel() == 0:
+            self._refresh_hot_placeholders()
 
     def push_move_resize_command(
         self,
@@ -433,14 +435,20 @@ class LayoutView(QWidget):
         self.canvas.set_layout(layout, document or self.current_document)
 
     def load_layout(self, layout: PageLayout, document: Any = None) -> None:
-        """Loads active layout and immediately refreshes hot placeholders."""
+        """Loads active layout and defers hot placeholder refresh."""
         self.set_layout(layout, document)
-        self.refresh_hot_placeholders()
+        QTimer.singleShot(0, self._refresh_hot_placeholders)
+        if QThread.currentThread().loopLevel() == 0:
+            self._refresh_hot_placeholders()
 
-    def refresh_hot_placeholders(self) -> None:
+    def _refresh_hot_placeholders(self) -> None:
         """Iterates across all placeholders and triggers snapshot refresh for unfrozen/hot graphs."""
         if hasattr(self, "canvas") and self.canvas is not None:
             self.canvas.refresh_hot_placeholders()
+
+    def refresh_hot_placeholders(self) -> None:
+        """Refreshes placeholders bound to unfrozen (hot) graphs."""
+        self._refresh_hot_placeholders()
 
     def refresh_all_snapshots(self) -> None:
         """Refreshes all placeholder snapshots to reflect modified data or plots."""
