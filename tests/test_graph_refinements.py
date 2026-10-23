@@ -360,6 +360,19 @@ class TestFrozenGraphIsolationAndAxisSpacing(unittest.TestCase):
         editable_view.load_sheet(frozen_graph)
         self.assertEqual(editable_view.editTriggers(), QAbstractItemView.EditTrigger.NoEditTriggers)
 
+        # 4. Column mutations and key deletion blocked on frozen model and view
+        self.assertFalse(model.rename_column(0, "Mutated Title"))
+        self.assertFalse(model.insert_column(0))
+        self.assertFalse(model.insert_x_column(0))
+        self.assertFalse(model.delete_column(0))
+
+        # Test keyPressEvent on frozen table does not clear cell
+        idx = view.model().index(0, 0)
+        view.setCurrentIndex(idx)
+        del_event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Delete, Qt.KeyboardModifier.NoModifier)
+        view.keyPressEvent(del_event)
+        self.assertEqual(table.get_cell_value(0, "Y", 0, 0), 100.0)
+
     def test_frozen_graphs_do_not_invoke_refresh_plot_upon_upstream_data_changes(self) -> None:
         """Verifies that upstream table mutations never trigger refresh_plot on frozen graphs."""
         from src.ui.main_window import MainWindow

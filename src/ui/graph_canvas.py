@@ -347,7 +347,7 @@ class ScientificPlotCanvas(QWidget):
         """Sets X and Y axis titles with vertical spacing margin for high-DPI export legibility."""
         if x_title is not None:
             # Prepend newline and set CSS padding-top to avoid tick label overlap
-            formatted_x = f"\n{x_title}" if not x_title.startswith("\n") else x_title
+            formatted_x = f"\n{x_title}" if x_title and not x_title.startswith("\n") else x_title
             self.plot_widget.setLabel("bottom", formatted_x, color="black", **{"padding-top": "10px"})
         if y_title is not None:
             self.plot_widget.setLabel("left", y_title, color="black")

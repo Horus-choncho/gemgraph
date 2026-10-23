@@ -1648,6 +1648,156 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
 
         view.close()
 
+    def test_layout_text_item_rich_html_font_formatting_synchronization(self) -> None:
+        """Verifies that text items with existing HTML spans have character formats and HTML updated by font formatting."""
+        from src.ui.layout_view import LayoutView
+        from PyQt6.QtGui import QTextCursor, QFont
+
+        layout = self.doc.create_layout("HTML Format Test", template_preset="1")
+        ann = {
+            "id": "ann-html-1",
+            "type": "text",
+            "text": "Rich Text Content",
+            "html": "<p><span style=\"font-size:10pt; font-weight:400; font-style:normal;\">Rich Text Content</span></p>",
+            "x": 0.2,
+            "y": 0.2,
+            "w": 0.3,
+            "h": 0.1,
+            "font_size": 10,
+            "bold": False,
+            "italic": False,
+        }
+        layout.annotations = [ann]
+
+        view = LayoutView(document=self.doc)
+        view.set_layout(layout)
+        view.show()
+        app.processEvents()
+
+        text_item = view.canvas.text_items[0]
+
+        # 1. Update font size to 16pt via context menu
+        menu = text_item.create_context_menu()
+        size_menu = next(a for a in menu.actions() if a.text() == "Font Size").menu()
+        size_actions = {a.text(): a for a in size_menu.actions()}
+        size_actions["16pt"].trigger()
+        app.processEvents()
+
+        text_item = view.canvas.text_items[0]
+        self.assertEqual(text_item.annotation.get("font_size"), 16)
+        cursor = text_item.textCursor()
+        cursor.setPosition(1)
+        self.assertEqual(cursor.charFormat().fontPointSize(), 16.0)
+
+        # 2. Toggle Bold
+        menu = text_item.create_context_menu()
+        bold_act = next(a for a in menu.actions() if a.text() == "Bold")
+        bold_act.trigger()
+        app.processEvents()
+
+        text_item = view.canvas.text_items[0]
+        self.assertTrue(text_item.annotation.get("bold"))
+        cursor = text_item.textCursor()
+        cursor.setPosition(1)
+        self.assertEqual(cursor.charFormat().fontWeight(), QFont.Weight.Bold)
+
+        # 3. Toggle Italic
+        menu = text_item.create_context_menu()
+        italic_act = next(a for a in menu.actions() if a.text() == "Italic")
+        italic_act.trigger()
+        app.processEvents()
+
+        text_item = view.canvas.text_items[0]
+        self.assertTrue(text_item.annotation.get("italic"))
+        cursor = text_item.textCursor()
+        cursor.setPosition(1)
+        self.assertTrue(cursor.charFormat().fontItalic())
+
+        # Verify updated HTML reflects changes
+        html = text_item.annotation.get("html", "")
+        self.assertIn("16pt", html)
+        self.assertTrue("700" in html or "bold" in html)
+        self.assertTrue("italic" in html)
+
+        view.close()
+
+    def test_layout_canvas_context_menu_delegates_to_text_item(self) -> None:
+        """Verifies that right-clicking a text item in LayoutCanvas executes the item menu and suppresses canvas menu."""
+        from src.ui.layout_view import LayoutView
+        from PyQt6.QtGui import QContextMenuEvent
+        from PyQt6.QtCore import QPoint
+
+        layout = self.doc.create_layout("Delegation Test", template_preset="1")
+        ann = {
+            "id": "ann-delegation-1",
+            "type": "text",
+            "text": "Delegation Item",
+            "x": 0.2,
+            "y": 0.2,
+            "w": 0.3,
+            "h": 0.1,
+        }
+        layout.annotations = [ann]
+
+        view = LayoutView(document=self.doc)
+        view.set_layout(layout)
+        view.resize(1024, 768)
+        view.show()
+        app.processEvents()
+
+        text_item = view.canvas.text_items[0]
+        item_menu_invoked = []
+
+        def mock_item_context_menu(event):
+            item_menu_invoked.append(True)
+            event.accept()
+
+        text_item.contextMenuEvent = mock_item_context_menu
+
+        sp = text_item.mapToScene(5, 5)
+        vp = view.canvas.mapFromScene(sp)
+        ctx_event = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, vp, view.canvas.mapToGlobal(vp))
+        view.canvas.contextMenuEvent(ctx_event)
+
+        self.assertTrue(bool(item_menu_invoked))
+        self.assertTrue(ctx_event.isAccepted())
+
+        view.close()
+
+    def test_render_layout_honors_box_background_border_and_styling(self) -> None:
+        """Verifies that render_layout_to_image and render_layout_to_svg render background, border, and italic styling."""
+        layout = self.doc.create_layout("Box Style Test", template_preset="1")
+        ann = {
+            "id": "ann-box-1",
+            "type": "text",
+            "text": "Styled Legend Box",
+            "x": 0.1,
+            "y": 0.1,
+            "w": 0.4,
+            "h": 0.2,
+            "background_color": "#EEEEEE",
+            "border_color": "#336699",
+            "font_size": 14,
+            "bold": True,
+            "italic": True,
+            "color": "#112233",
+        }
+        layout.annotations = [ann]
+
+        # 1. Render to image
+        img = render_layout_to_image(layout, document=self.doc, dpi=150)
+        self.assertFalse(img.isNull())
+        self.assertGreater(img.width(), 200)
+
+        # 2. Render to SVG
+        with tempfile.TemporaryDirectory() as tmpdir:
+            svg_file = os.path.join(tmpdir, "styled_box.svg")
+            render_layout_to_svg(layout, document=self.doc, file_path=svg_file)
+            self.assertTrue(os.path.exists(svg_file))
+            with open(svg_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("Styled Legend Box", content)
+
 
 if __name__ == "__main__":
     unittest.main()

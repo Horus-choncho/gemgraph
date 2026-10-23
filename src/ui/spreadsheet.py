@@ -64,6 +64,8 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
 
     def rename_column(self, col: int, new_title: str) -> bool:
         """Renames column and notifies WorkspaceMediator."""
+        if getattr(self, "is_frozen", False) or getattr(self, "is_frozen_snapshot", False) or getattr(getattr(self, "table", None), "is_frozen", False) or getattr(getattr(self, "table", None), "is_snapshot", False):
+            return False
         if self.table.rename_column(col, new_title):
             self.headerDataChanged.emit(Qt.Orientation.Horizontal, col, col)
             self.layoutChanged.emit()
@@ -75,6 +77,8 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
 
     def insert_column(self, col: int, position: str = "right", title: Optional[str] = None) -> bool:
         """Inserts a new column left or right of col and notifies WorkspaceMediator."""
+        if getattr(self, "is_frozen", False) or getattr(self, "is_frozen_snapshot", False) or getattr(getattr(self, "table", None), "is_frozen", False) or getattr(getattr(self, "table", None), "is_snapshot", False):
+            return False
         self.beginResetModel()
         self.table.insert_column(col, position=position, title=title)
         self.endResetModel()
@@ -87,6 +91,8 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
 
     def insert_x_column(self, col: int, position: str = "left", title: Optional[str] = None) -> bool:
         """Inserts a new X column left or right of col and notifies WorkspaceMediator."""
+        if getattr(self, "is_frozen", False) or getattr(self, "is_frozen_snapshot", False) or getattr(getattr(self, "table", None), "is_frozen", False) or getattr(getattr(self, "table", None), "is_snapshot", False):
+            return False
         self.beginResetModel()
         self.table.insert_x_column_at(col, position=position, title=title)
         self.endResetModel()
@@ -99,6 +105,8 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
 
     def delete_column(self, col: int) -> bool:
         """Deletes column at col and notifies WorkspaceMediator."""
+        if getattr(self, "is_frozen", False) or getattr(self, "is_frozen_snapshot", False) or getattr(getattr(self, "table", None), "is_frozen", False) or getattr(getattr(self, "table", None), "is_snapshot", False):
+            return False
         self.beginResetModel()
         res = self.table.delete_column(col)
         self.endResetModel()
@@ -432,6 +440,8 @@ class BatchClearCellsCommand(QUndoCommand):
         """Sets each cell to NaN (or empty string for string/multi-var tables) and emits changes."""
         if not self.entries:
             return
+        if getattr(self.model, "is_frozen", False) or getattr(self.model, "is_frozen_snapshot", False) or getattr(getattr(self.model, "table", None), "is_frozen", False):
+            return
         is_multivar = self.model.table.table_type == TableType.MULTIPLE_VARIABLES
         for r, c, _ in self.entries:
             if is_multivar:
@@ -444,6 +454,8 @@ class BatchClearCellsCommand(QUndoCommand):
     def undo(self) -> None:
         """Restores each cell to its exact old value and emits changes."""
         if not self.entries:
+            return
+        if getattr(self.model, "is_frozen", False) or getattr(self.model, "is_frozen_snapshot", False) or getattr(getattr(self.model, "table", None), "is_frozen", False):
             return
         is_multivar = self.model.table.table_type == TableType.MULTIPLE_VARIABLES
         for r, c, old_val in self.entries:
@@ -741,6 +753,8 @@ class ScientificSpreadsheetView(QTableView):
 
     def _set_selected_exclusion(self, excluded: bool) -> None:
         model = self.get_model()
+        if getattr(model, "is_frozen", False) or getattr(model, "is_frozen_snapshot", False) or getattr(getattr(model, "table", None), "is_frozen", False) or getattr(getattr(model, "table", None), "is_snapshot", False):
+            return
         indexes = self.selectedIndexes()
         if not indexes:
             return
@@ -771,6 +785,8 @@ class ScientificSpreadsheetView(QTableView):
 
     def _add_rows(self, count: int) -> None:
         model = self.get_model()
+        if getattr(model, "is_frozen", False) or getattr(model, "is_frozen_snapshot", False) or getattr(getattr(model, "table", None), "is_frozen", False) or getattr(getattr(model, "table", None), "is_snapshot", False):
+            return
         model.beginResetModel()
         model.table.add_row(count)
         model.endResetModel()
@@ -778,6 +794,8 @@ class ScientificSpreadsheetView(QTableView):
 
     def _add_group(self) -> None:
         model = self.get_model()
+        if getattr(model, "is_frozen", False) or getattr(model, "is_frozen_snapshot", False) or getattr(getattr(model, "table", None), "is_frozen", False) or getattr(getattr(model, "table", None), "is_snapshot", False):
+            return
         model.beginResetModel()
         model.table.add_y_group()
         model.endResetModel()
@@ -785,6 +803,8 @@ class ScientificSpreadsheetView(QTableView):
 
     def _prompt_set_replicates(self) -> None:
         model = self.get_model()
+        if getattr(model, "is_frozen", False) or getattr(model, "is_frozen_snapshot", False) or getattr(getattr(model, "table", None), "is_frozen", False) or getattr(getattr(model, "table", None), "is_snapshot", False):
+            return
         reps, ok = QInputDialog.getInt(
             self,
             "Replicate Count",
@@ -801,11 +821,14 @@ class ScientificSpreadsheetView(QTableView):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if self.state() != self.State.EditingState and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            model = self.get_model()
+            if getattr(model, "is_frozen", False) or getattr(model, "is_frozen_snapshot", False) or getattr(getattr(model, "table", None), "is_frozen", False) or getattr(getattr(model, "table", None), "is_snapshot", False):
+                event.accept()
+                return
             selection_model = self.selectionModel()
             if selection_model is not None:
                 indexes = selection_model.selectedIndexes()
                 if indexes:
-                    model = self.get_model()
                     cmd = BatchClearCellsCommand(model, indexes)
                     self.undo_stack.push(cmd)
                     event.accept()

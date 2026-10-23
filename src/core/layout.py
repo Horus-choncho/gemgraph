@@ -488,14 +488,28 @@ def render_layout_to_image(
                 text = ann.get("text", "")
                 ax = float(ann.get("x", 0.0)) * px_w
                 ay = float(ann.get("y", 0.0)) * px_h
-                aw = float(ann.get("w", 0.2)) * px_w
-                ah = float(ann.get("h", 0.05)) * px_h
+                aw = float(ann.get("w", ann.get("width", 0.2))) * px_w
+                ah = float(ann.get("h", ann.get("height", 0.05))) * px_h
+                box_rect = QRectF(ax, ay, aw, ah)
+
+                bg_col = ann.get("background_color") or ann.get("bg_color")
+                if bg_col:
+                    painter.fillRect(box_rect, QColor(bg_col))
+                border_col = ann.get("border_color")
+                if border_col:
+                    painter.save()
+                    painter.setPen(QPen(QColor(border_col), max(1.0, 1.0 * dpi / 72.0)))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawRect(box_rect)
+                    painter.restore()
+
                 font_size = int(ann.get("font_size", 16) * dpi / 72.0)
                 font = QFont(ann.get("font_family", "Helvetica"), font_size)
-                font.setBold(bool(ann.get("bold", True)))
+                font.setBold(bool(ann.get("bold", False)))
+                font.setItalic(bool(ann.get("italic", False)))
                 painter.setFont(font)
                 painter.setPen(QColor(ann.get("color", "#000000")))
-                painter.drawText(QRectF(ax, ay, aw, ah), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+                painter.drawText(box_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap, text)
             elif ann_type in ("line", "connector"):
                 x1 = float(ann.get("x1", 0.0)) * px_w
                 y1 = float(ann.get("y1", 0.0)) * px_h
@@ -648,13 +662,27 @@ def render_layout_to_svg(
                 text = ann.get("text", "")
                 ax = float(ann.get("x", 0.0)) * pt_w
                 ay = float(ann.get("y", 0.0)) * pt_h
-                aw = float(ann.get("w", 0.2)) * pt_w
-                ah = float(ann.get("h", 0.05)) * pt_h
+                aw = float(ann.get("w", ann.get("width", 0.2))) * pt_w
+                ah = float(ann.get("h", ann.get("height", 0.05))) * pt_h
+                box_rect = QRectF(ax, ay, aw, ah)
+
+                bg_col = ann.get("background_color") or ann.get("bg_color")
+                if bg_col:
+                    painter.fillRect(box_rect, QColor(bg_col))
+                border_col = ann.get("border_color")
+                if border_col:
+                    painter.save()
+                    painter.setPen(QPen(QColor(border_col), 1.0))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawRect(box_rect)
+                    painter.restore()
+
                 font = QFont(ann.get("font_family", "Helvetica"), ann.get("font_size", 14))
-                font.setBold(bool(ann.get("bold", True)))
+                font.setBold(bool(ann.get("bold", False)))
+                font.setItalic(bool(ann.get("italic", False)))
                 painter.setFont(font)
                 painter.setPen(QColor(ann.get("color", "#000000")))
-                painter.drawText(QRectF(ax, ay, aw, ah), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+                painter.drawText(box_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap, text)
             elif ann_type in ("line", "connector"):
                 x1 = float(ann.get("x1", 0.0)) * pt_w
                 y1 = float(ann.get("y1", 0.0)) * pt_h
