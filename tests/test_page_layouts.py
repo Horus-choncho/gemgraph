@@ -1261,6 +1261,104 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
         self.assertGreater(max_x, w * 0.80)
         passed_canvas.close()
 
+    def test_layout_text_item_deferred_undo_push_on_unfocus(self) -> None:
+        """Verifies text editing and un-focusing triggers deferred undo push without RuntimeError or SIGSEGV."""
+        layout = self.doc.create_layout("Text Unfocus Regression")
+        ann = {
+            "id": "ann_text_reg",
+            "type": "text",
+            "text": "Before Edit",
+            "html": "Before Edit",
+            "x": 0.1,
+            "y": 0.1,
+            "w": 0.2,
+            "h": 0.1,
+        }
+        layout.annotations = [ann]
+
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        self.assertEqual(len(view.canvas.text_items), 1)
+        text_item = view.canvas.text_items[0]
+
+        # Double click to enter edit mode
+        ev_dbl = MagicMock()
+        ev_dbl.button.return_value = Qt.MouseButton.LeftButton
+        text_item.mouseDoubleClickEvent(ev_dbl)
+        self.assertEqual(text_item.textInteractionFlags(), Qt.TextInteractionFlag.TextEditorInteraction)
+
+        # Mutate text
+        text_item.setPlainText("After Edit Text")
+
+        # Simulate focus out event
+        focus_ev = QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.OtherFocusReason)
+        # Must not raise RuntimeError: wrapped C/C++ object of type LayoutTextItem has been deleted
+        text_item.focusOutEvent(focus_ev)
+
+        # Process pending QTimer.singleShot(0) events
+        app.processEvents()
+
+        # Check undo stack has received the command
+        self.assertTrue(view.undo_stack.canUndo())
+        self.assertEqual(layout.annotations[0]["text"], "After Edit Text")
+
+        # Undo must restore previous text without crashing
+        view.undo()
+        app.processEvents()
+        self.assertEqual(layout.annotations[0]["text"], "Before Edit")
+        view.close()
+
+    def test_layout_placeholder_deferred_move_resize_command(self) -> None:
+        """Verifies modifying placeholder coordinates triggers deferred command queue safely without mid-event destruction."""
+        layout = self.doc.create_layout("Placeholder Deferred Undo Layout")
+        layout.placeholders.clear()
+        p = Placeholder(slot_id="slot_def_undo", rect=(0.1, 0.1, 0.3, 0.3))
+        layout.add_placeholder(p)
+
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        self.assertEqual(len(view.canvas.placeholder_items), 1)
+        item = view.canvas.placeholder_items[0]
+
+        # 1. Test mouse move & release on placeholder
+        ev_press = MagicMock()
+        ev_press.button.return_value = Qt.MouseButton.LeftButton
+        item.mousePressEvent(ev_press)
+        item.setPos(QPointF(40, 50))
+        ev_rel = MagicMock()
+        ev_rel.button.return_value = Qt.MouseButton.LeftButton
+        # Must execute without RuntimeError
+        item.mouseReleaseEvent(ev_rel)
+
+        # Process deferred undo push
+        app.processEvents()
+        self.assertTrue(view.undo_stack.canUndo())
+        self.assertEqual(view.undo_stack.count(), 1)
+
+        # 2. Test resize handle mouse release
+        item = view.canvas.placeholder_items[0]
+        handle = item.handles[7]  # Bottom-right
+        h_press = MagicMock()
+        h_press.button.return_value = Qt.MouseButton.LeftButton
+        h_press.scenePos.return_value = QPointF(200, 200)
+        handle.mousePressEvent(h_press)
+
+        # Simulate resize modification
+        item.placeholder.rect = (0.1, 0.1, 0.45, 0.45)
+        h_rel = MagicMock()
+        h_rel.button.return_value = Qt.MouseButton.LeftButton
+        handle.mouseReleaseEvent(h_rel)
+
+        # Process deferred resize command
+        app.processEvents()
+        self.assertEqual(view.undo_stack.count(), 2)
+
+        # Test undo
+        view.undo()
+        app.processEvents()
+        self.assertEqual(view.undo_stack.count(), 2)
+        view.close()
+
 
 if __name__ == "__main__":
     unittest.main()

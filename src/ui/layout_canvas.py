@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QPoint, QPointF, QRectF, QSizeF, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QPointF, QRectF, QSizeF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -139,7 +139,8 @@ class ResizeHandleItem(QGraphicsRectItem):
             if old_rect is not None and old_rect != new_rect:
                 layout_view = getattr(self.parent_placeholder.canvas, "layout_view", None)
                 if layout_view is not None and hasattr(layout_view, "push_move_resize_command"):
-                    layout_view.push_move_resize_command(self.parent_placeholder.placeholder, old_rect, new_rect)
+                    p = self.parent_placeholder.placeholder
+                    QTimer.singleShot(0, lambda: layout_view.push_move_resize_command(p, old_rect, new_rect))
             if hasattr(event, "accept"):
                 event.accept()
         else:
@@ -417,7 +418,8 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         if old_rect is not None and old_rect != new_rect:
             layout_view = getattr(self.canvas, "layout_view", None)
             if layout_view is not None and hasattr(layout_view, "push_move_resize_command"):
-                layout_view.push_move_resize_command(self.placeholder, old_rect, new_rect)
+                p = self.placeholder
+                QTimer.singleShot(0, lambda: layout_view.push_move_resize_command(p, old_rect, new_rect))
         if hasattr(self.canvas, "layoutModifiedSignal"):
             self.canvas.layoutModifiedSignal.emit()
 
@@ -436,7 +438,8 @@ class GraphPlaceholderItem(QGraphicsRectItem):
             scale = dialog.get_selected_scale()
             layout_view = getattr(self.canvas, "layout_view", None)
             if layout_view is not None and hasattr(layout_view, "push_assign_graph_command"):
-                layout_view.push_assign_graph_command(self.placeholder, graph_id, title, rotation=rotation, scale=scale)
+                p = self.placeholder
+                QTimer.singleShot(0, lambda: layout_view.push_assign_graph_command(p, graph_id, title, rotation=rotation, scale=scale))
             else:
                 if graph_id:
                     self.placeholder.assign_graph(graph_id, title)
@@ -755,7 +758,8 @@ class LayoutTextItem(QGraphicsTextItem):
                 if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
                     old_data = {"x": old_pos[0], "y": old_pos[1]}
                     new_data = {"x": new_pos[0], "y": new_pos[1]}
-                    layout_view.push_edit_text_command(self.annotation, old_data, new_data)
+                    ann = self.annotation
+                    QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_data, new_data))
             self._drag_start_pos = None
         if hasattr(self.canvas, "layoutModifiedSignal"):
             self.canvas.layoutModifiedSignal.emit()
@@ -790,11 +794,10 @@ class LayoutTextItem(QGraphicsTextItem):
                 if cur_text != init_data["text"] or cur_html != init_data["html"]:
                     layout_view = getattr(self.canvas, "layout_view", None)
                     if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
-                        layout_view.push_edit_text_command(
-                            self.annotation,
-                            init_data,
-                            {"text": cur_text, "html": cur_html},
-                        )
+                        ann = self.annotation
+                        old_d = init_data
+                        new_d = {"text": cur_text, "html": cur_html}
+                        QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
                 self._initial_edit_data = None
 
     def keyPressEvent(self, event) -> None:
@@ -867,7 +870,8 @@ class LayoutTextItem(QGraphicsTextItem):
             if old_state != new_state:
                 layout_view = getattr(self.canvas, "layout_view", None)
                 if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
-                    layout_view.push_edit_text_command(self.annotation, old_state, new_state)
+                    ann = self.annotation
+                    QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_state, new_state))
         if hasattr(self.canvas, "layoutModifiedSignal"):
             self.canvas.layoutModifiedSignal.emit()
 
@@ -885,7 +889,10 @@ class LayoutTextItem(QGraphicsTextItem):
             return
         layout_view = getattr(self.canvas, "layout_view", None)
         if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
-            layout_view.push_edit_text_command(self.annotation, {"font_size": old_size}, {"font_size": size})
+            ann = self.annotation
+            old_d = {"font_size": old_size}
+            new_d = {"font_size": size}
+            QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
         else:
             self.annotation["font_size"] = size
             f = self.font()
@@ -899,7 +906,10 @@ class LayoutTextItem(QGraphicsTextItem):
             return
         layout_view = getattr(self.canvas, "layout_view", None)
         if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
-            layout_view.push_edit_text_command(self.annotation, {"bold": old_bold}, {"bold": bold})
+            ann = self.annotation
+            old_d = {"bold": old_bold}
+            new_d = {"bold": bold}
+            QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
         else:
             self.annotation["bold"] = bold
             f = self.font()
@@ -913,7 +923,10 @@ class LayoutTextItem(QGraphicsTextItem):
             return
         layout_view = getattr(self.canvas, "layout_view", None)
         if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
-            layout_view.push_edit_text_command(self.annotation, {"italic": old_italic}, {"italic": italic})
+            ann = self.annotation
+            old_d = {"italic": old_italic}
+            new_d = {"italic": italic}
+            QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
         else:
             self.annotation["italic"] = italic
             f = self.font()
@@ -927,7 +940,10 @@ class LayoutTextItem(QGraphicsTextItem):
             return
         layout_view = getattr(self.canvas, "layout_view", None)
         if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
-            layout_view.push_edit_text_command(self.annotation, {"font_family": old_family}, {"font_family": family})
+            ann = self.annotation
+            old_d = {"font_family": old_family}
+            new_d = {"font_family": family}
+            QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
         else:
             self.annotation["font_family"] = family
             f = self.font()
@@ -1298,7 +1314,8 @@ class LayoutCanvas(QGraphicsView):
                 if it.isSelected() and self.current_layout:
                     layout_view = getattr(self, "layout_view", None)
                     if layout_view is not None and hasattr(layout_view, "push_delete_placeholder_command"):
-                        layout_view.push_delete_placeholder_command(it.placeholder)
+                        p = it.placeholder
+                        QTimer.singleShot(0, lambda: layout_view.push_delete_placeholder_command(p))
                     else:
                         self.current_layout.remove_placeholder(it.placeholder.slot_id)
                         self.rebuild_scene()
@@ -1309,7 +1326,8 @@ class LayoutCanvas(QGraphicsView):
                     if t.isSelected() and self.current_layout and t.textInteractionFlags() == Qt.TextInteractionFlag.NoTextInteraction:
                         layout_view = getattr(self, "layout_view", None)
                         if layout_view is not None and hasattr(layout_view, "push_delete_text_command"):
-                            layout_view.push_delete_text_command(t.annotation)
+                            ann = t.annotation
+                            QTimer.singleShot(0, lambda: layout_view.push_delete_text_command(ann))
                         else:
                             self.current_layout.annotations = [a for a in self.current_layout.annotations if a.get("id") != t.annotation.get("id")]
                             self.rebuild_scene()
