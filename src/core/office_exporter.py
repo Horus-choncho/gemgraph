@@ -357,7 +357,8 @@ def render_graph_to_png_bytes(
     if canvas is None:
         from src.ui.graph_canvas import GraphCanvasWidget
         canvas = GraphCanvasWidget()
-        canvas.resize(width // 2, height // 2)
+        canvas.resize(width, height)
+        canvas.plot_widget.setGeometry(0, 0, width, height)
         created_canvas = True
     else:
         saved_state = _save_canvas_state(canvas)
@@ -381,18 +382,45 @@ def render_graph_to_png_bytes(
                 else:
                     res_sheet = None
             else:
-                src_sheet = doc.get_sheet(target_sheet.source_sheet_id) if doc else None
-                src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else None
+                source_id = getattr(target_sheet, "source_table_id", None) or getattr(target_sheet, "source_sheet_id", None)
+                src_sheet = doc.get_sheet(source_id) if (doc and source_id) else None
+                if src_sheet is None and doc and source_id:
+                    for s in doc.sheets.values():
+                        if getattr(s, "sheet_id", None) == source_id or (getattr(s, "table", None) and getattr(s.table, "table_id", None) == source_id):
+                            src_sheet = s
+                            break
+                if src_sheet is None and doc:
+                    for pid in getattr(target_sheet, "parent_sheet_ids", []):
+                        ps = doc.get_sheet(pid)
+                        if isinstance(ps, DataSheet):
+                            src_sheet = ps
+                            break
+                if src_sheet is None and doc:
+                    data_sheets = doc.get_sheets_by_type(SheetType.DATA)
+                    if data_sheets:
+                        src_sheet = data_sheets[0]
+
+                src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else getattr(src_sheet, "table", None)
+                if src_table is None and getattr(target_sheet, "snapshot_table", None) is not None:
+                    src_table = target_sheet.snapshot_table
+
                 res_sheet = (
                     doc.get_sheet(target_sheet.result_sheet_id)
                     if (doc and target_sheet.result_sheet_id)
                     else None
                 )
+                if res_sheet is None and getattr(target_sheet, "snapshot_result_data", None):
+                    res_sheet = ResultSheet.from_dict(target_sheet.snapshot_result_data)
             gt = target_sheet.graph_type
         else:
             src_table = getattr(target_sheet, "table", None)
             res_sheet = None
             gt = None
+
+        if src_table is None and canvas is not None and getattr(canvas, "current_table", None) is not None:
+            src_table = canvas.current_table
+        if res_sheet is None and canvas is not None and getattr(canvas, "current_result", None) is not None:
+            res_sheet = canvas.current_result
 
         canvas.update_data(
             src_table,
@@ -409,6 +437,11 @@ def render_graph_to_png_bytes(
             left_ax.setWidth(max(60, int(width * 0.10)))
         except Exception:
             pass
+
+        from PyQt6.QtCore import QCoreApplication
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.processEvents()
 
         img = QImage(width, height, QImage.Format.Format_ARGB32)
         img.fill(QColor(255, 255, 255))

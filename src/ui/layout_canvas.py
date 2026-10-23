@@ -248,6 +248,32 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         self.cached_pixmap = None
         self.update()
 
+    def update_snapshot(self) -> None:
+        """Forces an immediate snapshot refresh with the latest data from upstream table."""
+        if self.placeholder.graph_id and self.document is not None:
+            graph_sheet = self.document.get_sheet(self.placeholder.graph_id)
+            if graph_sheet:
+                try:
+                    from src.core.office_exporter import render_graph_to_png_bytes
+                    r = self.rect()
+                    w = max(600, int(r.width() * 2))
+                    h = max(450, int(r.height() * 2))
+                    png_data = render_graph_to_png_bytes(
+                        graph_sheet,
+                        document=self.document,
+                        width=w,
+                        height=h,
+                    )
+                    img = QImage.fromData(png_data)
+                    if not img.isNull():
+                        self.cached_pixmap = QPixmap.fromImage(img)
+                        self.update()
+                        return
+                except Exception:
+                    pass
+        self.cached_pixmap = None
+        self.update()
+
     def handle_resize(self, handle_index: int, scene_pos: QPointF, shift_pressed: bool = False) -> None:
         """Resizes the placeholder rect based on handle drag, with aspect ratio locking support."""
         pos = self.pos()
@@ -392,21 +418,7 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         if self.placeholder.graph_id and self.document is not None:
             # Assigned state: render graph snapshot
             if self.cached_pixmap is None:
-                graph_sheet = self.document.get_sheet(self.placeholder.graph_id)
-                if graph_sheet:
-                    try:
-                        from src.core.office_exporter import render_graph_to_png_bytes
-                        png_data = render_graph_to_png_bytes(
-                            graph_sheet,
-                            document=self.document,
-                            width=max(600, int(r.width() * 2)),
-                            height=max(450, int(r.height() * 2)),
-                        )
-                        img = QImage.fromData(png_data)
-                        if not img.isNull():
-                            self.cached_pixmap = QPixmap.fromImage(img)
-                    except Exception:
-                        self.cached_pixmap = None
+                self.update_snapshot()
 
             if self.cached_pixmap is not None:
                 painter.save()
@@ -454,11 +466,77 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         painter.drawText(r, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, text)
 
 
+class TextResizeHandleItem(QGraphicsRectItem):
+    """
+    Interactive corner/edge resize grip for LayoutTextItem.
+    """
+
+    HANDLE_SIZE = 8.0
+
+    def __init__(self, handle_index: int, parent_text_item: LayoutTextItem) -> None:
+        super().__init__(
+            -self.HANDLE_SIZE / 2.0,
+            -self.HANDLE_SIZE / 2.0,
+            self.HANDLE_SIZE,
+            self.HANDLE_SIZE,
+            parent_text_item,
+        )
+        self.handle_index = handle_index
+        self.parent_text_item = parent_text_item
+        self.setBrush(QBrush(QColor(255, 255, 255)))
+        self.setPen(QPen(QColor(0, 120, 212), 1.5))
+        self.setZValue(20)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+
+        cursors = {
+            0: Qt.CursorShape.SizeFDiagCursor,  # TL
+            1: Qt.CursorShape.SizeBDiagCursor,  # TR
+            2: Qt.CursorShape.SizeHorCursor,    # MR
+            3: Qt.CursorShape.SizeBDiagCursor,  # BL
+            4: Qt.CursorShape.SizeFDiagCursor,  # BR
+        }
+        self.setCursor(cursors.get(handle_index, Qt.CursorShape.ArrowCursor))
+        self.drag_start_pos: Optional[QPointF] = None
+        self._start_width: float = 0.0
+        self._start_pos: Optional[QPointF] = None
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_start_pos = event.scenePos()
+            self._start_width = self.parent_text_item.boundingRect().width()
+            self._start_pos = self.parent_text_item.pos()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self.drag_start_pos is not None:
+            self.parent_text_item.handle_resize(
+                self.handle_index,
+                event.scenePos(),
+                self.drag_start_pos,
+                self._start_width,
+                self._start_pos,
+            )
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_start_pos = None
+            self.parent_text_item.finish_resize()
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+
 class LayoutTextItem(QGraphicsTextItem):
     """
     Floating rich text box item on page layout canvas.
     Supports inline editing, bold/italic formatting, font family and size adjustment,
-    interactive dragging, subtle dashed selection border, and persistence in PageLayout.annotations.
+    interactive dragging, subtle dashed selection border, dynamic resize handles, and undo integration.
     """
 
     def __init__(
@@ -476,17 +554,25 @@ class LayoutTextItem(QGraphicsTextItem):
         self.canvas = canvas
         self._syncing_geometry = False
         self._drag_start_pos: Optional[Tuple[float, float]] = None
+        self._resize_old_state: Optional[Dict[str, Any]] = None
 
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
             | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
             | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
-        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.setZValue(15)
 
         self._apply_annotation_properties()
         self._sync_geometry_from_annotation()
+
+        # Create 5 transform handles (TL, TR, MR, BL, BR)
+        self.handles: List[TextResizeHandleItem] = [
+            TextResizeHandleItem(i, self) for i in range(5)
+        ]
+        self._update_handle_positions()
+        self._update_handle_visibility()
 
         self.document().contentsChanged.connect(self._on_contents_changed)
 
@@ -518,8 +604,14 @@ class LayoutTextItem(QGraphicsTextItem):
             ax = float(self.annotation.get("x", 0.1)) * self.page_width
             ay = float(self.annotation.get("y", 0.1)) * self.page_height
             self.setPos(ax, ay)
+            w_norm = self.annotation.get("w", self.annotation.get("width"))
+            if w_norm is not None and float(w_norm) > 0:
+                self.setTextWidth(float(w_norm) * self.page_width)
+            else:
+                self.setTextWidth(-1)
         finally:
             self._syncing_geometry = False
+        self._update_handle_positions()
 
     def _sync_annotation_from_geometry(self) -> None:
         if self._syncing_geometry or self.page_width <= 0 or self.page_height <= 0:
@@ -529,6 +621,35 @@ class LayoutTextItem(QGraphicsTextItem):
         ny = max(0.0, min(1.0, pos.y() / self.page_height))
         self.annotation["x"] = round(nx, 4)
         self.annotation["y"] = round(ny, 4)
+        br = self.boundingRect()
+        nw = max(0.01, min(1.0, br.width() / self.page_width))
+        nh = max(0.01, min(1.0, br.height() / self.page_height))
+        self.annotation["w"] = round(nw, 4)
+        self.annotation["width"] = self.annotation["w"]
+        self.annotation["h"] = round(nh, 4)
+        self.annotation["height"] = self.annotation["h"]
+
+    def _update_handle_positions(self) -> None:
+        br = self.boundingRect()
+        w, h = br.width(), br.height()
+        positions = [
+            (0.0, 0.0),       # 0: TL
+            (w, 0.0),         # 1: TR
+            (w, h / 2.0),     # 2: MR
+            (0.0, h),         # 3: BL
+            (w, h),           # 4: BR
+        ]
+        if hasattr(self, "handles"):
+            for idx, (hx, hy) in enumerate(positions):
+                if idx < len(self.handles):
+                    self.handles[idx].setPos(hx, hy)
+
+    def _update_handle_visibility(self, visible: Optional[bool] = None) -> None:
+        if visible is None:
+            visible = self.isSelected()
+        if hasattr(self, "handles"):
+            for h in self.handles:
+                h.setVisible(visible)
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any) -> Any:
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
@@ -536,27 +657,59 @@ class LayoutTextItem(QGraphicsTextItem):
                 self._sync_annotation_from_geometry()
                 if hasattr(self.canvas, "layoutModifiedSignal"):
                     self.canvas.layoutModifiedSignal.emit()
+        elif change == QGraphicsItem.GraphicsItemChange.ItemSelectedChange:
+            self._update_handle_visibility(bool(value))
         return super().itemChange(change, value)
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_start_pos = (float(self.annotation.get("x", 0.1)), float(self.annotation.get("y", 0.1)))
-            event.accept()
-        super().mousePressEvent(event)
+        if self.textInteractionFlags() == Qt.TextInteractionFlag.NoTextInteraction:
+            if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
+                self._drag_start_pos = (float(self.annotation.get("x", 0.1)), float(self.annotation.get("y", 0.1)))
+        try:
+            super().mousePressEvent(event)
+        except (TypeError, RuntimeError):
+            pass
 
     def mouseReleaseEvent(self, event) -> None:
-        super().mouseReleaseEvent(event)
-        self._sync_annotation_from_geometry()
-        old_pos = getattr(self, "_drag_start_pos", None)
-        new_pos = (float(self.annotation.get("x", 0.1)), float(self.annotation.get("y", 0.1)))
-        if old_pos is not None and old_pos != new_pos:
-            layout_view = getattr(self.canvas, "layout_view", None)
-            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
-                old_data = {"x": old_pos[0], "y": old_pos[1]}
-                new_data = {"x": new_pos[0], "y": new_pos[1]}
-                layout_view.push_edit_text_command(self.annotation, old_data, new_data)
+        try:
+            super().mouseReleaseEvent(event)
+        except (TypeError, RuntimeError):
+            pass
+        if self.textInteractionFlags() == Qt.TextInteractionFlag.NoTextInteraction:
+            self._sync_annotation_from_geometry()
+            old_pos = getattr(self, "_drag_start_pos", None)
+            new_pos = (float(self.annotation.get("x", 0.1)), float(self.annotation.get("y", 0.1)))
+            if old_pos is not None and (abs(old_pos[0] - new_pos[0]) > 1e-4 or abs(old_pos[1] - new_pos[1]) > 1e-4):
+                layout_view = getattr(self.canvas, "layout_view", None)
+                if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                    old_data = {"x": old_pos[0], "y": old_pos[1]}
+                    new_data = {"x": new_pos[0], "y": new_pos[1]}
+                    layout_view.push_edit_text_command(self.annotation, old_data, new_data)
+            self._drag_start_pos = None
         if hasattr(self.canvas, "layoutModifiedSignal"):
             self.canvas.layoutModifiedSignal.emit()
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
+            self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            self.setCursor(Qt.CursorShape.IBeamCursor)
+        try:
+            super().mouseDoubleClickEvent(event)
+        except (TypeError, RuntimeError):
+            pass
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.clearFocus()
+            self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+            cursor = self.textCursor()
+            cursor.clearSelection()
+            self.setTextCursor(cursor)
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def focusInEvent(self, event) -> None:
         self._initial_edit_data = {
@@ -566,6 +719,11 @@ class LayoutTextItem(QGraphicsTextItem):
         super().focusInEvent(event)
 
     def focusOutEvent(self, event) -> None:
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        cursor = self.textCursor()
+        cursor.clearSelection()
+        self.setTextCursor(cursor)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
         super().focusOutEvent(event)
         init_data = getattr(self, "_initial_edit_data", None)
         if init_data is not None:
@@ -580,9 +738,67 @@ class LayoutTextItem(QGraphicsTextItem):
                         {"text": cur_text, "html": cur_html},
                     )
 
+    def handle_resize(
+        self,
+        handle_index: int,
+        scene_pos: QPointF,
+        drag_start: QPointF,
+        start_width: float,
+        start_pos: Optional[QPointF],
+    ) -> None:
+        """Adjusts QTextDocument text width dynamically based on handle drag, re-wrapping text."""
+        if getattr(self, "_resize_old_state", None) is None:
+            self._resize_old_state = {
+                "w": self.annotation.get("w"),
+                "width": self.annotation.get("width"),
+                "h": self.annotation.get("h"),
+                "height": self.annotation.get("height"),
+                "x": self.annotation.get("x"),
+                "y": self.annotation.get("y"),
+            }
+        delta_x = scene_pos.x() - drag_start.x()
+
+        if handle_index in (1, 2, 4):  # TR, MR, BR
+            new_width = max(30.0, start_width + delta_x)
+            self.setTextWidth(new_width)
+        elif handle_index in (0, 3):  # TL, BL
+            new_width = max(30.0, start_width - delta_x)
+            if start_pos is not None:
+                new_x = start_pos.x() + (start_width - new_width)
+                self.setPos(new_x, start_pos.y())
+            self.setTextWidth(new_width)
+
+        self._sync_annotation_from_geometry()
+        self._update_handle_positions()
+        if hasattr(self.canvas, "layoutModifiedSignal"):
+            self.canvas.layoutModifiedSignal.emit()
+
+    def finish_resize(self) -> None:
+        old_state = getattr(self, "_resize_old_state", None)
+        self._resize_old_state = None
+        self._sync_annotation_from_geometry()
+        self._update_handle_positions()
+        if old_state is not None:
+            new_state = {
+                "w": self.annotation.get("w"),
+                "width": self.annotation.get("width"),
+                "h": self.annotation.get("h"),
+                "height": self.annotation.get("height"),
+                "x": self.annotation.get("x"),
+                "y": self.annotation.get("y"),
+            }
+            if old_state != new_state:
+                layout_view = getattr(self.canvas, "layout_view", None)
+                if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                    layout_view.push_edit_text_command(self.annotation, old_state, new_state)
+        if hasattr(self.canvas, "layoutModifiedSignal"):
+            self.canvas.layoutModifiedSignal.emit()
+
     def _on_contents_changed(self) -> None:
         self.annotation["text"] = self.toPlainText()
         self.annotation["html"] = self.toHtml()
+        self._sync_annotation_from_geometry()
+        self._update_handle_positions()
         if hasattr(self.canvas, "layoutModifiedSignal"):
             self.canvas.layoutModifiedSignal.emit()
 
@@ -651,16 +867,6 @@ class LayoutTextItem(QGraphicsTextItem):
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(br)
-
-            # Draw draggable corner handles
-            h_size = 6.0
-            corners = [br.topLeft(), br.topRight(), br.bottomLeft(), br.bottomRight()]
-            h_pen = QPen(QColor(0, 120, 212), 1.0)
-            h_brush = QBrush(QColor(255, 255, 255))
-            painter.setPen(h_pen)
-            painter.setBrush(h_brush)
-            for pt in corners:
-                painter.drawRect(QRectF(pt.x() - h_size / 2, pt.y() - h_size / 2, h_size, h_size))
             painter.restore()
 
 
@@ -709,6 +915,7 @@ class LayoutCanvas(QGraphicsView):
         """Loads and visualizes a PageLayout document model."""
         self.current_layout = layout
         self.current_document = document
+        self.document = document
         self.rebuild_scene()
 
     def rebuild_scene(self) -> None:
@@ -778,6 +985,19 @@ class LayoutCanvas(QGraphicsView):
         """Refreshes all placeholder snapshots to synchronize with modified data or plots."""
         for item in self.placeholder_items:
             item.invalidate_cache()
+            item.update_snapshot()
+        self.scene.update()
+
+    def refresh_hot_placeholders(self) -> None:
+        """Refreshes placeholders bound to unfrozen (hot) graphs."""
+        doc = getattr(self, "current_document", None) or getattr(self, "document", None)
+        for item in self.placeholder_items:
+            gid = getattr(item.placeholder, "graph_id", None)
+            if gid and doc:
+                graph = doc.get_sheet(gid)
+                if graph and not getattr(graph, "is_frozen", False):
+                    item.invalidate_cache()
+                    item.update_snapshot()
         self.scene.update()
 
     def fit_page_to_window(self) -> None:

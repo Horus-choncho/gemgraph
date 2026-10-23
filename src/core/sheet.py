@@ -37,6 +37,14 @@ class BaseSheet:
         self.child_sheet_ids: List[str] = []
         self.plot_config: Dict[str, Any] = dict(plot_config or {})
 
+    @property
+    def name(self) -> str:
+        return self.title
+
+    @name.setter
+    def name(self, val: str) -> None:
+        self.title = val
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "sheet_id": self.sheet_id,
@@ -350,10 +358,19 @@ class GraphSheet(BaseSheet):
         self.snapshot_table: Optional[DataTable] = snapshot_table
         self.snapshot_result_data: Optional[Dict[str, Any]] = snapshot_result_data
 
+    @property
+    def source_table_id(self) -> str:
+        return self.source_sheet_id
+
+    @source_table_id.setter
+    def source_table_id(self, val: str) -> None:
+        self.source_sheet_id = val
+
     def to_dict(self) -> Dict[str, Any]:
         d = super().to_dict()
         d["graph_type"] = self.graph_type.value
         d["source_sheet_id"] = self.source_sheet_id
+        d["source_table_id"] = self.source_sheet_id
         d["result_sheet_id"] = self.result_sheet_id
         d["x_label"] = self.x_label
         d["y_label"] = self.y_label
@@ -380,11 +397,12 @@ class GraphSheet(BaseSheet):
         except ValueError:
             gt_val = GraphType.XY_SCATTER_CURVE
 
+        src_id = data.get("source_sheet_id") or data.get("source_table_id", "")
         sheet = cls(
             sheet_id=data["sheet_id"],
             title=data.get("title", "Graph"),
             graph_type=gt_val,
-            source_sheet_id=data.get("source_sheet_id", ""),
+            source_sheet_id=src_id,
             result_sheet_id=data.get("result_sheet_id"),
             x_label=data.get("x_label", "X"),
             y_label=data.get("y_label", "Y"),

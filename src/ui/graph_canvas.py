@@ -1216,10 +1216,15 @@ class ScientificPlotCanvas(QWidget):
     def get_plot_snapshot(self, width: int = 1200, height: int = 800) -> bytes:
         """Renders high-DPI snapshot of the plot with generous axis margins to prevent label truncation."""
         from src.core.office_exporter import render_graph_to_png_bytes
-        sheet = self.current_graph_sheet
+        sheet = self.current_graph_sheet or self.active_sheet
+        doc = (
+            getattr(sheet, "document", None)
+            or getattr(self, "document", None)
+            or (getattr(self.mediator, "document", None) if hasattr(self, "mediator") else None)
+        )
         return render_graph_to_png_bytes(
             sheet if sheet is not None else self.current_table,
-            document=None,
+            document=doc,
             graph_canvas=self,
             width=width,
             height=height,
@@ -1236,6 +1241,40 @@ class ScientificPlotCanvas(QWidget):
         if table is None:
             return
 
+        sheet = self.current_graph_sheet or self.active_sheet
+        plot_cfg = getattr(sheet, "plot_config", {}) or {}
+        custom_y_title = plot_cfg.get("y_title")
+
+        def _get_depth_vertical_label() -> str:
+            if custom_y_title and str(custom_y_title).strip():
+                return str(custom_y_title).strip()
+            if table.table_type in (TableType.COLUMN, TableType.GROUPED):
+                factor_title = (
+                    getattr(table, "factor_title", None)
+                    or getattr(table, "grouping_title", None)
+                    or getattr(table, "group_title", None)
+                )
+                if factor_title and str(factor_title).strip():
+                    return str(factor_title).strip()
+                sheet_name = getattr(sheet, "name", None) or getattr(sheet, "title", None)
+                if sheet_name and str(sheet_name).strip() and str(sheet_name).strip() not in ("Graph 1", "Graph"):
+                    return str(sheet_name).strip()
+                table_title = getattr(table, "title", None)
+                if table_title and str(table_title).strip() and str(table_title).strip() not in ("Data 1", "Table 1", "Untitled"):
+                    return str(table_title).strip()
+                return "Groups"
+            else:
+                # XY / multi-column datasets: Use active Y-column header names
+                y_cols = [t for t in getattr(table, "y_group_titles", []) if t and str(t).strip()]
+                if y_cols:
+                    return ", ".join(y_cols)
+                if getattr(table, "x_title", None) and str(table.x_title).strip():
+                    return str(table.x_title).strip()
+                sheet_name = getattr(sheet, "name", None) or getattr(sheet, "title", None)
+                if sheet_name and str(sheet_name).strip():
+                    return str(sheet_name).strip()
+                return "Depth"
+
         err_style = getattr(self, "error_style", "SEM")
         if err_style == "SD":
             error_label = "SD"
@@ -1248,13 +1287,15 @@ class ScientificPlotCanvas(QWidget):
         vb = self.plot_widget.getViewBox()
         vb.invertY(True)
 
+        vert_lbl = _get_depth_vertical_label()
+
         if table.table_type == TableType.GROUPED:
             num_groups = len(table.y_group_titles)
             if num_groups == 0:
                 return
 
             self.plot_widget.setLabel("bottom", f"Value (Mean ± {error_label})", color="black")
-            self.plot_widget.setLabel("left", "Depth / Conditions", color="black")
+            self.plot_widget.setLabel("left", vert_lbl, color="black")
 
             active_rows = []
             for r in range(table.num_rows):
@@ -1379,7 +1420,7 @@ class ScientificPlotCanvas(QWidget):
                 return
 
             self.plot_widget.setLabel("bottom", f"Value (Mean ± {error_label})", color="black")
-            self.plot_widget.setLabel("left", "Depth in meters", color="black")
+            self.plot_widget.setLabel("left", vert_lbl, color="black")
 
             ticks = [(pos, name) for pos, name in enumerate(names)]
             self.plot_widget.getAxis("left").setTicks([ticks])
@@ -1467,8 +1508,7 @@ class ScientificPlotCanvas(QWidget):
             if num_groups == 0:
                 return
 
-            y_lbl = table.x_title or "Depth in meters"
-            self.plot_widget.setLabel("left", y_lbl, color="black")
+            self.plot_widget.setLabel("left", vert_lbl, color="black")
             if num_groups == 1 and table.y_group_titles[0]:
                 x_lbl = f"{table.y_group_titles[0]} (Mean ± {error_label})"
             else:

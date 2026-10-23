@@ -14,11 +14,12 @@ import unittest
 import zipfile
 
 import numpy as np
-from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QImage
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QPointF, QRectF, Qt, QEvent
+from PyQt6.QtGui import QColor, QImage, QMouseEvent, QKeyEvent, QFocusEvent
+from PyQt6.QtWidgets import QApplication, QGraphicsItem
 
 from src.core.document import PrismDocument
+from src.core.table import TableType, DataTable
 from src.core.layout import (
     PageLayout,
     Placeholder,
@@ -738,6 +739,153 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
         self.assertNotIn(ann, layout.annotations)
 
         view.close()
+
+    def test_hot_graph_placeholder_live_rendering(self) -> None:
+        """Verifies an unfrozen ('hot') graph placeholder renders non-empty pixmap bytes with live data series."""
+        layout = self.doc.create_layout("Hot Graph Layout")
+        layout.placeholders.clear()
+        p = Placeholder(slot_id="slot_hot", rect=(0.1, 0.1, 0.4, 0.4), graph_id=self.graph_sheet.sheet_id, linked_graph_title=self.graph_sheet.title)
+        layout.add_placeholder(p)
+        self.graph_sheet.is_pinned = True
+        self.graph_sheet.is_frozen = False
+
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        item = view.canvas.placeholder_items[0]
+
+        # Trigger snapshot update
+        item.update_snapshot()
+        self.assertIsNotNone(item.cached_pixmap)
+        self.assertFalse(item.cached_pixmap.isNull())
+        self.assertGreater(item.cached_pixmap.width(), 0)
+        self.assertGreater(item.cached_pixmap.height(), 0)
+
+        # Pixmap contains rendered content (non-white pixels)
+        img = item.cached_pixmap.toImage()
+        has_non_white = False
+        for y in range(0, img.height(), 15):
+            for x in range(0, img.width(), 15):
+                if img.pixelColor(x, y).name() != "#ffffff":
+                    has_non_white = True
+                    break
+            if has_non_white:
+                break
+        self.assertTrue(has_non_white)
+        view.close()
+
+    def test_navigating_back_to_layout_view_triggers_snapshot_refresh(self) -> None:
+        """Verifies that showEvent on LayoutView triggers snapshot refresh on unfrozen graphs."""
+        layout = self.doc.create_layout("Reactive Layout")
+        layout.placeholders.clear()
+        p = Placeholder(slot_id="slot_react", rect=(0.1, 0.1, 0.4, 0.4), graph_id=self.graph_sheet.sheet_id, linked_graph_title=self.graph_sheet.title)
+        layout.add_placeholder(p)
+        self.graph_sheet.is_pinned = True
+        self.graph_sheet.is_frozen = False
+
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        item = view.canvas.placeholder_items[0]
+
+        # Modify upstream data table
+        self.data_sheet.table.set_cell_value(0, "Y", 0, 0, 999.0)
+
+        # Clear cached pixmap to simulate state before navigation
+        item.cached_pixmap = None
+
+        from PyQt6.QtGui import QShowEvent
+        event = QShowEvent()
+        view.showEvent(event)
+
+        # showEvent must have regenerated the cached pixmap
+        self.assertIsNotNone(item.cached_pixmap)
+        self.assertFalse(item.cached_pixmap.isNull())
+        view.close()
+
+    def test_layout_text_item_interaction_states_and_resize(self) -> None:
+        """Verifies LayoutTextItem has ItemIsMovable in idle mode, switches to editing on double click, and exits on focusOutEvent/Escape."""
+        layout = self.doc.create_layout("Annotated Layout")
+        ann = {
+            "id": "ann_test_1",
+            "type": "text",
+            "text": "Figure 1A: Primary Response Curve",
+            "x": 0.15,
+            "y": 0.25,
+            "w": 0.35,
+            "font_size": 14,
+        }
+        layout.annotations = [ann]
+
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        text_item = view.canvas.text_items[0]
+
+        # 1. Idle mode: ItemIsMovable enabled, textInteractionFlags is NoTextInteraction
+        self.assertTrue(bool(text_item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsMovable))
+        self.assertTrue(bool(text_item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsSelectable))
+        self.assertEqual(text_item.textInteractionFlags(), Qt.TextInteractionFlag.NoTextInteraction)
+
+        # 2. Double-click switches to TextEditorInteraction
+        dbl_click = QMouseEvent(
+            QEvent.Type.MouseButtonDblClick,
+            QPointF(10, 10),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        text_item.mouseDoubleClickEvent(dbl_click)
+        self.assertEqual(text_item.textInteractionFlags(), Qt.TextInteractionFlag.TextEditorInteraction)
+
+        # 3. Escape key exits editing mode back to NoTextInteraction
+        esc_event = QKeyEvent(
+            QEvent.Type.KeyPress,
+            Qt.Key.Key_Escape,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        text_item.keyPressEvent(esc_event)
+        self.assertEqual(text_item.textInteractionFlags(), Qt.TextInteractionFlag.NoTextInteraction)
+
+        # 4. Double click again and focusOutEvent exits editing
+        text_item.mouseDoubleClickEvent(dbl_click)
+        self.assertEqual(text_item.textInteractionFlags(), Qt.TextInteractionFlag.TextEditorInteraction)
+        focus_out = QFocusEvent(QEvent.Type.FocusOut)
+        text_item.focusOutEvent(focus_out)
+        self.assertEqual(text_item.textInteractionFlags(), Qt.TextInteractionFlag.NoTextInteraction)
+
+        # 5. Interactive resize handle adjusts document text width
+        initial_w = text_item.boundingRect().width()
+        text_item.handle_resize(1, QPointF(500, 100), QPointF(200, 100), initial_w, text_item.pos())
+        self.assertGreater(text_item.boundingRect().width(), initial_w)
+        text_item.finish_resize()
+        view.close()
+
+    def test_depth_graph_dynamic_vertical_axis_label(self) -> None:
+        """Verifies Depth Graph vertical axis label reflects column/group names instead of 'Depth in meters'."""
+        canvas = ScientificPlotCanvas(parent=None)
+
+        # XY table without custom title: uses active Y-column headers
+        xy_sheet = self.doc.create_data_sheet("Depth Profile XY", table_type=TableType.XY)
+        xy_sheet.table.y_group_titles = ["Salinity (psu)", "Temperature (°C)"]
+        canvas.update_data(xy_sheet.table, graph_type=GraphType.DEPTH_GRAPH, sheet=self.graph_sheet)
+
+        left_ax = canvas.plot_widget.getAxis("left")
+        left_label_text = left_ax.labelText
+        self.assertIn("Salinity (psu)", left_label_text)
+        self.assertIn("Temperature (°C)", left_label_text)
+        self.assertNotIn("Depth in meters", left_label_text)
+
+        # Column table without custom title: uses factor title, sheet name, or Groups
+        col_table = DataTable(table_id="col_t", title="Treatment Conditions", table_type=TableType.COLUMN, num_rows=3, y_group_titles=["Baseline", "Dose 1", "Dose 2"])
+        canvas.update_data(col_table, graph_type=GraphType.DEPTH_GRAPH)
+        left_label_text2 = canvas.plot_widget.getAxis("left").labelText
+        self.assertEqual(left_label_text2, "Treatment Conditions")
+        self.assertNotIn("Depth in meters", left_label_text2)
+
+        # Custom y_title in plot_config overrides everything
+        self.graph_sheet.plot_config["y_title"] = "Sediment Depth (cm)"
+        canvas.update_data(xy_sheet.table, graph_type=GraphType.DEPTH_GRAPH, sheet=self.graph_sheet)
+        left_label_text3 = canvas.plot_widget.getAxis("left").labelText
+        self.assertEqual(left_label_text3, "Sediment Depth (cm)")
+        self.assertNotIn("Depth in meters", left_label_text3)
 
 
 if __name__ == "__main__":

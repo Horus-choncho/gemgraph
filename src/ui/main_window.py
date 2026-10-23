@@ -9,7 +9,7 @@ from urllib.parse import unquote
 from typing import Optional, List, Dict, Any
 import numpy as np
 import scipy.stats
-from PyQt6.QtCore import Qt, QDir, QUrl
+from PyQt6.QtCore import Qt, QDir, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QDragEnterEvent, QDropEvent, QDragMoveEvent
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -83,6 +83,7 @@ class MainWindow(QMainWindow):
     """
     Main application window hosting three-pane scientific interface.
     """
+    workspace_modified = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -99,10 +100,17 @@ class MainWindow(QMainWindow):
         self._setup_toolbar()
         self._setup_statusbar()
 
+        self.workspace_modified.connect(self._on_workspace_modified)
+
         # Populate initial view
         self.navigator.populate(self.document)
         if self.document.active_sheet_id:
             self.on_sheet_selected(self.document.active_sheet_id)
+
+    def _on_workspace_modified(self) -> None:
+        if hasattr(self, "layout_view") and self.layout_view is not None:
+            if self.center_stack.currentWidget() == self.layout_view:
+                self.layout_view.refresh_hot_placeholders()
 
     def _create_blank_project(self) -> None:
         """Initializes a pristine, blank XY table (columns X, Y1) with empty placeholder rows."""
@@ -522,6 +530,7 @@ class MainWindow(QMainWindow):
             src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else None
             self.graph_canvas.update_data(src_table, result=res_sheet, sheet=res_sheet)
             self.status.showMessage(f"Active Result: {sheet.title}")
+            self.workspace_modified.emit()
 
         elif sheet.sheet_type == SheetType.INFO:
             info_sheet: InfoSheet = sheet  # type: ignore
@@ -560,7 +569,7 @@ class MainWindow(QMainWindow):
 
         elif sheet.sheet_type == SheetType.LAYOUT:
             self.center_stack.setCurrentWidget(self.layout_view)
-            self.layout_view.set_layout(sheet, self.document)
+            self.layout_view.load_layout(sheet, self.document)
             self.layout_view.canvas.fit_page_to_window()
             self.status.showMessage(f"Active Layout: {sheet.title}")
 
@@ -738,7 +747,11 @@ class MainWindow(QMainWindow):
                     sheet=active_sheet,
                 )
         if hasattr(self, "layout_view") and self.layout_view is not None:
-            self.layout_view.refresh_all_snapshots()
+            if self.center_stack.currentWidget() == self.layout_view:
+                self.layout_view.refresh_hot_placeholders()
+            else:
+                self.layout_view.refresh_all_snapshots()
+        self.workspace_modified.emit()
 
     def action_undo(self) -> None:
         focused = QApplication.focusWidget() or self.focusWidget()
