@@ -21,6 +21,10 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSlider,
     QColorDialog,
+    QLineEdit,
+    QSpinBox,
+    QTreeWidget,
+    QTreeWidgetItem,
 )
 from src.math.nonlinear import STANDARD_MODELS, ConvergencePreset
 
@@ -294,3 +298,157 @@ class FormatSeriesDialog(QDialog):
 
     def get_formatting(self) -> Tuple[Dict[str, QColor], Dict[str, float]]:
         return self.colors, self.opacities
+
+
+class NewLayoutDialog(QDialog):
+    """Configuration dialog for creating a new presentation Page Layout."""
+
+    def __init__(self, parent=None, initial_name: str = "Layout 1") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Create New Page Layout")
+        self.setMinimumWidth(420)
+
+        layout = QVBoxLayout(self)
+
+        form_group = QGroupBox("Layout Setup & Grid Template")
+        form = QFormLayout(form_group)
+
+        self.name_edit = QLineEdit(initial_name)
+        form.addRow("Layout Name:", self.name_edit)
+
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems([
+            "4 (2x2 Quadrants)",
+            "1 Graph",
+            "2 Horizontal",
+            "2 Vertical",
+            "3 (1 Top / 2 Bottom)",
+            "6 (2x3)",
+            "8 (2x4)",
+            "Custom Grid",
+        ])
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
+        form.addRow("Template Preset:", self.preset_combo)
+
+        # Custom grid row/col spinboxes
+        grid_row_layout = QHBoxLayout()
+        self.spin_rows = QSpinBox()
+        self.spin_rows.setRange(1, 10)
+        self.spin_rows.setValue(2)
+        self.spin_rows.setEnabled(False)
+        grid_row_layout.addWidget(QLabel("Rows:"))
+        grid_row_layout.addWidget(self.spin_rows)
+
+        self.spin_cols = QSpinBox()
+        self.spin_cols.setRange(1, 10)
+        self.spin_cols.setValue(2)
+        self.spin_cols.setEnabled(False)
+        grid_row_layout.addWidget(QLabel("Columns:"))
+        grid_row_layout.addWidget(self.spin_cols)
+        form.addRow("Custom Dimensions:", grid_row_layout)
+
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["A4", "Letter", "Slide 16:9", "Slide 4:3"])
+        form.addRow("Page Format:", self.format_combo)
+
+        self.orientation_combo = QComboBox()
+        self.orientation_combo.addItems(["Portrait", "Landscape"])
+        form.addRow("Orientation:", self.orientation_combo)
+
+        layout.addWidget(form_group)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_preset_changed(self, idx: int) -> None:
+        is_custom = self.preset_combo.currentText() == "Custom Grid"
+        self.spin_rows.setEnabled(is_custom)
+        self.spin_cols.setEnabled(is_custom)
+
+    def get_settings(self) -> Dict[str, Any]:
+        return {
+            "name": self.name_edit.text().strip() or "Layout",
+            "template": self.preset_combo.currentText(),
+            "page_format": self.format_combo.currentText(),
+            "orientation": self.orientation_combo.currentText(),
+            "rows": self.spin_rows.value(),
+            "cols": self.spin_cols.value(),
+        }
+
+
+class AssignGraphDialog(QDialog):
+    """Dialog allowing user to link an available project graph or pinned snapshot to a layout placeholder."""
+
+    def __init__(self, document: Any, current_graph_id: Optional[str] = None, parent=None) -> None:
+        super().__init__(parent)
+        self.document = document
+        self.selected_graph_id: Optional[str] = current_graph_id
+        self.selected_graph_title: Optional[str] = None
+
+        self.setWindowTitle("Assign Graph to Placeholder")
+        self.resize(460, 400)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Select a graph or snapshot to display in this placeholder slot:"))
+
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Graph / Snapshot Title", "Type"])
+        self.tree.setAnimated(True)
+        self.tree.itemSelectionChanged.connect(self._on_selection_changed)
+        layout.addWidget(self.tree)
+
+        self._populate_graphs()
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.btn_ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.btn_ok.setText("Assign Graph")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _populate_graphs(self) -> None:
+        self.tree.clear()
+
+        # Unassign option
+        unassign_item = QTreeWidgetItem(self.tree, ["(None - Leave Empty)", "Placeholder"])
+        unassign_item.setData(0, Qt.ItemDataRole.UserRole, "")
+
+        graphs_root = QTreeWidgetItem(self.tree, ["📈 Active Graphs", ""])
+        pinned_root = QTreeWidgetItem(self.tree, ["📌 Pinned Snapshots", ""])
+
+        for sid in getattr(self.document, "sheet_order", []):
+            sheet = self.document.sheets.get(sid)
+            if sheet is None:
+                continue
+
+            from src.core.sheet import SheetType, GraphSheet
+            if sheet.sheet_type == SheetType.GRAPH and isinstance(sheet, GraphSheet):
+                gt_val = sheet.graph_type.value if hasattr(sheet.graph_type, "value") else str(sheet.graph_type)
+                parent_node = pinned_root if sheet.is_pinned else graphs_root
+                item = QTreeWidgetItem(parent_node, [sheet.title, gt_val])
+                item.setData(0, Qt.ItemDataRole.UserRole, sheet.sheet_id)
+                if sheet.sheet_id == self.selected_graph_id:
+                    self.tree.setCurrentItem(item)
+
+        self.tree.expandAll()
+
+    def _on_selection_changed(self) -> None:
+        item = self.tree.currentItem()
+        if not item:
+            return
+        sid = item.data(0, Qt.ItemDataRole.UserRole)
+        if sid == "":
+            self.selected_graph_id = None
+            self.selected_graph_title = None
+        elif sid:
+            self.selected_graph_id = sid
+            self.selected_graph_title = item.text(0)
+
+    def get_selected_graph(self) -> Tuple[Optional[str], Optional[str]]:
+        return self.selected_graph_id, self.selected_graph_title

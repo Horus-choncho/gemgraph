@@ -146,6 +146,10 @@ class ExportProjectDialog(QDialog):
         self.graphs_root.setFlags(self.graphs_root.flags() | Qt.ItemFlag.ItemIsUserCheckable)
         self.graphs_root.setCheckState(0, Qt.CheckState.Checked)
 
+        self.layouts_root = QTreeWidgetItem(self.root_item, ["Page Layouts"])
+        self.layouts_root.setFlags(self.layouts_root.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        self.layouts_root.setCheckState(0, Qt.CheckState.Checked)
+
         # Add leaves
         for sid in self.document.sheet_order:
             sheet = self.document.sheets.get(sid)
@@ -161,6 +165,8 @@ class ExportProjectDialog(QDialog):
                 parent_folder = self.results_root
             elif sheet.sheet_type == SheetType.GRAPH:
                 parent_folder = self.graphs_root
+            elif sheet.sheet_type == SheetType.LAYOUT:
+                parent_folder = self.layouts_root
 
             if parent_folder is not None:
                 leaf = QTreeWidgetItem(parent_folder, [sheet.title])

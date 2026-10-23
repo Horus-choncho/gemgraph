@@ -64,17 +64,27 @@ class PrismNavigator(QTreeWidget):
     def root_graphs(self, item: QTreeWidgetItem) -> None:
         self.folder_items[SheetType.GRAPH] = item
 
+    @property
+    def root_layouts(self) -> Optional[QTreeWidgetItem]:
+        return self.folder_items.get(SheetType.LAYOUT)
+
+    @root_layouts.setter
+    def root_layouts(self, item: QTreeWidgetItem) -> None:
+        self.folder_items[SheetType.LAYOUT] = item
+
     def _init_folders(self) -> None:
         self.clear()
         t_root = QTreeWidgetItem(self, ["📁 Data Tables"])
         i_root = QTreeWidgetItem(self, ["📁 Info Sheets"])
         r_root = QTreeWidgetItem(self, ["📁 Results"])
         g_root = QTreeWidgetItem(self, ["📈 Graphs"])
+        l_root = QTreeWidgetItem(self, ["📑 Layouts"])
 
         self.folder_items[SheetType.DATA] = t_root
         self.folder_items[SheetType.INFO] = i_root
         self.folder_items[SheetType.RESULTS] = r_root
         self.folder_items[SheetType.GRAPH] = g_root
+        self.folder_items[SheetType.LAYOUT] = l_root
 
         for item in self.folder_items.values():
             item.setExpanded(True)
@@ -87,10 +97,10 @@ class PrismNavigator(QTreeWidget):
 
         items_by_id: Dict[str, QTreeWidgetItem] = {}
 
-        # First pass: Data and Info sheets under their folders
+        # First pass: Data, Info, Graph, and Layout sheets under their folders
         for sheet_id in document.sheet_order:
             sheet = document.sheets[sheet_id]
-            if sheet.sheet_type in (SheetType.DATA, SheetType.INFO, SheetType.GRAPH):
+            if sheet.sheet_type in (SheetType.DATA, SheetType.INFO, SheetType.GRAPH, SheetType.LAYOUT):
                 folder_item = self.folder_items.get(sheet.sheet_type)
                 if folder_item is not None:
                     title = sheet.title

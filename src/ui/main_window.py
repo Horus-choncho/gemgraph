@@ -153,6 +153,11 @@ class MainWindow(QMainWindow):
         self.info_widget.infoModified.connect(self._on_table_data_modified)
         self.center_stack.addWidget(self.info_widget)
 
+        # Page Layout Presentation View
+        from src.ui.layout_view import LayoutView
+        self.layout_view = LayoutView(self)
+        self.center_stack.addWidget(self.layout_view)
+
         # Right Pane: Interactive Plot Canvas
         self.graph_canvas = GraphCanvasWidget(mediator=self.mediator)
         self.graph_canvas.pinGraphRequested.connect(self.action_pin_graph)
@@ -259,6 +264,16 @@ class MainWindow(QMainWindow):
         export_svg_act = QAction("Export Graph as Vector SVG...", self)
         export_svg_act.triggered.connect(self.action_export_svg)
         file_menu.addAction(export_svg_act)
+
+        export_layout_act = QAction("Export Layout as Image...", self)
+        export_layout_act.triggered.connect(self.action_export_layout_image)
+        file_menu.addAction(export_layout_act)
+
+        file_menu.addSeparator()
+
+        add_layout_act = QAction("➕ New Page Layout...", self)
+        add_layout_act.triggered.connect(self.action_add_layout)
+        file_menu.addAction(add_layout_act)
 
         file_menu.addSeparator()
 
@@ -543,6 +558,11 @@ class MainWindow(QMainWindow):
             )
             self.status.showMessage(f"Active Graph: {sheet.title}")
 
+        elif sheet.sheet_type == SheetType.LAYOUT:
+            self.layout_view.set_layout(sheet, self.document)
+            self.center_stack.setCurrentWidget(self.layout_view)
+            self.status.showMessage(f"Active Layout: {sheet.title}")
+
     def on_sheet_deleted(self, sheet_id: str) -> None:
         self.document.remove_sheet(sheet_id)
         GLOBAL_REGISTRY.remove_by_sheet(sheet_id)
@@ -559,6 +579,7 @@ class MainWindow(QMainWindow):
         info_root = self.navigator.folder_items.get(SheetType.INFO)
         results_root = self.navigator.folder_items.get(SheetType.RESULTS)
         graphs_root = self.navigator.folder_items.get(SheetType.GRAPH)
+        layouts_root = self.navigator.folder_items.get(SheetType.LAYOUT)
 
         sheet_id = item.data(0, Qt.ItemDataRole.UserRole)
         sheet = self.document.get_sheet(sheet_id) if sheet_id else None
@@ -567,11 +588,13 @@ class MainWindow(QMainWindow):
         is_info_root = (item == info_root)
         is_results_root = (item == results_root)
         is_graphs_root = (item == graphs_root)
+        is_layouts_root = (item == layouts_root)
 
         is_data_child = (sheet and sheet.sheet_type == SheetType.DATA) or (item.parent() == data_root)
         is_info_child = (sheet and sheet.sheet_type == SheetType.INFO) or (item.parent() == info_root)
         is_results_child = (sheet and sheet.sheet_type == SheetType.RESULTS) or (item.parent() == results_root)
         is_graphs_child = (sheet and sheet.sheet_type == SheetType.GRAPH) or (item.parent() == graphs_root)
+        is_layouts_child = (sheet and sheet.sheet_type == SheetType.LAYOUT) or (item.parent() == layouts_root)
 
         menu = QMenu(self)
 
@@ -637,6 +660,18 @@ class MainWindow(QMainWindow):
                 delete_act.triggered.connect(lambda: self._delete_navigator_sheet(item, sheet_id))
                 return menu
 
+        # 5. Layouts
+        if is_layouts_root or is_layouts_child:
+            add_layout_act = menu.addAction("➕ Add Layout...")
+            add_layout_act.triggered.connect(self.action_add_layout)
+            if is_layouts_child and sheet_id:
+                menu.addSeparator()
+                rename_act = menu.addAction("✏️ Rename Layout...")
+                rename_act.triggered.connect(lambda: self._rename_navigator_sheet(item, sheet_id))
+                delete_act = menu.addAction("🗑️ Delete Layout")
+                delete_act.triggered.connect(lambda: self._delete_navigator_sheet(item, sheet_id))
+            return menu
+
         if sheet_id:
             rename_act = menu.addAction("Rename Sheet...")
             rename_act.triggered.connect(lambda: self._rename_navigator_sheet(item, sheet_id))
@@ -693,6 +728,8 @@ class MainWindow(QMainWindow):
                     graph_type=active_sheet.graph_type,
                     sheet=active_sheet,
                 )
+        if hasattr(self, "layout_view") and self.layout_view is not None:
+            self.layout_view.refresh_all_snapshots()
 
     def action_undo(self) -> None:
         focused = QApplication.focusWidget() or self.focusWidget()
@@ -731,6 +768,61 @@ class MainWindow(QMainWindow):
         return sheet
 
     action_add_info = action_add_info_sheet
+
+    def action_add_layout(self) -> Any:
+        """Creates a new presentation Page Layout, appends it to project, updates navigator, and opens it."""
+        from src.ui.dialogs import NewLayoutDialog
+        sheet_count = len(self.document.get_sheets_by_type(SheetType.LAYOUT)) + 1
+        dialog = NewLayoutDialog(self, initial_name=f"Layout {sheet_count}")
+        if dialog.exec():
+            settings = dialog.get_settings()
+            layout = self.document.create_layout(
+                title=settings["name"],
+                page_format=settings["page_format"],
+                orientation=settings["orientation"],
+                template=settings["template"],
+            )
+            self.document.active_sheet_id = layout.sheet_id
+            self.navigator.populate(self.document)
+            self.on_sheet_selected(layout.sheet_id)
+            return layout
+        return None
+
+    def action_export_layout_image(self) -> None:
+        """Exports currently active or first layout sheet as high-DPI image."""
+        active_sheet = self.document.get_sheet(self.document.active_sheet_id or "")
+        from src.core.layout import PageLayout
+        if not isinstance(active_sheet, PageLayout) and getattr(active_sheet, "sheet_type", None) != SheetType.LAYOUT:
+            layouts = self.document.layouts
+            if not layouts:
+                QMessageBox.information(self, "Export Layout as Image", "No page layouts exist in this project to export.")
+                return
+            active_sheet = layouts[0]
+
+        filters = "PNG Image (*.png);;TIFF Image (*.tif);;Scalable Vector Graphics (*.svg);;PDF Document (*.pdf)"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Layout as Image",
+            f"{active_sheet.title}.png",
+            filters,
+        )
+        if not file_path:
+            return
+
+        from src.core.layout import render_layout_to_image, render_layout_to_pdf, render_layout_to_svg
+        ext = file_path.split(".")[-1].lower()
+        try:
+            if ext == "pdf":
+                render_layout_to_pdf(active_sheet, document=self.document, file_path=file_path)
+            elif ext == "svg":
+                render_layout_to_svg(active_sheet, document=self.document, file_path=file_path)
+            else:
+                img = render_layout_to_image(active_sheet, document=self.document, dpi=300)
+                fmt_tag = "TIFF" if ext in ("tif", "tiff") else "PNG"
+                img.save(file_path, fmt_tag)
+            QMessageBox.information(self, "Export Complete", f"Successfully exported layout image to:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Failed", f"Failed to export layout image:\n{e}")
 
     def action_pin_graph(self, title: Optional[str] = None) -> GraphSheet:
         """

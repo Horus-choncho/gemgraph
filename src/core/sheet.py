@@ -314,6 +314,7 @@ class GraphType(enum.Enum):
     XY_SPIKES_CURVE = "Columns/Spikes + Curve Fit"
     BOX_WHISKER = "Box & Whisker"
     SURVIVAL_CURVE = "Kaplan-Meier Survival"
+    DEPTH_GRAPH = "Depth Graph (2.5D Isometric)"
 
 
 
@@ -411,6 +412,7 @@ def format_pinned_graph_name(
         "Columns/Spikes + Curve Fit": "Columns/Spikes + Curve Fit",
         "Box & Whisker": "Box & Whisker",
         "Kaplan-Meier Survival": "Survival",
+        "Depth Graph (2.5D Isometric)": "Depth Graph",
     }.get(gt_str, gt_str)
 
     if analysis_model_name:

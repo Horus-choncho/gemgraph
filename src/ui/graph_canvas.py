@@ -14,8 +14,8 @@ Includes:
 from __future__ import annotations
 from typing import Optional, List, Dict, Any, Tuple, Set
 import numpy as np
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QBrush
+from PyQt6.QtCore import Qt, pyqtSignal, QPointF
+from PyQt6.QtGui import QColor, QFont, QBrush, QPolygonF, QPen
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QTableWidget,
     QGraphicsProxyWidget,
+    QGraphicsPolygonItem,
 )
 import pyqtgraph as pg
 import pyqtgraph.exporters
@@ -37,8 +38,34 @@ from src.ui.mediator import WorkspaceMediator
 from src.ui.dialogs import FormatSeriesDialog
 
 
+def compute_isometric_projection(
+    x: float,
+    y: float,
+    z: float,
+    theta: float = np.pi / 4,
+    d: float = 0.2,
+    y_scale: float = 1.0,
+    theta_deg: Optional[float] = None,
+    depth_factor: Optional[float] = None,
+) -> Tuple[float, float]:
+    """
+    Computes isometric 2.5D projection with depth offset:
+    X_proj = X + Z * cos(theta) * d
+    Y_proj = Y + Z * sin(theta) * d * y_scale
+    """
+    if theta_deg is not None:
+        theta = float(np.radians(theta_deg))
+    if depth_factor is not None:
+        d = float(depth_factor)
+    x_proj = x + z * float(np.cos(theta)) * d
+    y_proj = y + z * float(np.sin(theta)) * d * y_scale
+    return float(x_proj), float(y_proj)
+
+
 class ScientificPlotCanvas(QWidget):
     """
+
+    compute_isometric_projection = staticmethod(compute_isometric_projection)
     High-performance scientific plot widget rendering publication-grade vector graphs.
     Includes active analysis overlay registry, toolbar layer clearing UI,
     and journal publishing grayscale symbology.
@@ -151,6 +178,7 @@ class ScientificPlotCanvas(QWidget):
             "Superimposed Bars & Points",
             GraphType.GROUPED_BARS_POINTS.value,
             GraphType.XY_SPIKES_CURVE.value,
+            GraphType.DEPTH_GRAPH.value,
         ])
         self.type_combo.currentIndexChanged.connect(self._on_type_changed)
         top_bar.addWidget(self.type_combo)
@@ -434,7 +462,9 @@ class ScientificPlotCanvas(QWidget):
                 idx = self.type_combo.findText(val)
                 if idx < 0:
                     val_lower = val.lower().replace("_", " ").replace("-", " ")
-                    if "bar" in val_lower and "point" not in val_lower:
+                    if "depth" in val_lower or "isometric" in val_lower or "2.5d" in val_lower:
+                        idx = self.type_combo.findText(GraphType.DEPTH_GRAPH.value)
+                    elif "bar" in val_lower and "point" not in val_lower:
                         idx = self.type_combo.findText(GraphType.COLUMN_BAR_ERROR.value)
                     elif "xy" in val_lower or "scatter" in val_lower:
                         idx = self.type_combo.findText(GraphType.XY_SCATTER_CURVE.value)
@@ -495,6 +525,8 @@ class ScientificPlotCanvas(QWidget):
             "Superimposed Bars & Points",
             GraphType.GROUPED_BARS_POINTS.value,
             "Grouped Bars + Replicate Points",
+            GraphType.DEPTH_GRAPH.value,
+            "Depth Graph (2.5D Isometric)",
         ):
             return True
         if self.current_table and self.current_table.table_type in (TableType.GROUPED, TableType.COLUMN):
@@ -758,7 +790,9 @@ class ScientificPlotCanvas(QWidget):
             return
 
         selected_type = self.type_combo.currentText()
-        if (
+        if selected_type in (GraphType.DEPTH_GRAPH.value, "Depth Graph (2.5D Isometric)"):
+            self._render_depth_graph()
+        elif (
             selected_type in (GraphType.GROUPED_BARS_POINTS.value, "Grouped Bars + Replicate Points")
             or (self.current_table.table_type == TableType.GROUPED and selected_type not in (GraphType.XY_SPIKES_CURVE.value, GraphType.XY_SCATTER_CURVE.value))
         ):
@@ -1195,6 +1229,321 @@ class ScientificPlotCanvas(QWidget):
                     )
                     self.plot_widget.addItem(scatter)
 
+    def _render_depth_graph(self) -> None:
+        """
+        Renders isometric 2.5D depth graph for Column and Grouped tables.
+        Uses isometric projection:
+            X_proj = X + Z * cos(theta) * d
+            Y_proj = Y + Z * sin(theta) * d
+        with back-to-front topological order (Z_max -> Z_0),
+        front face (base color), top face (15% lighter), and side face (20% darker),
+        and error whiskers at the front face center.
+        """
+        table = self.current_table
+        if table is None:
+            return
+
+        err_style = getattr(self, "error_style", "SEM")
+        if err_style == "SD":
+            error_label = "SD"
+        elif err_style == "95% CI":
+            error_label = "95% CI"
+        else:
+            error_label = "SEM"
+
+        theta = np.pi / 4  # 45 degrees
+        cfg = getattr(self.current_graph_sheet, "plot_config", {}) if self.current_graph_sheet else {}
+        d = float(cfg.get("depth_factor", 0.2))  # configurable between 0.1 and 0.3
+        bar_w = 0.5
+        extrusion = d * 0.5
+        delta_x = float(np.cos(theta) * extrusion)
+        delta_y = float(np.sin(theta) * extrusion)
+
+        is_grayscale = self.is_grayscale_mode
+
+        if table.table_type == TableType.GROUPED:
+            num_groups = len(table.y_group_titles)
+            if num_groups == 0:
+                return
+
+            self.plot_widget.setLabel("bottom", "Conditions", color="black")
+            self.plot_widget.setLabel("left", f"Value (Mean ± {error_label})", color="black")
+
+            active_rows = []
+            for r in range(table.num_rows):
+                has_data = False
+                for g in range(num_groups):
+                    for s in range(table.num_replicates):
+                        if not table.is_excluded(r, "Y", g, s):
+                            val = table.y_data[g, r, s]
+                            if not np.isnan(val):
+                                has_data = True
+                                break
+                    if has_data:
+                        break
+                if has_data or (r < len(table.row_titles) and table.row_titles[r].strip()):
+                    active_rows.append(r)
+
+            if not active_rows:
+                active_rows = list(range(min(table.num_rows, 10)))
+
+            ticks = []
+            for idx, r in enumerate(active_rows):
+                title = table.row_titles[r] if r < len(table.row_titles) and table.row_titles[r].strip() else f"Row {r+1}"
+                ticks.append((idx, title))
+            self.plot_widget.getAxis("bottom").setTicks([ticks])
+
+            # Back-to-front topological order: Z_max -> Z_0
+            for g_idx in reversed(range(num_groups)):
+                g_title = table.y_group_titles[g_idx]
+                has_custom_color = g_title in self.custom_series_colors
+                custom_color = self.custom_series_colors.get(g_title)
+                custom_opacity = self.custom_series_opacities.get(g_title, 1.0 if is_grayscale else 0.8)
+
+                if is_grayscale and not has_custom_color:
+                    base_color = QColor(60 + (g_idx * 40) % 160, 60 + (g_idx * 40) % 160, 60 + (g_idx * 40) % 160)
+                else:
+                    base_color = custom_color or self.COLOR_PALETTE[g_idx % len(self.COLOR_PALETTE)]
+
+                alpha = int(round(custom_opacity * 255))
+                front_color = QColor(base_color)
+                front_color.setAlpha(alpha)
+                top_color = base_color.lighter(115)
+                top_color.setAlpha(alpha)
+                side_color = base_color.darker(120)
+                side_color.setAlpha(alpha)
+
+                front_brush = QBrush(front_color)
+                top_brush = QBrush(top_color)
+                side_brush = QBrush(side_color)
+
+                front_pen = pg.mkPen(base_color.darker(140), width=1.0)
+                top_pen = pg.mkPen(base_color.darker(130), width=1.0)
+                side_pen = pg.mkPen(base_color.darker(150), width=1.0)
+                err_pen = pg.mkPen(base_color.darker(160), width=1.5)
+
+                if self.plot_widget.plotItem.legend is not None:
+                    dummy = pg.PlotDataItem(pen=front_pen, brush=front_brush, name=g_title)
+                    self.plot_widget.plotItem.legend.addItem(dummy, g_title)
+
+                z = g_idx
+                dx_z = float(z * np.cos(theta) * d)
+                dy_z = float(z * np.sin(theta) * d)
+
+                for x_idx, r in enumerate(active_rows):
+                    valid_vals = []
+                    for s in range(table.num_replicates):
+                        if not table.is_excluded(r, "Y", g_idx, s):
+                            val = table.y_data[g_idx, r, s]
+                            if not np.isnan(val):
+                                valid_vals.append(float(val))
+                    if not valid_vals:
+                        continue
+
+                    mean = float(np.mean(valid_vals))
+                    if len(valid_vals) > 1:
+                        sd = float(np.std(valid_vals, ddof=1))
+                        sem = sd / np.sqrt(len(valid_vals))
+                        if error_label == "SD":
+                            err_val = sd
+                        elif error_label == "95% CI":
+                            try:
+                                from scipy import stats
+                                t_crit = float(stats.t.ppf(0.975, df=len(valid_vals) - 1))
+                                err_val = sem * t_crit
+                            except Exception:
+                                err_val = sem * 1.96
+                        else:
+                            err_val = sem
+                    else:
+                        err_val = 0.0
+
+                    x_center = x_idx
+                    x_l = x_center - bar_w / 2.0 + dx_z
+                    x_r = x_center + bar_w / 2.0 + dx_z
+                    y_b = dy_z
+                    y_t = mean + dy_z
+
+                    # Top face
+                    top_poly = QPolygonF([
+                        QPointF(x_l, y_t),
+                        QPointF(x_r, y_t),
+                        QPointF(x_r + delta_x, y_t + delta_y),
+                        QPointF(x_l + delta_x, y_t + delta_y),
+                    ])
+                    top_item = QGraphicsPolygonItem(top_poly)
+                    top_item.setBrush(top_brush)
+                    top_item.setPen(top_pen)
+                    self.plot_widget.addItem(top_item)
+
+                    # Side face (right)
+                    side_poly = QPolygonF([
+                        QPointF(x_r, y_b),
+                        QPointF(x_r, y_t),
+                        QPointF(x_r + delta_x, y_t + delta_y),
+                        QPointF(x_r + delta_x, y_b + delta_y),
+                    ])
+                    side_item = QGraphicsPolygonItem(side_poly)
+                    side_item.setBrush(side_brush)
+                    side_item.setPen(side_pen)
+                    self.plot_widget.addItem(side_item)
+
+                    # Front face
+                    front_poly = QPolygonF([
+                        QPointF(x_l, y_b),
+                        QPointF(x_r, y_b),
+                        QPointF(x_r, y_t),
+                        QPointF(x_l, y_t),
+                    ])
+                    front_item = QGraphicsPolygonItem(front_poly)
+                    front_item.setBrush(front_brush)
+                    front_item.setPen(front_pen)
+                    self.plot_widget.addItem(front_item)
+
+                    # Error whiskers on front face
+                    if err_val > 0:
+                        top_err = np.array([err_val])
+                        bot_err = np.zeros_like(top_err) if self.whisker_direction == "Upper (+) Only" else top_err
+                        err = pg.ErrorBarItem(
+                            x=np.array([(x_l + x_r) / 2.0]),
+                            y=np.array([y_t]),
+                            top=top_err,
+                            bottom=bot_err,
+                            pen=err_pen,
+                            beam=0.1,
+                        )
+                        self.plot_widget.addItem(err)
+
+        else:
+            # Column Table
+            group_data = table.get_all_group_values()
+            names = list(group_data.keys())
+            num_cols = len(names)
+            if num_cols == 0:
+                return
+
+            self.plot_widget.setLabel("bottom", "Groups", color="black")
+            self.plot_widget.setLabel("left", f"Value (Mean ± {error_label})", color="black")
+
+            ticks = []
+            for pos, name in enumerate(names):
+                dx_pos = float(pos * np.cos(theta) * d)
+                ticks.append((pos + dx_pos, name))
+            self.plot_widget.getAxis("bottom").setTicks([ticks])
+
+            # Back-to-front topological order: Z_max -> Z_0
+            for pos in reversed(range(num_cols)):
+                name = names[pos]
+                vals = np.array(group_data[name], dtype=np.float64)
+                if len(vals) == 0:
+                    continue
+
+                has_custom_color = name in self.custom_series_colors
+                custom_color = self.custom_series_colors.get(name)
+                custom_opacity = self.custom_series_opacities.get(name, 1.0 if is_grayscale else 0.8)
+
+                if is_grayscale and not has_custom_color:
+                    base_color = QColor(60 + (pos * 40) % 160, 60 + (pos * 40) % 160, 60 + (pos * 40) % 160)
+                else:
+                    base_color = custom_color or self.COLOR_PALETTE[pos % len(self.COLOR_PALETTE)]
+
+                alpha = int(round(custom_opacity * 255))
+                front_color = QColor(base_color)
+                front_color.setAlpha(alpha)
+                top_color = base_color.lighter(115)
+                top_color.setAlpha(alpha)
+                side_color = base_color.darker(120)
+                side_color.setAlpha(alpha)
+
+                front_brush = QBrush(front_color)
+                top_brush = QBrush(top_color)
+                side_brush = QBrush(side_color)
+
+                front_pen = pg.mkPen(base_color.darker(140), width=1.0)
+                top_pen = pg.mkPen(base_color.darker(130), width=1.0)
+                side_pen = pg.mkPen(base_color.darker(150), width=1.0)
+                err_pen = pg.mkPen(base_color.darker(160), width=1.5)
+
+                mean = float(np.mean(vals))
+                if len(vals) > 1:
+                    sd = float(np.std(vals, ddof=1))
+                    sem = sd / np.sqrt(len(vals))
+                    if error_label == "SD":
+                        err_val = sd
+                    elif error_label == "95% CI":
+                        try:
+                            from scipy import stats
+                            t_crit = float(stats.t.ppf(0.975, df=len(vals) - 1))
+                            err_val = sem * t_crit
+                        except Exception:
+                            err_val = sem * 1.96
+                    else:
+                        err_val = sem
+                else:
+                    err_val = 0.0
+
+                z = pos
+                dx_z = float(z * np.cos(theta) * d)
+                dy_z = float(z * np.sin(theta) * d)
+
+                x_center = pos
+                x_l = x_center - bar_w / 2.0 + dx_z
+                x_r = x_center + bar_w / 2.0 + dx_z
+                y_b = dy_z
+                y_t = mean + dy_z
+
+                # Top face
+                top_poly = QPolygonF([
+                    QPointF(x_l, y_t),
+                    QPointF(x_r, y_t),
+                    QPointF(x_r + delta_x, y_t + delta_y),
+                    QPointF(x_l + delta_x, y_t + delta_y),
+                ])
+                top_item = QGraphicsPolygonItem(top_poly)
+                top_item.setBrush(top_brush)
+                top_item.setPen(top_pen)
+                self.plot_widget.addItem(top_item)
+
+                # Side face (right)
+                side_poly = QPolygonF([
+                    QPointF(x_r, y_b),
+                    QPointF(x_r, y_t),
+                    QPointF(x_r + delta_x, y_t + delta_y),
+                    QPointF(x_r + delta_x, y_b + delta_y),
+                ])
+                side_item = QGraphicsPolygonItem(side_poly)
+                side_item.setBrush(side_brush)
+                side_item.setPen(side_pen)
+                self.plot_widget.addItem(side_item)
+
+                # Front face
+                front_poly = QPolygonF([
+                    QPointF(x_l, y_b),
+                    QPointF(x_r, y_b),
+                    QPointF(x_r, y_t),
+                    QPointF(x_l, y_t),
+                ])
+                front_item = QGraphicsPolygonItem(front_poly)
+                front_item.setBrush(front_brush)
+                front_item.setPen(front_pen)
+                self.plot_widget.addItem(front_item)
+
+                # Error whiskers on front face
+                if err_val > 0:
+                    top_err = np.array([err_val])
+                    bot_err = np.zeros_like(top_err) if self.whisker_direction == "Upper (+) Only" else top_err
+                    err = pg.ErrorBarItem(
+                        x=np.array([(x_l + x_r) / 2.0]),
+                        y=np.array([y_t]),
+                        top=top_err,
+                        bottom=bot_err,
+                        pen=err_pen,
+                        beam=0.1,
+                    )
+                    self.plot_widget.addItem(err)
+
+        self._render_analysis_overlays()
+
     def _render_xy_spikes_and_curve(self) -> None:
         """
         Renders hybrid XY graphs where one Y dataset renders as vertical bar spikes/columns
@@ -1426,4 +1775,5 @@ class ScientificPlotCanvas(QWidget):
 
 
 # Alias for backward compatibility
+ScientificPlotCanvas.compute_isometric_projection = staticmethod(compute_isometric_projection)
 GraphCanvasWidget = ScientificPlotCanvas

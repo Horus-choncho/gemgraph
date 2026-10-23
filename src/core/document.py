@@ -87,6 +87,15 @@ class PrismDocument:
             if isinstance(self.sheets[sid], GraphSheet)
         ]
 
+    @property
+    def layouts(self) -> List[Any]:
+        """Returns all PageLayout instances in the document."""
+        return [
+            self.sheets[sid]
+            for sid in self.sheet_order
+            if self.sheets[sid].sheet_type == SheetType.LAYOUT
+        ]
+
     def has_path(self, start_id: str, target_id: str) -> bool:
         """Returns True if there is a directed path from start_id to target_id."""
         visited = set()
@@ -492,6 +501,31 @@ class PrismDocument:
             self.register_dependency(result_sheet_id, sheet_id)
         return sheet
 
+    def create_layout(
+        self,
+        title: Optional[str] = None,
+        page_format: str = "A4",
+        orientation: str = "Portrait",
+        template: str = "4 (2x2 Quadrants)",
+        template_preset: Optional[str] = None,
+    ) -> Any:
+        """Creates and registers a new PageLayout sheet."""
+        from src.core.layout import PageLayout, create_template_placeholders
+        tpl = template_preset if template_preset is not None else template
+        sheet_count = len(self.get_sheets_by_type(SheetType.LAYOUT)) + 1
+        name = title or f"Layout {sheet_count}"
+        sheet_id = f"layout_{uuid.uuid4().hex[:8]}"
+        placeholders = create_template_placeholders(tpl)
+        layout = PageLayout(
+            id=sheet_id,
+            name=name,
+            page_format=page_format,
+            orientation=orientation,
+            placeholders=placeholders,
+        )
+        self.add_sheet(layout)
+        return layout
+
     def to_dict(self) -> Dict[str, Any]:
         """Serializes document to JSON structure."""
         return {
@@ -519,6 +553,9 @@ class PrismDocument:
                 sheet = ResultSheet.from_dict(s_data)
             elif stype == SheetType.GRAPH.value:
                 sheet = GraphSheet.from_dict(s_data)
+            elif stype == SheetType.LAYOUT.value:
+                from src.core.layout import PageLayout
+                sheet = PageLayout.from_dict(s_data)
             else:
                 continue
             doc.sheets[sheet.sheet_id] = sheet

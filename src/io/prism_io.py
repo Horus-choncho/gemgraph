@@ -38,6 +38,7 @@ class PrismIO:
         info_uids: List[str] = []
         graph_uids: List[str] = []
         result_uids: List[str] = []
+        layout_uids: List[str] = []
 
         for sid in document.sheet_order:
             s = document.sheets.get(sid)
@@ -51,6 +52,8 @@ class PrismIO:
                 graph_uids.append(sid)
             elif s.sheet_type == SheetType.RESULTS:
                 result_uids.append(sid)
+            elif s.sheet_type == SheetType.LAYOUT:
+                layout_uids.append(sid)
 
         active_data = None
         if document.active_sheet_id and document.active_sheet_id in document.sheets:
@@ -74,7 +77,9 @@ class PrismIO:
                     "title": s.title,
                     "type": "table" if s.sheet_type == SheetType.DATA else (
                         "info" if s.sheet_type == SheetType.INFO else (
-                            "graph" if s.sheet_type == SheetType.GRAPH else "result"
+                            "graph" if s.sheet_type == SheetType.GRAPH else (
+                                "layout" if s.sheet_type == SheetType.LAYOUT else "result"
+                            )
                         )
                     ),
                 }
@@ -85,6 +90,7 @@ class PrismIO:
                 "info": info_uids,
                 "graphs": graph_uids,
                 "results": result_uids,
+                "layouts": layout_uids,
             },
             "sheetOrder": document.sheet_order,
             "uiSettings": {
@@ -277,6 +283,10 @@ class PrismIO:
                         "raw_result_data": sheet.raw_result_data,
                     }
                     zf.writestr(f"results/{sheet.sheet_id}/sheet.json", json.dumps(res_meta, indent=2))
+
+                elif sheet.sheet_type == SheetType.LAYOUT or hasattr(sheet, "placeholders"):
+                    layout_meta = sheet.to_dict()
+                    zf.writestr(f"layouts/{sheet.sheet_id}/sheet.json", json.dumps(layout_meta, indent=2))
 
     @classmethod
     def load(cls, file_path: str) -> PrismDocument:
@@ -601,6 +611,9 @@ class PrismIO:
                     sheet = ResultSheet.from_dict(s_data)
                 elif stype == SheetType.GRAPH.value:
                     sheet = GraphSheet.from_dict(s_data)
+                elif stype == SheetType.LAYOUT.value:
+                    from src.core.layout import PageLayout
+                    sheet = PageLayout.from_dict(s_data)
                 else:
                     continue
                 doc.sheets[sheet.sheet_id] = sheet
@@ -1030,6 +1043,20 @@ class PrismIO:
             )
             doc.sheets[r_uid] = res_sheet
             doc.sheet_order.append(r_uid)
+
+        # 5. Load Layout Sheets (if present)
+        layout_sheet_uids = sheets_dict.get("layouts", []) if isinstance(sheets_dict, dict) else []
+        for l_uid in layout_sheet_uids:
+            sheet_json_path = f"layouts/{l_uid}/sheet.json"
+            if sheet_json_path not in zf.namelist():
+                sheet_json_path = f"data/sheets/{l_uid}.json"
+            if sheet_json_path not in zf.namelist():
+                continue
+            l_data = json.loads(zf.read(sheet_json_path).decode("utf-8"))
+            from src.core.layout import PageLayout
+            layout_sheet = PageLayout.from_dict(l_data)
+            doc.sheets[l_uid] = layout_sheet
+            doc.sheet_order.append(l_uid)
 
         # Respect explicit sheet order if provided in manifest
         explicit_order = manifest.get("sheetOrder") or manifest.get("sheetsOrder")

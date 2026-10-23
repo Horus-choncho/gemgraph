@@ -20,10 +20,11 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QSizeF, Qt
-from PyQt6.QtGui import QColor, QImage, QPainter, QPageSize, QPdfWriter, QTextDocument
+from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QRectF, QSizeF, Qt
+from PyQt6.QtGui import QColor, QImage, QPainter, QPageLayout, QPageSize, QPdfWriter, QTextDocument
 
 from src.core.document import PrismDocument
+from src.core.layout import PageLayout, render_layout_to_image, render_layout_to_png_bytes
 from src.core.sheet import DataSheet, GraphSheet, InfoSheet, ResultSheet, SheetType
 from src.core.table import DataTable
 
@@ -460,11 +461,12 @@ class OfficeExporter:
 
     def _get_export_items(
         self, selected_sheet_ids: Optional[List[str]]
-    ) -> Tuple[List[InfoSheet], List[DataSheet], List[ResultSheet], List[GraphSheet]]:
+    ) -> Tuple[List[InfoSheet], List[DataSheet], List[ResultSheet], List[GraphSheet], List[PageLayout]]:
         info_sheets: List[InfoSheet] = []
         data_sheets: List[DataSheet] = []
         result_sheets: List[ResultSheet] = []
         graph_sheets: List[GraphSheet] = []
+        layout_sheets: List[PageLayout] = []
 
         target_ids = set(selected_sheet_ids) if selected_sheet_ids is not None else set(self.document.sheet_order)
 
@@ -482,21 +484,30 @@ class OfficeExporter:
                 result_sheets.append(sheet)
             elif sheet.sheet_type == SheetType.GRAPH and isinstance(sheet, GraphSheet):
                 graph_sheets.append(sheet)
+            elif sheet.sheet_type == SheetType.LAYOUT and isinstance(sheet, PageLayout):
+                layout_sheets.append(sheet)
 
-        return info_sheets, data_sheets, result_sheets, graph_sheets
+        return info_sheets, data_sheets, result_sheets, graph_sheets, layout_sheets
 
     # -------------------------------------------------------------------------
     # 1. Word Document (.docx)
     # -------------------------------------------------------------------------
     def export_docx(self, file_path: str, selected_sheet_ids: Optional[List[str]] = None) -> str:
-        info_sheets, data_sheets, result_sheets, graph_sheets = self._get_export_items(selected_sheet_ids)
+        info_sheets, data_sheets, result_sheets, graph_sheets, layout_sheets = self._get_export_items(selected_sheet_ids)
 
-        graph_images: List[Tuple[str, bytes]] = []
-        target_graphs = graph_sheets if graph_sheets else data_sheets
+        figure_images: List[Tuple[str, bytes, bool]] = []
+        target_graphs = graph_sheets if graph_sheets else (data_sheets if not layout_sheets else [])
         for g in target_graphs:
             try:
                 png_bytes = render_graph_to_png_bytes(g, self.document, self.graph_canvas)
-                graph_images.append((g.title, png_bytes))
+                figure_images.append((g.title, png_bytes, False))
+            except Exception:
+                pass
+
+        for l in layout_sheets:
+            try:
+                png_bytes = render_layout_to_png_bytes(l, document=self.document, dpi=300, graph_canvas=self.graph_canvas)
+                figure_images.append((l.title, png_bytes, True))
             except Exception:
                 pass
 
@@ -530,7 +541,7 @@ class OfficeExporter:
                 '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
                 '  <Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>',
             ]
-            for idx, _ in enumerate(graph_images, 1):
+            for idx, _ in enumerate(figure_images, 1):
                 doc_rels.append(
                     f'  <Relationship Id="rIdImg{idx}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image{idx}.png"/>'
                 )
@@ -538,7 +549,7 @@ class OfficeExporter:
             zf.writestr("word/_rels/document.xml.rels", "\n".join(doc_rels))
 
             # Write media images
-            for idx, (_, png_data) in enumerate(graph_images, 1):
+            for idx, (_, png_data, _) in enumerate(figure_images, 1):
                 zf.writestr(f"word/media/image{idx}.png", png_data)
 
             # word/styles.xml
@@ -653,11 +664,12 @@ class OfficeExporter:
                             body_elems.append('</w:tr>')
                         body_elems.append('</w:tbl>')
 
-            # Embedded Graph Images
-            for idx, (g_title, _) in enumerate(graph_images, 1):
-                body_elems.append(f'<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Graph: {sanitize_xml(g_title)}</w:t></w:r></w:p>')
-                cx = 5486400  # 6 inches in EMU
-                cy = 3657600  # 4 inches in EMU
+            # Embedded Figure Images (Graphs & Page Layouts)
+            for idx, (f_title, _, is_layout) in enumerate(figure_images, 1):
+                type_label = "Page Layout" if is_layout else "Graph"
+                body_elems.append(f'<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>{type_label}: {sanitize_xml(f_title)}</w:t></w:r></w:p>')
+                cx = 5943600 if is_layout else 5486400  # 6.5 in or 6.0 in in EMU
+                cy = 4457700 if is_layout else 3657600  # 4.875 in or 4.0 in in EMU
                 drawing_xml = (
                     f'<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">'
                     f'<wp:extent cx="{cx}" cy="{cy}"/>'
@@ -671,6 +683,10 @@ class OfficeExporter:
                     f'</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>'
                 )
                 body_elems.append(drawing_xml)
+                body_elems.append(
+                    f'<w:p><w:r><w:rPr><w:i/></w:rPr><w:t>Figure {idx}: {sanitize_xml(f_title)}'
+                    f'{" (Layout Panel)" if is_layout else ""}</w:t></w:r></w:p>'
+                )
 
             document_xml = (
                 '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
@@ -689,14 +705,21 @@ class OfficeExporter:
     # 2. OpenDocument Text (.odt)
     # -------------------------------------------------------------------------
     def export_odt(self, file_path: str, selected_sheet_ids: Optional[List[str]] = None) -> str:
-        info_sheets, data_sheets, result_sheets, graph_sheets = self._get_export_items(selected_sheet_ids)
+        info_sheets, data_sheets, result_sheets, graph_sheets, layout_sheets = self._get_export_items(selected_sheet_ids)
 
-        graph_images: List[Tuple[str, bytes]] = []
-        target_graphs = graph_sheets if graph_sheets else data_sheets
+        figure_images: List[Tuple[str, bytes, bool]] = []
+        target_graphs = graph_sheets if graph_sheets else (data_sheets if not layout_sheets else [])
         for g in target_graphs:
             try:
                 png_bytes = render_graph_to_png_bytes(g, self.document, self.graph_canvas)
-                graph_images.append((g.title, png_bytes))
+                figure_images.append((g.title, png_bytes, False))
+            except Exception:
+                pass
+
+        for l in layout_sheets:
+            try:
+                png_bytes = render_layout_to_png_bytes(l, document=self.document, dpi=300, graph_canvas=self.graph_canvas)
+                figure_images.append((l.title, png_bytes, True))
             except Exception:
                 pass
 
@@ -711,7 +734,7 @@ class OfficeExporter:
                 '  <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>',
                 '  <manifest:file-entry manifest:full-path="styles.xml" manifest:media-type="text/xml"/>',
             ]
-            for idx, _ in enumerate(graph_images, 1):
+            for idx, _ in enumerate(figure_images, 1):
                 manifest_entries.append(
                     f'  <manifest:file-entry manifest:full-path="Pictures/image{idx}.png" manifest:media-type="image/png"/>'
                 )
@@ -724,7 +747,7 @@ class OfficeExporter:
             zf.writestr("META-INF/manifest.xml", manifest_xml)
 
             # Write Pictures
-            for idx, (_, png_data) in enumerate(graph_images, 1):
+            for idx, (_, png_data, _) in enumerate(figure_images, 1):
                 zf.writestr(f"Pictures/image{idx}.png", png_data)
 
             # 3. styles.xml
@@ -861,12 +884,19 @@ class OfficeExporter:
                             text_body.append('</table:table-row>')
                         text_body.append('</table:table>')
 
-            for idx, (g_title, _) in enumerate(graph_images, 1):
-                text_body.append(f'<text:h text:outline-level="2">Graph: {sanitize_xml(g_title)}</text:h>')
+            for idx, (f_title, _, is_layout) in enumerate(figure_images, 1):
+                type_label = "Page Layout" if is_layout else "Graph"
+                text_body.append(f'<text:h text:outline-level="2">{type_label}: {sanitize_xml(f_title)}</text:h>')
+                w_cm = "16cm" if is_layout else "15cm"
+                h_cm = "12cm" if is_layout else "10cm"
                 text_body.append(
-                    f'<text:p><draw:frame draw:name="Graph_{idx}" text:anchor-type="paragraph" svg:width="15cm" svg:height="10cm">'
+                    f'<text:p><draw:frame draw:name="Figure_{idx}" text:anchor-type="paragraph" svg:width="{w_cm}" svg:height="{h_cm}">'
                     f'<draw:image xlink:href="Pictures/image{idx}.png" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/>'
                     f'</draw:frame></text:p>'
+                )
+                text_body.append(
+                    f'<text:p><text:span text:style-name="Italic">Figure {idx}: {sanitize_xml(f_title)}'
+                    f'{" (Layout Panel)" if is_layout else ""}</text:span></text:p>'
                 )
 
             content_xml = (
@@ -893,7 +923,7 @@ class OfficeExporter:
     # 3. Excel Workbook (.xlsx)
     # -------------------------------------------------------------------------
     def export_xlsx(self, file_path: str, selected_sheet_ids: Optional[List[str]] = None) -> str:
-        info_sheets, data_sheets, result_sheets, graph_sheets = self._get_export_items(selected_sheet_ids)
+        info_sheets, data_sheets, result_sheets, graph_sheets, layout_sheets = self._get_export_items(selected_sheet_ids)
 
         worksheets: List[Tuple[str, List[List[Any]]]] = []
 
@@ -933,13 +963,25 @@ class OfficeExporter:
         graph_images: List[Tuple[str, bytes]] = []
         graph_sheet_indices: List[Tuple[int, int]] = []  # (worksheet_idx_1based, image_idx_1based)
 
-        target_graphs = graph_sheets if graph_sheets else data_sheets
+        target_graphs = graph_sheets if graph_sheets else (data_sheets if not layout_sheets else [])
         for g in target_graphs:
             try:
                 png_bytes = render_graph_to_png_bytes(g, self.document, self.graph_canvas)
                 graph_images.append((g.title, png_bytes))
                 g_tab_name = sanitize_sheet_name(f"Graph_{g.title}")
                 worksheets.append((g_tab_name, [[f"Graph: {g.title}"]]))
+                img_idx = len(graph_images)
+                ws_idx = len(worksheets)
+                graph_sheet_indices.append((ws_idx, img_idx))
+            except Exception:
+                pass
+
+        for l in layout_sheets:
+            try:
+                png_bytes = render_layout_to_png_bytes(l, document=self.document, dpi=300, graph_canvas=self.graph_canvas)
+                graph_images.append((f"Layout_{l.title}", png_bytes))
+                l_tab_name = sanitize_sheet_name(f"Layout_{l.title}")
+                worksheets.append((l_tab_name, [[f"Layout: {l.title}"]]))
                 img_idx = len(graph_images)
                 ws_idx = len(worksheets)
                 graph_sheet_indices.append((ws_idx, img_idx))
@@ -1116,7 +1158,7 @@ class OfficeExporter:
     # 4. OpenDocument Spreadsheet (.ods)
     # -------------------------------------------------------------------------
     def export_ods(self, file_path: str, selected_sheet_ids: Optional[List[str]] = None) -> str:
-        info_sheets, data_sheets, result_sheets, graph_sheets = self._get_export_items(selected_sheet_ids)
+        info_sheets, data_sheets, result_sheets, graph_sheets, layout_sheets = self._get_export_items(selected_sheet_ids)
 
         tables: List[Tuple[str, List[List[Any]]]] = []
 
@@ -1149,13 +1191,20 @@ class OfficeExporter:
                     t_rows.append(row_data)
                 tables.append((name, t_rows))
 
-        # Render graph sheets to PNG bytes
+        # Render graph and layout sheets to PNG bytes
         graph_images: List[Tuple[str, bytes]] = []
-        target_graphs = graph_sheets if graph_sheets else data_sheets
+        target_graphs = graph_sheets if graph_sheets else (data_sheets if not layout_sheets else [])
         for g in target_graphs:
             try:
                 png_bytes = render_graph_to_png_bytes(g, self.document, self.graph_canvas)
                 graph_images.append((g.title, png_bytes))
+            except Exception:
+                pass
+
+        for l in layout_sheets:
+            try:
+                png_bytes = render_layout_to_png_bytes(l, document=self.document, dpi=300, graph_canvas=self.graph_canvas)
+                graph_images.append((f"Layout_{l.title}", png_bytes))
             except Exception:
                 pass
 
@@ -1273,7 +1322,35 @@ class OfficeExporter:
     # 5. Portable Document Format (.pdf)
     # -------------------------------------------------------------------------
     def export_pdf(self, file_path: str, selected_sheet_ids: Optional[List[str]] = None) -> str:
-        info_sheets, data_sheets, result_sheets, graph_sheets = self._get_export_items(selected_sheet_ids)
+        info_sheets, data_sheets, result_sheets, graph_sheets, layout_sheets = self._get_export_items(selected_sheet_ids)
+
+        # If ONLY layout sheets are requested for PDF export, render each layout at 300 DPI on its own page
+        # using QPdfWriter and QPainter directly to preserve exact physical page dimensions and aspect ratios.
+        if layout_sheets and not (info_sheets or data_sheets or result_sheets or graph_sheets):
+            writer = QPdfWriter(file_path)
+            writer.setResolution(300)
+            painter = QPainter(writer)
+            try:
+                for idx, l in enumerate(layout_sheets):
+                    if idx > 0:
+                        writer.newPage()
+                    fmt_lower = l.page_format.lower()
+                    if "letter" in fmt_lower:
+                        writer.setPageSize(QPageSize(QPageSize.PageSizeId.Letter))
+                    else:
+                        writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+
+                    if l.orientation.lower() == "landscape":
+                        writer.setPageOrientation(QPageLayout.Orientation.Landscape)
+                    else:
+                        writer.setPageOrientation(QPageLayout.Orientation.Portrait)
+
+                    img = render_layout_to_image(l, document=self.document, dpi=300, graph_canvas=self.graph_canvas)
+                    page_rect = QRectF(0, 0, writer.width(), writer.height())
+                    painter.drawImage(page_rect, img)
+            finally:
+                painter.end()
+            return file_path
 
         html_parts: List[str] = [
             """<!DOCTYPE html>
@@ -1355,7 +1432,7 @@ class OfficeExporter:
                     html_parts.append("</table>")
 
         # Graphs
-        target_graphs = graph_sheets if graph_sheets else data_sheets
+        target_graphs = graph_sheets if graph_sheets else (data_sheets if not layout_sheets else [])
         for g in target_graphs:
             html_parts.append(f"<h2>Graph: {sanitize_xml(g.title)}</h2>")
             try:
@@ -1364,6 +1441,19 @@ class OfficeExporter:
                 html_parts.append(f"<div class='graph-container'><img src='data:image/png;base64,{b64_str}' /></div>")
             except Exception as e:
                 html_parts.append(f"<p><i>(Graph render unavailable: {sanitize_xml(str(e))})</i></p>")
+
+        # Page Layouts
+        for idx, l in enumerate(layout_sheets, 1):
+            html_parts.append(f"<h2>Page Layout: {sanitize_xml(l.title)}</h2>")
+            try:
+                png_bytes = render_layout_to_png_bytes(l, document=self.document, dpi=300, graph_canvas=self.graph_canvas)
+                b64_str = base64.b64encode(png_bytes).decode("ascii")
+                html_parts.append(
+                    f"<div class='graph-container'><img src='data:image/png;base64,{b64_str}' />"
+                    f"<p><i>Figure {len(target_graphs) + idx}: {sanitize_xml(l.title)} (Layout Panel)</i></p></div>"
+                )
+            except Exception as e:
+                html_parts.append(f"<p><i>(Layout render unavailable: {sanitize_xml(str(e))})</i></p>")
 
         html_parts.append("</body></html>")
         full_html = "\n".join(html_parts)
