@@ -342,13 +342,13 @@ def align_placeholders(
     elif alignment in ("center", "centers"):
         mean_cx = sum(p.rect[0] + p.rect[2] / 2.0 for p in placeholders) / len(placeholders)
         for p in placeholders:
-            new_x = max(0.0, mean_cx - p.rect[2] / 2.0)
+            new_x = max(0.0, min(1.0 - p.rect[2], mean_cx - p.rect[2] / 2.0))
             p.rect = (round(new_x, 4), p.rect[1], p.rect[2], p.rect[3])
 
     elif alignment in ("right", "rights"):
         max_r = max(p.rect[0] + p.rect[2] for p in placeholders)
         for p in placeholders:
-            new_x = max(0.0, max_r - p.rect[2])
+            new_x = max(0.0, min(1.0 - p.rect[2], max_r - p.rect[2]))
             p.rect = (round(new_x, 4), p.rect[1], p.rect[2], p.rect[3])
 
     elif alignment in ("top", "tops"):
@@ -359,13 +359,13 @@ def align_placeholders(
     elif alignment in ("middle", "middles"):
         mean_cy = sum(p.rect[1] + p.rect[3] / 2.0 for p in placeholders) / len(placeholders)
         for p in placeholders:
-            new_y = max(0.0, mean_cy - p.rect[3] / 2.0)
+            new_y = max(0.0, min(1.0 - p.rect[3], mean_cy - p.rect[3] / 2.0))
             p.rect = (p.rect[0], round(new_y, 4), p.rect[2], p.rect[3])
 
     elif alignment in ("bottom", "bottoms"):
         max_b = max(p.rect[1] + p.rect[3] for p in placeholders)
         for p in placeholders:
-            new_y = max(0.0, max_b - p.rect[3])
+            new_y = max(0.0, min(1.0 - p.rect[3], max_b - p.rect[3]))
             p.rect = (p.rect[0], round(new_y, 4), p.rect[2], p.rect[3])
 
 
@@ -386,7 +386,9 @@ def equalize_placeholders(placeholders: List[Placeholder], mode: str) -> None:
     for p in placeholders[1:]:
         new_w = ref_w if mode in ("width", "widths", "both") else p.rect[2]
         new_h = ref_h if mode in ("height", "heights", "both") else p.rect[3]
-        p.rect = (p.rect[0], p.rect[1], round(new_w, 4), round(new_h, 4))
+        new_x = min(p.rect[0], max(0.0, 1.0 - new_w))
+        new_y = min(p.rect[1], max(0.0, 1.0 - new_h))
+        p.rect = (round(new_x, 4), round(new_y, 4), round(new_w, 4), round(new_h, 4))
 
 
 # =============================================================================
@@ -438,7 +440,19 @@ def render_layout_to_image(
                         )
                         graph_img = QImage.fromData(png_data)
                         if not graph_img.isNull():
-                            painter.drawImage(target_rect, graph_img)
+                            painter.save()
+                            painter.setClipRect(target_rect)
+                            scale = max(0.1, min(5.0, getattr(p, "custom_scale", 1.0)))
+                            if abs(scale - 1.0) > 1e-4:
+                                cx = target_rect.center().x()
+                                cy = target_rect.center().y()
+                                sw = target_rect.width() * scale
+                                sh = target_rect.height() * scale
+                                draw_rect = QRectF(cx - sw / 2.0, cy - sh / 2.0, sw, sh)
+                            else:
+                                draw_rect = target_rect
+                            painter.drawImage(draw_rect, graph_img)
+                            painter.restore()
                             rendered = True
                     except Exception:
                         rendered = False
@@ -456,7 +470,7 @@ def render_layout_to_image(
                 label_text = p.linked_graph_title or f"Slot {p.slot_id}: Double-click to assign graph"
                 painter.drawText(target_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, label_text)
 
-        # Draw annotations (Figure letter panels A, B, C, D, titles)
+        # Draw annotations (Figure letter panels A, B, C, D, titles, connector lines)
         for ann in layout.annotations:
             ann_type = ann.get("type", "text")
             if ann_type == "text":
@@ -471,6 +485,18 @@ def render_layout_to_image(
                 painter.setFont(font)
                 painter.setPen(QColor(ann.get("color", "#000000")))
                 painter.drawText(QRectF(ax, ay, aw, ah), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+            elif ann_type in ("line", "connector"):
+                x1 = float(ann.get("x1", 0.0)) * px_w
+                y1 = float(ann.get("y1", 0.0)) * px_h
+                x2 = float(ann.get("x2", 1.0)) * px_w
+                y2 = float(ann.get("y2", 1.0)) * px_h
+                pen_color = QColor(ann.get("color", "#000000"))
+                pen_w = max(1.0, float(ann.get("width", 1.5)) * dpi / 72.0)
+                pen = QPen(pen_color, pen_w)
+                if ann.get("style") == "dash":
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                painter.setPen(pen)
+                painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
     finally:
         painter.end()
@@ -504,10 +530,13 @@ def render_layout_to_pdf(
     """Exports PageLayout to a physical PDF document matching layout dimensions and 300 DPI."""
     writer = QPdfWriter(file_path)
     fmt_lower = layout.page_format.lower()
+    pt_w, pt_h = layout.get_dimensions_pt()
     if "letter" in fmt_lower:
         writer.setPageSize(QPageSize(QPageSize.PageSizeId.Letter))
-    else:
+    elif "a4" in fmt_lower:
         writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+    else:
+        writer.setPageSize(QPageSize(QSizeF(pt_w, pt_h), QPageSize.Unit.Point))
 
     if layout.orientation.lower() == "landscape":
         writer.setPageOrientation(QPageLayout.Orientation.Landscape)
@@ -570,7 +599,19 @@ def render_layout_to_svg(
                         )
                         graph_img = QImage.fromData(png_data)
                         if not graph_img.isNull():
-                            painter.drawImage(target_rect, graph_img)
+                            painter.save()
+                            painter.setClipRect(target_rect)
+                            scale = max(0.1, min(5.0, getattr(p, "custom_scale", 1.0)))
+                            if abs(scale - 1.0) > 1e-4:
+                                cx = target_rect.center().x()
+                                cy = target_rect.center().y()
+                                sw = target_rect.width() * scale
+                                sh = target_rect.height() * scale
+                                draw_rect = QRectF(cx - sw / 2.0, cy - sh / 2.0, sw, sh)
+                            else:
+                                draw_rect = target_rect
+                            painter.drawImage(draw_rect, graph_img)
+                            painter.restore()
                             rendered = True
                     except Exception:
                         rendered = False
@@ -585,7 +626,8 @@ def render_layout_to_svg(
                 painter.drawText(target_rect, Qt.AlignmentFlag.AlignCenter, label)
 
         for ann in layout.annotations:
-            if ann.get("type", "text") == "text":
+            ann_type = ann.get("type", "text")
+            if ann_type == "text":
                 text = ann.get("text", "")
                 ax = float(ann.get("x", 0.0)) * pt_w
                 ay = float(ann.get("y", 0.0)) * pt_h
@@ -596,6 +638,18 @@ def render_layout_to_svg(
                 painter.setFont(font)
                 painter.setPen(QColor(ann.get("color", "#000000")))
                 painter.drawText(QRectF(ax, ay, aw, ah), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+            elif ann_type in ("line", "connector"):
+                x1 = float(ann.get("x1", 0.0)) * pt_w
+                y1 = float(ann.get("y1", 0.0)) * pt_h
+                x2 = float(ann.get("x2", 1.0)) * pt_w
+                y2 = float(ann.get("y2", 1.0)) * pt_h
+                pen_color = QColor(ann.get("color", "#000000"))
+                pen_w = max(1.0, float(ann.get("width", 1.5)))
+                pen = QPen(pen_color, pen_w)
+                if ann.get("style") == "dash":
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                painter.setPen(pen)
+                painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
     finally:
         painter.end()

@@ -224,7 +224,7 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         self.cached_pixmap = None
         self.update()
 
-    def handle_resize(self, handle_index: int, scene_pos: QPointF, shift_pressed: bool) -> None:
+    def handle_resize(self, handle_index: int, scene_pos: QPointF, shift_pressed: bool = False) -> None:
         """Resizes the placeholder rect based on handle drag, with aspect ratio locking support."""
         pos = self.pos()
         r = self.rect()
@@ -234,8 +234,13 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         dx = scene_pos.x() - (pos.x() + r.width())
         dy = scene_pos.y() - (pos.y() + r.height())
 
-        new_x, new_y = pos.x(), pos.y()
-        new_w, new_h = cur_w, cur_h
+        right = pos.x() + cur_w
+        bottom = pos.y() + cur_h
+
+        new_x = pos.x()
+        new_y = pos.y()
+        new_w = cur_w
+        new_h = cur_h
 
         # Compute unconstrained rectangle from handle
         if handle_index == 7:  # BR
@@ -243,28 +248,45 @@ class GraphPlaceholderItem(QGraphicsRectItem):
             new_h = max(40.0, scene_pos.y() - pos.y())
             if self.placeholder.locked_aspect and not shift_pressed:
                 new_h = new_w / aspect
-        elif handle_index == 4:  # MR
-            new_w = max(40.0, scene_pos.x() - pos.x())
-            if self.placeholder.locked_aspect and not shift_pressed:
-                new_h = new_w / aspect
         elif handle_index == 6:  # BC
             new_h = max(40.0, scene_pos.y() - pos.y())
             if self.placeholder.locked_aspect and not shift_pressed:
                 new_w = new_h * aspect
-        elif handle_index == 0:  # TL
-            right = pos.x() + cur_w
-            bottom = pos.y() + cur_h
+                new_x = (pos.x() + cur_w / 2.0) - new_w / 2.0
+        elif handle_index == 5:  # BL
             new_x = min(right - 40.0, scene_pos.x())
-            new_y = min(bottom - 40.0, scene_pos.y())
             new_w = right - new_x
+            new_h = max(40.0, scene_pos.y() - pos.y())
+            if self.placeholder.locked_aspect and not shift_pressed:
+                new_h = new_w / aspect
+        elif handle_index == 4:  # MR
+            new_w = max(40.0, scene_pos.x() - pos.x())
+            if self.placeholder.locked_aspect and not shift_pressed:
+                new_h = new_w / aspect
+                new_y = (pos.y() + cur_h / 2.0) - new_h / 2.0
+        elif handle_index == 3:  # ML
+            new_x = min(right - 40.0, scene_pos.x())
+            new_w = right - new_x
+            if self.placeholder.locked_aspect and not shift_pressed:
+                new_h = new_w / aspect
+                new_y = (pos.y() + cur_h / 2.0) - new_h / 2.0
+        elif handle_index == 2:  # TR
+            new_w = max(40.0, scene_pos.x() - pos.x())
+            new_y = min(bottom - 40.0, scene_pos.y())
             new_h = bottom - new_y
             if self.placeholder.locked_aspect and not shift_pressed:
                 new_h = new_w / aspect
                 new_y = bottom - new_h
-        elif handle_index == 2:  # TR
-            bottom = pos.y() + cur_h
-            new_w = max(40.0, scene_pos.x() - pos.x())
+        elif handle_index == 1:  # TC
             new_y = min(bottom - 40.0, scene_pos.y())
+            new_h = bottom - new_y
+            if self.placeholder.locked_aspect and not shift_pressed:
+                new_w = new_h * aspect
+                new_x = (pos.x() + cur_w / 2.0) - new_w / 2.0
+        elif handle_index == 0:  # TL
+            new_x = min(right - 40.0, scene_pos.x())
+            new_y = min(bottom - 40.0, scene_pos.y())
+            new_w = right - new_x
             new_h = bottom - new_y
             if self.placeholder.locked_aspect and not shift_pressed:
                 new_h = new_w / aspect
@@ -276,11 +298,19 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         new_w = min(self.page_width - new_x, new_w)
         new_h = min(self.page_height - new_y, new_h)
 
-        self.setPos(new_x, new_y)
         self.setRect(0, 0, new_w, new_h)
+        self.setPos(new_x, new_y)
         self._update_handle_positions()
         self._sync_placeholder_from_geometry()
         self.invalidate_cache()
+        if hasattr(self.canvas, "layoutModifiedSignal"):
+            self.canvas.layoutModifiedSignal.emit()
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        self._sync_placeholder_from_geometry()
+        if hasattr(self.canvas, "layoutModifiedSignal"):
+            self.canvas.layoutModifiedSignal.emit()
 
     def mouseDoubleClickEvent(self, event) -> None:
         """Opens AssignGraphDialog to assign, swap, or unassign active graphs."""
@@ -322,7 +352,19 @@ class GraphPlaceholderItem(QGraphicsRectItem):
                         self.cached_pixmap = None
 
             if self.cached_pixmap is not None:
-                painter.drawPixmap(r.toRect(), self.cached_pixmap)
+                painter.save()
+                painter.setClipRect(r)
+                scale = max(0.1, min(5.0, getattr(self.placeholder, "custom_scale", 1.0)))
+                if abs(scale - 1.0) > 1e-4:
+                    cx = r.center().x()
+                    cy = r.center().y()
+                    sw = r.width() * scale
+                    sh = r.height() * scale
+                    draw_rect = QRectF(cx - sw / 2.0, cy - sh / 2.0, sw, sh)
+                else:
+                    draw_rect = r
+                painter.drawPixmap(draw_rect.toRect(), self.cached_pixmap)
+                painter.restore()
                 painter.setPen(QPen(QColor(215, 215, 215), 1.0))
                 painter.drawRect(r)
             else:
@@ -359,6 +401,7 @@ class LayoutCanvas(QGraphicsView):
     """
 
     placeholderAssigned = pyqtSignal(int)
+    layoutModifiedSignal = pyqtSignal()
     selectionChangedSignal = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -379,10 +422,16 @@ class LayoutCanvas(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
 
-        self.scene.selectionChanged.connect(lambda: self.selectionChangedSignal.emit())
+        self.scene.selectionChanged.connect(self._on_scene_selection_changed)
 
         self.panning = False
         self.pan_start = QPointF()
+
+    def _on_scene_selection_changed(self) -> None:
+        try:
+            self.selectionChangedSignal.emit()
+        except (RuntimeError, AttributeError):
+            pass
 
     def set_layout(self, layout: PageLayout, document: Any) -> None:
         """Loads and visualizes a PageLayout document model."""
@@ -391,7 +440,7 @@ class LayoutCanvas(QGraphicsView):
         self.rebuild_scene()
 
     def rebuild_scene(self) -> None:
-        """Constructs physical page surface and interactive graph placeholders."""
+        """Constructs physical page surface, interactive graph placeholders, and annotations."""
         self.scene.clear()
         self.placeholder_items.clear()
 
@@ -416,6 +465,34 @@ class LayoutCanvas(QGraphicsView):
             )
             self.scene.addItem(item)
             self.placeholder_items.append(item)
+
+        # Add annotations (text panels A/B/C/D, connector lines)
+        for ann in getattr(self.current_layout, "annotations", []):
+            ann_type = ann.get("type", "text")
+            if ann_type == "text":
+                text = ann.get("text", "")
+                ax = float(ann.get("x", 0.0)) * page_w
+                ay = float(ann.get("y", 0.0)) * page_h
+                text_item = self.scene.addText(text)
+                font_size = int(ann.get("font_size", 14))
+                font = QFont(ann.get("font_family", "Helvetica"), font_size)
+                font.setBold(bool(ann.get("bold", True)))
+                text_item.setFont(font)
+                text_item.setDefaultTextColor(QColor(ann.get("color", "#000000")))
+                text_item.setPos(ax, ay)
+                text_item.setZValue(5)
+            elif ann_type in ("line", "connector"):
+                x1 = float(ann.get("x1", 0.0)) * page_w
+                y1 = float(ann.get("y1", 0.0)) * page_h
+                x2 = float(ann.get("x2", 1.0)) * page_w
+                y2 = float(ann.get("y2", 1.0)) * page_h
+                pen_color = QColor(ann.get("color", "#000000"))
+                pen_w = max(1.0, float(ann.get("width", 1.5)))
+                pen = QPen(pen_color, pen_w)
+                if ann.get("style") == "dash":
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                line_item = self.scene.addLine(x1, y1, x2, y2, pen)
+                line_item.setZValue(5)
 
         self.fit_page_to_window()
 

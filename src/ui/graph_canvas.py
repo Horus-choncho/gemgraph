@@ -73,6 +73,7 @@ class ScientificPlotCanvas(QWidget):
 
     pinGraphRequested = pyqtSignal()
     freezeToggled = pyqtSignal(bool)
+    graphModified = pyqtSignal()
 
     # Expanded distinct scientific palette
     COLOR_PALETTE = [
@@ -179,6 +180,7 @@ class ScientificPlotCanvas(QWidget):
             GraphType.GROUPED_BARS_POINTS.value,
             GraphType.XY_SPIKES_CURVE.value,
             GraphType.DEPTH_GRAPH.value,
+            GraphType.FLOATING_BARS.value,
         ])
         self.type_combo.currentIndexChanged.connect(self._on_type_changed)
         top_bar.addWidget(self.type_combo)
@@ -438,6 +440,7 @@ class ScientificPlotCanvas(QWidget):
                 if gt.value == self.type_combo.currentText():
                     sheet.graph_type = gt
                     break
+        self.graphModified.emit()
 
     def load_plot_config(
         self,
@@ -527,6 +530,8 @@ class ScientificPlotCanvas(QWidget):
             "Grouped Bars + Replicate Points",
             GraphType.DEPTH_GRAPH.value,
             "Depth Graph (2.5D Isometric)",
+            GraphType.FLOATING_BARS.value,
+            "Floating Bars (Min to Max)",
         ):
             return True
         if self.current_table and self.current_table.table_type in (TableType.GROUPED, TableType.COLUMN):
@@ -792,6 +797,8 @@ class ScientificPlotCanvas(QWidget):
         selected_type = self.type_combo.currentText()
         if selected_type in (GraphType.DEPTH_GRAPH.value, "Depth Graph (2.5D Isometric)"):
             self._render_depth_graph()
+        elif selected_type in (GraphType.FLOATING_BARS.value, "Floating Bars (Min to Max)"):
+            self._render_floating_bars()
         elif (
             selected_type in (GraphType.GROUPED_BARS_POINTS.value, "Grouped Bars + Replicate Points")
             or (self.current_table.table_type == TableType.GROUPED and selected_type not in (GraphType.XY_SPIKES_CURVE.value, GraphType.XY_SCATTER_CURVE.value))
@@ -1327,8 +1334,8 @@ class ScientificPlotCanvas(QWidget):
                     self.plot_widget.plotItem.legend.addItem(dummy, g_title)
 
                 z = g_idx
-                dx_z = float(z * np.cos(theta) * d)
-                dy_z = float(z * np.sin(theta) * d)
+                dx_z, dy_z = compute_isometric_projection(0.0, 0.0, z, theta=theta, d=d)
+                base_z = (num_groups - g_idx) * 10
 
                 for x_idx, r in enumerate(active_rows):
                     valid_vals = []
@@ -1374,6 +1381,7 @@ class ScientificPlotCanvas(QWidget):
                     top_item = QGraphicsPolygonItem(top_poly)
                     top_item.setBrush(top_brush)
                     top_item.setPen(top_pen)
+                    top_item.setZValue(base_z + 1)
                     self.plot_widget.addItem(top_item)
 
                     # Side face (right)
@@ -1386,6 +1394,7 @@ class ScientificPlotCanvas(QWidget):
                     side_item = QGraphicsPolygonItem(side_poly)
                     side_item.setBrush(side_brush)
                     side_item.setPen(side_pen)
+                    side_item.setZValue(base_z + 2)
                     self.plot_widget.addItem(side_item)
 
                     # Front face
@@ -1398,6 +1407,7 @@ class ScientificPlotCanvas(QWidget):
                     front_item = QGraphicsPolygonItem(front_poly)
                     front_item.setBrush(front_brush)
                     front_item.setPen(front_pen)
+                    front_item.setZValue(base_z + 3)
                     self.plot_widget.addItem(front_item)
 
                     # Error whiskers on front face
@@ -1412,9 +1422,10 @@ class ScientificPlotCanvas(QWidget):
                             pen=err_pen,
                             beam=0.1,
                         )
+                        err.setZValue(base_z + 4)
                         self.plot_widget.addItem(err)
 
-        else:
+        elif table.table_type == TableType.COLUMN:
             # Column Table
             group_data = table.get_all_group_values()
             names = list(group_data.keys())
@@ -1483,8 +1494,8 @@ class ScientificPlotCanvas(QWidget):
                     err_val = 0.0
 
                 z = pos
-                dx_z = float(z * np.cos(theta) * d)
-                dy_z = float(z * np.sin(theta) * d)
+                dx_z, dy_z = compute_isometric_projection(0.0, 0.0, z, theta=theta, d=d)
+                base_z = (num_cols - pos) * 10
 
                 x_center = pos
                 x_l = x_center - bar_w / 2.0 + dx_z
@@ -1502,6 +1513,7 @@ class ScientificPlotCanvas(QWidget):
                 top_item = QGraphicsPolygonItem(top_poly)
                 top_item.setBrush(top_brush)
                 top_item.setPen(top_pen)
+                top_item.setZValue(base_z + 1)
                 self.plot_widget.addItem(top_item)
 
                 # Side face (right)
@@ -1514,6 +1526,7 @@ class ScientificPlotCanvas(QWidget):
                 side_item = QGraphicsPolygonItem(side_poly)
                 side_item.setBrush(side_brush)
                 side_item.setPen(side_pen)
+                side_item.setZValue(base_z + 2)
                 self.plot_widget.addItem(side_item)
 
                 # Front face
@@ -1526,6 +1539,7 @@ class ScientificPlotCanvas(QWidget):
                 front_item = QGraphicsPolygonItem(front_poly)
                 front_item.setBrush(front_brush)
                 front_item.setPen(front_pen)
+                front_item.setZValue(base_z + 3)
                 self.plot_widget.addItem(front_item)
 
                 # Error whiskers on front face
@@ -1540,7 +1554,93 @@ class ScientificPlotCanvas(QWidget):
                         pen=err_pen,
                         beam=0.1,
                     )
+                    err.setZValue(base_z + 4)
                     self.plot_widget.addItem(err)
+
+        else:
+            self._render_xy_graph()
+            return
+
+        self._render_analysis_overlays()
+
+    def _render_floating_bars(self) -> None:
+        """
+        Renders Floating Bars (Min to Max) for Column tables.
+        Each bar spans from min(vals) to max(vals) for the column.
+        """
+        table = self.current_table
+        if table is None:
+            return
+        group_data = table.get_all_group_values() if hasattr(table, "get_all_group_values") else {}
+        names = list(group_data.keys())
+        if not names:
+            return
+
+        self.plot_widget.setLabel("bottom", "Groups", color="black")
+        self.plot_widget.setLabel("left", "Value (Min to Max)", color="black")
+
+        ticks = [(pos, name) for pos, name in enumerate(names)]
+        self.plot_widget.getAxis("bottom").setTicks([ticks])
+
+        is_grayscale = self.is_grayscale_mode
+
+        for pos, name in enumerate(names):
+            vals = np.array(group_data[name], dtype=np.float64)
+            if len(vals) == 0:
+                continue
+
+            has_custom_color = name in self.custom_series_colors
+            custom_color = self.custom_series_colors.get(name)
+            custom_opacity = self.custom_series_opacities.get(name, 1.0 if is_grayscale else 0.8)
+
+            if is_grayscale and not has_custom_color:
+                base_color = QColor(60 + (pos * 40) % 160, 60 + (pos * 40) % 160, 60 + (pos * 40) % 160)
+            else:
+                base_color = custom_color or self.COLOR_PALETTE[pos % len(self.COLOR_PALETTE)]
+
+            alpha = int(round(custom_opacity * 255))
+            bar_color = QColor(base_color)
+            bar_color.setAlpha(alpha)
+            bar_brush = QBrush(bar_color)
+            bar_pen = pg.mkPen(base_color.darker(140), width=1.5)
+
+            min_val = float(np.min(vals))
+            max_val = float(np.max(vals))
+            height = max(1e-6, max_val - min_val)
+
+            bar = pg.BarGraphItem(
+                x=[pos],
+                y0=[min_val],
+                height=[height],
+                width=0.5,
+                brush=bar_brush,
+                pen=bar_pen,
+            )
+            self.plot_widget.addItem(bar)
+
+            # Draw median line inside the floating bar
+            med_val = float(np.median(vals))
+            med_line = pg.PlotCurveItem(
+                x=[pos - 0.25, pos + 0.25],
+                y=[med_val, med_val],
+                pen=pg.mkPen(base_color.darker(160), width=2.0),
+            )
+            self.plot_widget.addItem(med_line)
+
+            # Scatter points
+            if self.show_bar_scatter_points:
+                if len(vals) > 1:
+                    jitter = (np.random.RandomState(42 + pos).rand(len(vals)) - 0.5) * 0.2
+                else:
+                    jitter = np.zeros(len(vals))
+                scatter = pg.ScatterPlotItem(
+                    x=np.full(len(vals), pos) + jitter,
+                    y=vals,
+                    size=7,
+                    pen=pg.mkPen(base_color.darker(140), width=1.0),
+                    brush=pg.mkBrush(base_color),
+                )
+                self.plot_widget.addItem(scatter)
 
         self._render_analysis_overlays()
 

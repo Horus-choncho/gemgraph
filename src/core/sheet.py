@@ -315,6 +315,7 @@ class GraphType(enum.Enum):
     BOX_WHISKER = "Box & Whisker"
     SURVIVAL_CURVE = "Kaplan-Meier Survival"
     DEPTH_GRAPH = "Depth Graph (2.5D Isometric)"
+    FLOATING_BARS = "Floating Bars (Min to Max)"
 
 
 
@@ -413,6 +414,7 @@ def format_pinned_graph_name(
         "Box & Whisker": "Box & Whisker",
         "Kaplan-Meier Survival": "Survival",
         "Depth Graph (2.5D Isometric)": "Depth Graph",
+        "Floating Bars (Min to Max)": "Floating Bars",
     }.get(gt_str, gt_str)
 
     if analysis_model_name:

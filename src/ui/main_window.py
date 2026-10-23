@@ -162,6 +162,7 @@ class MainWindow(QMainWindow):
         self.graph_canvas = GraphCanvasWidget(mediator=self.mediator)
         self.graph_canvas.pinGraphRequested.connect(self.action_pin_graph)
         self.graph_canvas.freezeToggled.connect(self._on_freeze_toggled)
+        self.graph_canvas.graphModified.connect(self.layout_view.refresh_all_snapshots)
 
         # Shell Splitters & Layout Stability
         self.init_interface_shell()
@@ -694,7 +695,15 @@ class MainWindow(QMainWindow):
             sheet = self.document.get_sheet(sheet_id)
             if sheet:
                 sheet.title = new_title.strip()
+                # Update any layout placeholders referencing this sheet
+                for s in self.document.sheets:
+                    if hasattr(s, "placeholders"):
+                        for p in s.placeholders:
+                            if p.linked_graph_id == sheet_id:
+                                p.linked_graph_title = sheet.title
                 self.navigator.populate(self.document)
+                if hasattr(self, "layout_view") and self.layout_view is not None:
+                    self.layout_view.refresh_all_snapshots()
 
     def _delete_navigator_sheet(self, item: QTreeWidgetItem, sheet_id: str) -> None:
         reply = QMessageBox.question(
@@ -788,7 +797,7 @@ class MainWindow(QMainWindow):
             return layout
         return None
 
-    def action_export_layout_image(self) -> None:
+    def action_export_layout_image(self, dpi: Optional[int] = None) -> None:
         """Exports currently active or first layout sheet as high-DPI image."""
         active_sheet = self.document.get_sheet(self.document.active_sheet_id or "")
         from src.core.layout import PageLayout
@@ -817,7 +826,27 @@ class MainWindow(QMainWindow):
             elif ext == "svg":
                 render_layout_to_svg(active_sheet, document=self.document, file_path=file_path)
             else:
-                img = render_layout_to_image(active_sheet, document=self.document, dpi=300)
+                target_dpi = dpi
+                if target_dpi is None:
+                    dpi_choices = ["150 DPI (Screen / Draft)", "300 DPI (Standard Journal Submission)", "600 DPI (High-Resolution Print)"]
+                    chosen, ok = QInputDialog.getItem(
+                        self,
+                        "Resolution (DPI)",
+                        "Select Output Resolution:",
+                        dpi_choices,
+                        1,
+                        False,
+                    )
+                    if ok and chosen:
+                        if "150" in chosen:
+                            target_dpi = 150
+                        elif "600" in chosen:
+                            target_dpi = 600
+                        else:
+                            target_dpi = 300
+                    else:
+                        target_dpi = 300
+                img = render_layout_to_image(active_sheet, document=self.document, dpi=target_dpi)
                 fmt_tag = "TIFF" if ext in ("tif", "tiff") else "PNG"
                 img.save(file_path, fmt_tag)
             QMessageBox.information(self, "Export Complete", f"Successfully exported layout image to:\n{file_path}")

@@ -403,6 +403,12 @@ class PrismDocument:
             if parent and sheet_id in parent.child_sheet_ids:
                 parent.child_sheet_ids.remove(sheet_id)
 
+        # Clean up any layout placeholders referencing this sheet
+        for layout in self.layouts:
+            for p in layout.placeholders:
+                if p.graph_id == sheet_id:
+                    p.unassign_graph()
+
         del self.sheets[sheet_id]
         self.sheet_order.remove(sheet_id)
         if self.active_sheet_id == sheet_id:

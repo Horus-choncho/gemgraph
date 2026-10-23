@@ -379,6 +379,134 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
 
         view.close()
 
+    def test_all_8_resize_handles(self) -> None:
+        """Verifies all 8 resize handles (including 1, 3, 5) transform item rect properly."""
+        layout = self.doc.create_layout("Resize Test", template_preset="1")
+        canvas = LayoutCanvas()
+        canvas.set_layout(layout, self.doc)
+        item = canvas.placeholder_items[0]
+        # Initial position: (100, 100) with size 800x800 on a 1000x1000 page
+        canvas.page_width = 1000.0
+        canvas.page_height = 1000.0
+        item.page_width = 1000.0
+        item.page_height = 1000.0
+        item.setPos(100, 100)
+        item.setRect(0, 0, 800, 800)
+        item.placeholder.locked_aspect = False
+
+        modified_emissions = []
+        canvas.layoutModifiedSignal.connect(lambda: modified_emissions.append(True))
+
+        # Handle 1: Top-Center (TC) -> adjusts top (y and height)
+        item.handle_resize(1, QPointF(500, 200), shift_pressed=True)
+        self.assertAlmostEqual(item.pos().y(), 200, delta=1.0)
+        self.assertAlmostEqual(item.rect().height(), 700, delta=1.0)
+        self.assertGreater(len(modified_emissions), 0)
+
+        # Handle 3: Middle-Left (ML) -> adjusts left (x and width)
+        item.handle_resize(3, QPointF(250, 500), shift_pressed=True)
+        self.assertAlmostEqual(item.pos().x(), 250, delta=1.0)
+        self.assertAlmostEqual(item.rect().width(), 650, delta=1.0)
+
+        # Handle 5: Bottom-Left (BL) -> adjusts bottom and left
+        item.handle_resize(5, QPointF(200, 850), shift_pressed=True)
+        self.assertAlmostEqual(item.pos().x(), 200, delta=1.0)
+        self.assertAlmostEqual(item.pos().y() + item.rect().height(), 850, delta=1.0)
+
+        # Handle 0: Top-Left (TL)
+        item.handle_resize(0, QPointF(150, 150), shift_pressed=True)
+        self.assertAlmostEqual(item.pos().x(), 150, delta=1.0)
+        self.assertAlmostEqual(item.pos().y(), 150, delta=1.0)
+
+        # Handle 2: Top-Right (TR)
+        item.handle_resize(2, QPointF(800, 100), shift_pressed=True)
+        self.assertAlmostEqual(item.pos().x() + item.rect().width(), 800, delta=1.0)
+        self.assertAlmostEqual(item.pos().y(), 100, delta=1.0)
+
+        # Handle 4: Middle-Right (MR)
+        item.handle_resize(4, QPointF(900, 500), shift_pressed=True)
+        self.assertAlmostEqual(item.pos().x() + item.rect().width(), 900, delta=1.0)
+
+        # Handle 6: Bottom-Center (BC)
+        item.handle_resize(6, QPointF(500, 950), shift_pressed=True)
+        self.assertAlmostEqual(item.pos().y() + item.rect().height(), 950, delta=1.0)
+
+        # Handle 7: Bottom-Right (BR)
+        item.handle_resize(7, QPointF(850, 900), shift_pressed=True)
+        self.assertAlmostEqual(item.pos().x() + item.rect().width(), 850, delta=1.0)
+        self.assertAlmostEqual(item.pos().y() + item.rect().height(), 900, delta=1.0)
+
+    def test_slide_pdf_export(self) -> None:
+        """Verifies Slide 16:9 and Slide 4:3 PDF export preserves proper proportions."""
+        layout_16_9 = self.doc.create_layout("Slide 16-9 Layout", template_preset="2 horizontal")
+        layout_16_9.page_format = "Slide (16:9)"
+        layout_16_9.orientation = "landscape"
+
+        layout_4_3 = self.doc.create_layout("Slide 4-3 Layout", template_preset="2 vertical")
+        layout_4_3.page_format = "Slide (4:3)"
+        layout_4_3.orientation = "landscape"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_16_9 = os.path.join(tmpdir, "slide_16_9.pdf")
+            render_layout_to_pdf(layout_16_9, document=self.doc, file_path=pdf_16_9)
+            self.assertTrue(os.path.exists(pdf_16_9))
+            self.assertGreater(os.path.getsize(pdf_16_9), 1000)
+
+            pdf_4_3 = os.path.join(tmpdir, "slide_4_3.pdf")
+            render_layout_to_pdf(layout_4_3, document=self.doc, file_path=pdf_4_3)
+            self.assertTrue(os.path.exists(pdf_4_3))
+            self.assertGreater(os.path.getsize(pdf_4_3), 1000)
+
+    def test_floating_bars_graph_rendering(self) -> None:
+        """Verifies Floating Bars (Min to Max) graph type renders properly without exceptions."""
+        fb_sheet = self.doc.create_graph_sheet("Floating Bars Graph", source_sheet_id=self.data_sheet.sheet_id)
+        fb_sheet.graph_type = GraphType.FLOATING_BARS
+
+        canvas = ScientificPlotCanvas()
+        canvas.update_data(self.data_sheet.table, sheet=fb_sheet)
+        self.assertEqual(canvas.type_combo.currentText(), GraphType.FLOATING_BARS.value)
+
+        # Render layout containing floating bars
+        layout = self.doc.create_layout("Floating Bars Layout", template_preset="1")
+        layout.placeholders[0].graph_id = fb_sheet.sheet_id
+
+        img = render_layout_to_image(layout, document=self.doc, dpi=150, graph_canvas=canvas)
+        self.assertFalse(img.isNull())
+        self.assertGreater(img.width(), 100)
+        self.assertGreater(img.height(), 100)
+
+    def test_layout_annotations_rendering(self) -> None:
+        """Verifies connector lines and text annotations render to image and SVG."""
+        layout = self.doc.create_layout("Annotated Layout", template_preset="1")
+        layout.annotations = [
+            {"type": "text", "text": "Panel A", "x": 0.05, "y": 0.05, "font_size": 16, "color": "#112233"},
+            {"type": "connector", "x1": 0.1, "y1": 0.1, "x2": 0.6, "y2": 0.6, "color": "#FF0000", "width": 2},
+            {"type": "line", "x1": 0.2, "y1": 0.3, "x2": 0.8, "y2": 0.3, "color": "#00FF00", "width": 1},
+        ]
+        img = render_layout_to_image(layout, document=self.doc, dpi=150)
+        self.assertFalse(img.isNull())
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            svg_path = os.path.join(tmpdir, "annotated.svg")
+            render_layout_to_svg(layout, document=self.doc, file_path=svg_path)
+            self.assertTrue(os.path.exists(svg_path))
+            with open(svg_path, "r", encoding="utf-8") as f:
+                svg_content = f.read()
+            self.assertIn("Panel A", svg_content)
+            self.assertTrue("<line" in svg_content or "<polyline" in svg_content)
+
+    def test_sheet_deletion_unassigns_layout_placeholders(self) -> None:
+        """Verifies that removing a sheet cleanly unassigns any layout placeholders linking to it."""
+        layout = self.doc.create_layout("Unassign Test", template_preset="2 vertical")
+        layout.placeholders[0].graph_id = self.graph_sheet.sheet_id
+        layout.placeholders[0].linked_graph_title = self.graph_sheet.title
+        self.assertEqual(layout.placeholders[0].graph_id, self.graph_sheet.sheet_id)
+
+        # Delete the graph sheet
+        self.doc.remove_sheet(self.graph_sheet.sheet_id)
+        self.assertIsNone(layout.placeholders[0].graph_id)
+        self.assertIsNone(layout.placeholders[0].linked_graph_title)
+
 
 if __name__ == "__main__":
     unittest.main()

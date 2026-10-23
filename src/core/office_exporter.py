@@ -1334,11 +1334,8 @@ class OfficeExporter:
                 for idx, l in enumerate(layout_sheets):
                     if idx > 0:
                         writer.newPage()
-                    fmt_lower = l.page_format.lower()
-                    if "letter" in fmt_lower:
-                        writer.setPageSize(QPageSize(QPageSize.PageSizeId.Letter))
-                    else:
-                        writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+                    pt_w, pt_h = l.get_dimensions_pt()
+                    writer.setPageSize(QPageSize(QSizeF(pt_w, pt_h), QPageSize.Unit.Point))
 
                     if l.orientation.lower() == "landscape":
                         writer.setPageOrientation(QPageLayout.Orientation.Landscape)

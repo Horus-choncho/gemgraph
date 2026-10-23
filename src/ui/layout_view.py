@@ -162,6 +162,7 @@ class LayoutView(QWidget):
         # Layout Presentation Canvas
         self.canvas = LayoutCanvas(self)
         self.canvas.placeholderAssigned.connect(lambda slot: self.layoutModified.emit())
+        self.canvas.layoutModifiedSignal.connect(self.layoutModified.emit)
         main_layout.addWidget(self.canvas)
 
     def set_layout(self, layout: PageLayout, document: Any = None) -> None:
@@ -225,8 +226,12 @@ class LayoutView(QWidget):
             )
             return
 
+        selected_slot_ids = {p.slot_id for p in selected}
         align_placeholders(selected, align_type)
         self.canvas.rebuild_scene()
+        for item in self.canvas.placeholder_items:
+            if item.placeholder.slot_id in selected_slot_ids:
+                item.setSelected(True)
         self.layoutModified.emit()
 
     def _apply_equalize(self, mode: str) -> None:
@@ -239,8 +244,12 @@ class LayoutView(QWidget):
             )
             return
 
+        selected_slot_ids = {p.slot_id for p in selected}
         equalize_placeholders(selected, mode)
         self.canvas.rebuild_scene()
+        for item in self.canvas.placeholder_items:
+            if item.placeholder.slot_id in selected_slot_ids:
+                item.setSelected(True)
         self.layoutModified.emit()
 
     def _on_format_changed(self) -> None:
@@ -306,8 +315,26 @@ class LayoutView(QWidget):
             elif ext == "svg":
                 render_layout_to_svg(self.current_layout, document=self.current_document, file_path=file_path)
             else:
+                dpi = 300
+                dpi_choices = ["150 DPI (Screen / Draft)", "300 DPI (Standard Journal Submission)", "600 DPI (High-Resolution Print)"]
+                chosen, ok = QInputDialog.getItem(
+                    self,
+                    "Resolution (DPI)",
+                    "Select Output Resolution:",
+                    dpi_choices,
+                    1,
+                    False,
+                )
+                if ok and chosen:
+                    if "150" in chosen:
+                        dpi = 150
+                    elif "600" in chosen:
+                        dpi = 600
+                    else:
+                        dpi = 300
+
                 from src.core.layout import render_layout_to_image
-                img = render_layout_to_image(self.current_layout, document=self.current_document, dpi=300)
+                img = render_layout_to_image(self.current_layout, document=self.current_document, dpi=dpi)
                 fmt_tag = "TIFF" if ext in ("tif", "tiff") else "PNG"
                 img.save(file_path, fmt_tag)
 
