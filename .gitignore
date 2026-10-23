@@ -22,3 +22,4 @@ gemgraph-web/
 # Documentation and build artifacts
 docs/
 !docs/FEEDBACK_TEMPLATE.md
+!docs/FEEDBACK_TEMPLATE_PT-BR.md
