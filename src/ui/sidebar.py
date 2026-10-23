@@ -103,9 +103,11 @@ class PrismNavigator(QTreeWidget):
             if sheet.sheet_type in (SheetType.DATA, SheetType.INFO, SheetType.GRAPH, SheetType.LAYOUT):
                 folder_item = self.folder_items.get(sheet.sheet_type)
                 if folder_item is not None:
-                    title = sheet.title
+                    clean_title = sheet.title.replace("❄️", "").strip()
                     if getattr(sheet, "is_frozen", False):
-                        title += " ❄️"
+                        title = f"❄️  {clean_title}"
+                    else:
+                        title = clean_title
                     if getattr(sheet, "is_orphaned", False):
                         title += " ⚠️"
                     leaf = QTreeWidgetItem(folder_item, [title])
@@ -118,9 +120,11 @@ class PrismNavigator(QTreeWidget):
         for sheet_id in document.sheet_order:
             sheet = document.sheets[sheet_id]
             if sheet.sheet_type == SheetType.RESULTS:
-                title = sheet.title
+                clean_title = sheet.title.replace("❄️", "").strip()
                 if getattr(sheet, "is_frozen", False):
-                    title += " ❄️"
+                    title = f"❄️  {clean_title}"
+                else:
+                    title = clean_title
                 if getattr(sheet, "is_orphaned", False):
                     title += " ⚠️"
 

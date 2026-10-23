@@ -314,7 +314,7 @@ class GraphType(enum.Enum):
     XY_SPIKES_CURVE = "Columns/Spikes + Curve Fit"
     BOX_WHISKER = "Box & Whisker"
     SURVIVAL_CURVE = "Kaplan-Meier Survival"
-    DEPTH_GRAPH = "Depth Graph (2.5D Isometric)"
+    DEPTH_GRAPH = "Depth Graph"
     FLOATING_BARS = "Floating Bars (Min to Max)"
 
 
@@ -372,10 +372,18 @@ class GraphSheet(BaseSheet):
         if "snapshot_table" in data and data["snapshot_table"]:
             snapshot_table = DataTable.from_dict(data["snapshot_table"])
 
+        raw_gt = data.get("graph_type", GraphType.XY_SCATTER_CURVE.value)
+        if raw_gt in ("Depth Graph (2.5D Isometric)", "Depth Profile"):
+            raw_gt = GraphType.DEPTH_GRAPH.value
+        try:
+            gt_val = GraphType(raw_gt)
+        except ValueError:
+            gt_val = GraphType.XY_SCATTER_CURVE
+
         sheet = cls(
             sheet_id=data["sheet_id"],
             title=data.get("title", "Graph"),
-            graph_type=GraphType(data.get("graph_type", GraphType.XY_SCATTER_CURVE.value)),
+            graph_type=gt_val,
             source_sheet_id=data.get("source_sheet_id", ""),
             result_sheet_id=data.get("result_sheet_id"),
             x_label=data.get("x_label", "X"),
@@ -414,6 +422,8 @@ def format_pinned_graph_name(
         "Box & Whisker": "Box & Whisker",
         "Kaplan-Meier Survival": "Survival",
         "Depth Graph (2.5D Isometric)": "Depth Graph",
+        "Depth Graph": "Depth Graph",
+        "Depth Profile": "Depth Graph",
         "Floating Bars (Min to Max)": "Floating Bars",
     }.get(gt_str, gt_str)
 

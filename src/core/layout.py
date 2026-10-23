@@ -44,6 +44,7 @@ class Placeholder:
         linked_graph_title: Optional[str] = None,
         custom_scale: float = 1.0,
         locked_aspect: bool = True,
+        rotation: int = 0,
     ) -> None:
         self.slot_id = slot_id
         rx = max(0.0, min(1.0, float(rect[0])))
@@ -55,6 +56,7 @@ class Placeholder:
         self.linked_graph_title = linked_graph_title
         self.custom_scale = float(custom_scale)
         self.locked_aspect = bool(locked_aspect)
+        self.rotation = int(rotation)
 
     @property
     def aspect_ratio_locked(self) -> bool:
@@ -82,6 +84,7 @@ class Placeholder:
             "linked_graph_title": self.linked_graph_title,
             "custom_scale": self.custom_scale,
             "locked_aspect": self.locked_aspect,
+            "rotation": self.rotation,
         }
 
     @classmethod
@@ -95,6 +98,7 @@ class Placeholder:
             linked_graph_title=data.get("linked_graph_title"),
             custom_scale=float(data.get("custom_scale", 1.0)),
             locked_aspect=bool(data.get("locked_aspect", True)),
+            rotation=int(data.get("rotation", 0)),
         )
 
 
@@ -442,6 +446,11 @@ def render_layout_to_image(
                         if not graph_img.isNull():
                             painter.save()
                             painter.setClipRect(target_rect)
+                            rot = getattr(p, "rotation", 0)
+                            if rot:
+                                painter.translate(target_rect.center())
+                                painter.rotate(rot)
+                                painter.translate(-target_rect.center())
                             scale = max(0.1, min(5.0, getattr(p, "custom_scale", 1.0)))
                             if abs(scale - 1.0) > 1e-4:
                                 cx = target_rect.center().x()

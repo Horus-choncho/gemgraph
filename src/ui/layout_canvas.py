@@ -1,19 +1,23 @@
 """
 Interactive Page Layout Presentation Canvas for GemGraph.
 Implements GraphPad Prism-style presentation page layouts, interactive graph placeholders,
-8-handle resize transformation, live high-DPI graph snapshots, and smooth zoom/pan controls.
+8-handle resize transformation, live high-DPI graph snapshots, rich text legend items,
+and smooth zoom/pan controls.
 """
 
 from __future__ import annotations
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QPointF, QRectF, QSizeF, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QPointF, QRectF, QSizeF, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
     QCursor,
     QFont,
     QImage,
+    QKeyEvent,
+    QMouseEvent,
     QPainter,
     QPainterPath,
     QPen,
@@ -24,12 +28,14 @@ from PyQt6.QtWidgets import (
     QGraphicsItem,
     QGraphicsRectItem,
     QGraphicsScene,
+    QGraphicsTextItem,
     QGraphicsView,
+    QMenu,
     QWidget,
 )
 
 from src.core.layout import PageLayout, Placeholder
-from src.ui.dialogs import AssignGraphDialog
+from src.ui.dialogs import AssignGraphDialog, PageSetupDialog
 
 
 class LayoutPageItem(QGraphicsItem):
@@ -95,10 +101,12 @@ class ResizeHandleItem(QGraphicsRectItem):
         }
         self.setCursor(cursors.get(handle_index, Qt.CursorShape.ArrowCursor))
         self.drag_start_pos: Optional[QPointF] = None
+        self._handle_start_rect: Optional[Tuple[float, float, float, float]] = None
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_start_pos = event.scenePos()
+            self._handle_start_rect = self.parent_placeholder.placeholder.rect
             event.accept()
         else:
             super().mousePressEvent(event)
@@ -114,6 +122,12 @@ class ResizeHandleItem(QGraphicsRectItem):
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_start_pos = None
+            old_rect = self._handle_start_rect
+            new_rect = self.parent_placeholder.placeholder.rect
+            if old_rect is not None and old_rect != new_rect:
+                layout_view = getattr(self.parent_placeholder.canvas, "layout_view", None)
+                if layout_view is not None and hasattr(layout_view, "push_move_resize_command"):
+                    layout_view.push_move_resize_command(self.parent_placeholder.placeholder, old_rect, new_rect)
             event.accept()
         else:
             super().mouseReleaseEvent(event)
@@ -135,10 +149,12 @@ class GraphPlaceholderItem(QGraphicsRectItem):
     ) -> None:
         super().__init__()
         self.placeholder = placeholder
-        self.page_width = page_width
-        self.page_height = page_height
+        self.page_width = float(page_width)
+        self.page_height = float(page_height)
         self.document = document
         self.canvas = canvas
+        self._syncing_geometry = False
+        self._drag_start_rect: Optional[Tuple[float, float, float, float]] = None
 
         self.cached_pixmap: Optional[QPixmap] = None
 
@@ -159,27 +175,35 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         self._update_handle_visibility()
 
     def _sync_geometry_from_placeholder(self) -> None:
-        rx, ry, rw, rh = self.placeholder.rect
-        px = rx * self.page_width
-        py = ry * self.page_height
-        pw = rw * self.page_width
-        ph = rh * self.page_height
-        self.setPos(px, py)
-        self.setRect(0, 0, pw, ph)
+        self._syncing_geometry = True
+        try:
+            rx, ry, rw, rh = self.placeholder.rect
+            px = rx * self.page_width
+            py = ry * self.page_height
+            pw = rw * self.page_width
+            ph = rh * self.page_height
+            self.setRect(0, 0, pw, ph)
+            self.setPos(px, py)
+        finally:
+            self._syncing_geometry = False
 
     def _sync_placeholder_from_geometry(self) -> None:
+        if getattr(self, "_syncing_geometry", False):
+            return
+        if self.page_width <= 0 or self.page_height <= 0:
+            return
         pos = self.pos()
         rect = self.rect()
-        rx = pos.x() / self.page_width
-        ry = pos.y() / self.page_height
         rw = rect.width() / self.page_width
         rh = rect.height() / self.page_height
+        rx = pos.x() / self.page_width
+        ry = pos.y() / self.page_height
 
         # Clamp normalized values between 0.0 and 1.0
-        rx = max(0.0, min(1.0 - rw, rx))
-        ry = max(0.0, min(1.0 - rh, ry))
         rw = max(0.02, min(1.0, rw))
         rh = max(0.02, min(1.0, rh))
+        rx = max(0.0, min(1.0 - rw, rx))
+        ry = max(0.0, min(1.0 - rh, ry))
 
         self.placeholder.rect = (round(rx, 4), round(ry, 4), round(rw, 4), round(rh, 4))
 
@@ -211,12 +235,12 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         elif change == QGraphicsItem.GraphicsItemChange.ItemPositionChange and self.scene():
             new_pos = value
             r = self.rect()
-            # Constrain movement within physical page boundaries
             clamped_x = max(0.0, min(self.page_width - r.width(), new_pos.x()))
             clamped_y = max(0.0, min(self.page_height - r.height(), new_pos.y()))
             return QPointF(clamped_x, clamped_y)
         elif change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
-            self._sync_placeholder_from_geometry()
+            if not getattr(self, "_syncing_geometry", False):
+                self._sync_placeholder_from_geometry()
         return super().itemChange(change, value)
 
     def invalidate_cache(self) -> None:
@@ -230,9 +254,6 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         r = self.rect()
         cur_w, cur_h = r.width(), r.height()
         aspect = cur_w / max(1.0, cur_h)
-
-        dx = scene_pos.x() - (pos.x() + r.width())
-        dy = scene_pos.y() - (pos.y() + r.height())
 
         right = pos.x() + cur_w
         bottom = pos.y() + cur_h
@@ -298,36 +319,72 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         new_w = min(self.page_width - new_x, new_w)
         new_h = min(self.page_height - new_y, new_h)
 
-        self.setRect(0, 0, new_w, new_h)
-        self.setPos(new_x, new_y)
+        self._syncing_geometry = True
+        try:
+            self.setRect(0, 0, new_w, new_h)
+            self.setPos(new_x, new_y)
+        finally:
+            self._syncing_geometry = False
+
         self._update_handle_positions()
         self._sync_placeholder_from_geometry()
         self.invalidate_cache()
         if hasattr(self.canvas, "layoutModifiedSignal"):
             self.canvas.layoutModifiedSignal.emit()
 
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_rect = self.placeholder.rect
+            event.accept()
+        super().mousePressEvent(event)
+
     def mouseReleaseEvent(self, event) -> None:
         super().mouseReleaseEvent(event)
         self._sync_placeholder_from_geometry()
+        old_rect = getattr(self, "_drag_start_rect", None)
+        new_rect = self.placeholder.rect
+        if old_rect is not None and old_rect != new_rect:
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_move_resize_command"):
+                layout_view.push_move_resize_command(self.placeholder, old_rect, new_rect)
         if hasattr(self.canvas, "layoutModifiedSignal"):
             self.canvas.layoutModifiedSignal.emit()
 
-    def mouseDoubleClickEvent(self, event) -> None:
+    def open_assign_dialog(self) -> None:
         """Opens AssignGraphDialog to assign, swap, or unassign active graphs."""
         dialog = AssignGraphDialog(
             self.document,
             current_graph_id=self.placeholder.graph_id,
+            current_rotation=getattr(self.placeholder, "rotation", 0),
+            current_scale=getattr(self.placeholder, "custom_scale", 1.0),
             parent=self.canvas,
         )
         if dialog.exec():
             graph_id, title = dialog.get_selected_graph()
-            if graph_id:
-                self.placeholder.assign_graph(graph_id, title)
+            rotation = dialog.get_selected_rotation()
+            scale = dialog.get_selected_scale()
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_assign_graph_command"):
+                layout_view.push_assign_graph_command(self.placeholder, graph_id, title, rotation=rotation, scale=scale)
             else:
-                self.placeholder.unassign_graph()
-            self.invalidate_cache()
-            self.canvas.placeholderAssigned.emit(self.placeholder.slot_id)
-        event.accept()
+                if graph_id:
+                    self.placeholder.assign_graph(graph_id, title)
+                else:
+                    self.placeholder.unassign_graph()
+                self.placeholder.rotation = rotation
+                self.placeholder.custom_scale = scale
+                self.invalidate_cache()
+                self.canvas.placeholderAssigned.emit(self.placeholder.slot_id)
+                if hasattr(self.canvas, "layoutModifiedSignal"):
+                    self.canvas.layoutModifiedSignal.emit()
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        """Opens AssignGraphDialog on mouse double-click."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.open_assign_dialog()
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
 
     def paint(self, painter: QPainter, option: Any, widget: Optional[QWidget] = None) -> None:
         r = self.rect()
@@ -342,8 +399,8 @@ class GraphPlaceholderItem(QGraphicsRectItem):
                         png_data = render_graph_to_png_bytes(
                             graph_sheet,
                             document=self.document,
-                            width=max(100, int(r.width() * 2)),
-                            height=max(100, int(r.height() * 2)),
+                            width=max(600, int(r.width() * 2)),
+                            height=max(450, int(r.height() * 2)),
                         )
                         img = QImage.fromData(png_data)
                         if not img.isNull():
@@ -354,6 +411,11 @@ class GraphPlaceholderItem(QGraphicsRectItem):
             if self.cached_pixmap is not None:
                 painter.save()
                 painter.setClipRect(r)
+                rot = getattr(self.placeholder, "rotation", 0)
+                if rot:
+                    painter.translate(r.center())
+                    painter.rotate(rot)
+                    painter.translate(-r.center())
                 scale = max(0.1, min(5.0, getattr(self.placeholder, "custom_scale", 1.0)))
                 if abs(scale - 1.0) > 1e-4:
                     cx = r.center().x()
@@ -368,10 +430,8 @@ class GraphPlaceholderItem(QGraphicsRectItem):
                 painter.setPen(QPen(QColor(215, 215, 215), 1.0))
                 painter.drawRect(r)
             else:
-                # Fallback if render failed
                 self._paint_empty_state(painter, r)
         else:
-            # Empty state
             self._paint_empty_state(painter, r)
 
         # Highlight outline when selected
@@ -394,10 +454,220 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         painter.drawText(r, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, text)
 
 
+class LayoutTextItem(QGraphicsTextItem):
+    """
+    Floating rich text box item on page layout canvas.
+    Supports inline editing, bold/italic formatting, font family and size adjustment,
+    interactive dragging, subtle dashed selection border, and persistence in PageLayout.annotations.
+    """
+
+    def __init__(
+        self,
+        annotation_data: Dict[str, Any],
+        page_width: float,
+        page_height: float,
+        canvas: LayoutCanvas,
+        parent: Optional[QGraphicsItem] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.annotation = annotation_data
+        self.page_width = float(page_width)
+        self.page_height = float(page_height)
+        self.canvas = canvas
+        self._syncing_geometry = False
+        self._drag_start_pos: Optional[Tuple[float, float]] = None
+
+        self.setFlags(
+            QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+            | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+            | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
+        )
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        self.setZValue(15)
+
+        self._apply_annotation_properties()
+        self._sync_geometry_from_annotation()
+
+        self.document().contentsChanged.connect(self._on_contents_changed)
+
+    def _apply_annotation_properties(self) -> None:
+        font_family = self.annotation.get("font_family", "Helvetica")
+        font_size = int(self.annotation.get("font_size", 14))
+        bold = bool(self.annotation.get("bold", False))
+        italic = bool(self.annotation.get("italic", False))
+        color = QColor(self.annotation.get("color", "#000000"))
+
+        font = QFont(font_family, font_size)
+        font.setBold(bold)
+        font.setItalic(italic)
+        self.setFont(font)
+        self.setDefaultTextColor(color)
+
+        html = self.annotation.get("html")
+        text = self.annotation.get("text", "")
+        if html:
+            self.setHtml(html)
+        elif text:
+            self.setPlainText(text)
+        else:
+            self.setPlainText("Text Annotation")
+
+    def _sync_geometry_from_annotation(self) -> None:
+        self._syncing_geometry = True
+        try:
+            ax = float(self.annotation.get("x", 0.1)) * self.page_width
+            ay = float(self.annotation.get("y", 0.1)) * self.page_height
+            self.setPos(ax, ay)
+        finally:
+            self._syncing_geometry = False
+
+    def _sync_annotation_from_geometry(self) -> None:
+        if self._syncing_geometry or self.page_width <= 0 or self.page_height <= 0:
+            return
+        pos = self.pos()
+        nx = max(0.0, min(1.0, pos.x() / self.page_width))
+        ny = max(0.0, min(1.0, pos.y() / self.page_height))
+        self.annotation["x"] = round(nx, 4)
+        self.annotation["y"] = round(ny, 4)
+
+    def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any) -> Any:
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
+            if not self._syncing_geometry:
+                self._sync_annotation_from_geometry()
+                if hasattr(self.canvas, "layoutModifiedSignal"):
+                    self.canvas.layoutModifiedSignal.emit()
+        return super().itemChange(change, value)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = (float(self.annotation.get("x", 0.1)), float(self.annotation.get("y", 0.1)))
+            event.accept()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        self._sync_annotation_from_geometry()
+        old_pos = getattr(self, "_drag_start_pos", None)
+        new_pos = (float(self.annotation.get("x", 0.1)), float(self.annotation.get("y", 0.1)))
+        if old_pos is not None and old_pos != new_pos:
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                old_data = {"x": old_pos[0], "y": old_pos[1]}
+                new_data = {"x": new_pos[0], "y": new_pos[1]}
+                layout_view.push_edit_text_command(self.annotation, old_data, new_data)
+        if hasattr(self.canvas, "layoutModifiedSignal"):
+            self.canvas.layoutModifiedSignal.emit()
+
+    def focusInEvent(self, event) -> None:
+        self._initial_edit_data = {
+            "text": self.toPlainText(),
+            "html": self.toHtml(),
+        }
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        init_data = getattr(self, "_initial_edit_data", None)
+        if init_data is not None:
+            cur_text = self.toPlainText()
+            cur_html = self.toHtml()
+            if cur_text != init_data["text"] or cur_html != init_data["html"]:
+                layout_view = getattr(self.canvas, "layout_view", None)
+                if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                    layout_view.push_edit_text_command(
+                        self.annotation,
+                        init_data,
+                        {"text": cur_text, "html": cur_html},
+                    )
+
+    def _on_contents_changed(self) -> None:
+        self.annotation["text"] = self.toPlainText()
+        self.annotation["html"] = self.toHtml()
+        if hasattr(self.canvas, "layoutModifiedSignal"):
+            self.canvas.layoutModifiedSignal.emit()
+
+    def set_font_size(self, size: int) -> None:
+        old_size = self.annotation.get("font_size", 13)
+        if old_size == size:
+            return
+        layout_view = getattr(self.canvas, "layout_view", None)
+        if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+            layout_view.push_edit_text_command(self.annotation, {"font_size": old_size}, {"font_size": size})
+        else:
+            self.annotation["font_size"] = size
+            f = self.font()
+            f.setPointSize(size)
+            self.setFont(f)
+            self.update()
+
+    def set_font_bold(self, bold: bool) -> None:
+        old_bold = self.annotation.get("bold", False)
+        if old_bold == bold:
+            return
+        layout_view = getattr(self.canvas, "layout_view", None)
+        if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+            layout_view.push_edit_text_command(self.annotation, {"bold": old_bold}, {"bold": bold})
+        else:
+            self.annotation["bold"] = bold
+            f = self.font()
+            f.setBold(bold)
+            self.setFont(f)
+            self.update()
+
+    def set_font_italic(self, italic: bool) -> None:
+        old_italic = self.annotation.get("italic", False)
+        if old_italic == italic:
+            return
+        layout_view = getattr(self.canvas, "layout_view", None)
+        if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+            layout_view.push_edit_text_command(self.annotation, {"italic": old_italic}, {"italic": italic})
+        else:
+            self.annotation["italic"] = italic
+            f = self.font()
+            f.setItalic(italic)
+            self.setFont(f)
+            self.update()
+
+    def set_font_family(self, family: str) -> None:
+        old_family = self.annotation.get("font_family", "Helvetica")
+        if old_family == family:
+            return
+        layout_view = getattr(self.canvas, "layout_view", None)
+        if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+            layout_view.push_edit_text_command(self.annotation, {"font_family": old_family}, {"font_family": family})
+        else:
+            self.annotation["font_family"] = family
+            f = self.font()
+            f.setFamily(family)
+            self.setFont(f)
+            self.update()
+
+    def paint(self, painter: QPainter, option: Any, widget: Optional[QWidget] = None) -> None:
+        super().paint(painter, option, widget)
+        if self.isSelected():
+            painter.save()
+            br = self.boundingRect()
+            pen = QPen(QColor(0, 120, 212), 1.0, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(br)
+
+            # Draw draggable corner handles
+            h_size = 6.0
+            corners = [br.topLeft(), br.topRight(), br.bottomLeft(), br.bottomRight()]
+            h_pen = QPen(QColor(0, 120, 212), 1.0)
+            h_brush = QBrush(QColor(255, 255, 255))
+            painter.setPen(h_pen)
+            painter.setBrush(h_brush)
+            for pt in corners:
+                painter.drawRect(QRectF(pt.x() - h_size / 2, pt.y() - h_size / 2, h_size, h_size))
+            painter.restore()
+
+
 class LayoutCanvas(QGraphicsView):
     """
     High-performance QGraphicsView presentation canvas rendering standardized page formats,
-    multi-graph layouts, drag-to-align interactions, and smooth zoom/pan controls.
+    multi-graph layouts, drag-to-align interactions, context menus, and smooth zoom/pan controls.
     """
 
     placeholderAssigned = pyqtSignal(int)
@@ -406,6 +676,7 @@ class LayoutCanvas(QGraphicsView):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        self.layout_view: Optional[Any] = parent if hasattr(parent, "undo_stack") else None
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
 
@@ -413,6 +684,7 @@ class LayoutCanvas(QGraphicsView):
         self.current_document: Any = None
         self.page_item: Optional[LayoutPageItem] = None
         self.placeholder_items: List[GraphPlaceholderItem] = []
+        self.text_items: List[LayoutTextItem] = []
 
         # View configuration
         self.setBackgroundBrush(QBrush(QColor(235, 237, 240)))
@@ -443,16 +715,17 @@ class LayoutCanvas(QGraphicsView):
         """Constructs physical page surface, interactive graph placeholders, and annotations."""
         self.scene.clear()
         self.placeholder_items.clear()
+        self.text_items.clear()
 
         if self.current_layout is None:
             return
 
         page_w, page_h = self.current_layout.get_dimensions_pt()
 
-        # Add page surface
+        # Update physical page scene rect
         self.page_item = LayoutPageItem(page_w, page_h)
         self.scene.addItem(self.page_item)
-        self.scene.setSceneRect(-60, -60, page_w + 120, page_h + 120)
+        self.scene.setSceneRect(-40, -40, page_w + 80, page_h + 80)
 
         # Add graph placeholders
         for p in self.current_layout.placeholders:
@@ -466,21 +739,18 @@ class LayoutCanvas(QGraphicsView):
             self.scene.addItem(item)
             self.placeholder_items.append(item)
 
-        # Add annotations (text panels A/B/C/D, connector lines)
+        # Add annotations (text boxes, connector lines)
         for ann in getattr(self.current_layout, "annotations", []):
             ann_type = ann.get("type", "text")
             if ann_type == "text":
-                text = ann.get("text", "")
-                ax = float(ann.get("x", 0.0)) * page_w
-                ay = float(ann.get("y", 0.0)) * page_h
-                text_item = self.scene.addText(text)
-                font_size = int(ann.get("font_size", 14))
-                font = QFont(ann.get("font_family", "Helvetica"), font_size)
-                font.setBold(bool(ann.get("bold", True)))
-                text_item.setFont(font)
-                text_item.setDefaultTextColor(QColor(ann.get("color", "#000000")))
-                text_item.setPos(ax, ay)
-                text_item.setZValue(5)
+                text_item = LayoutTextItem(
+                    annotation_data=ann,
+                    page_width=page_w,
+                    page_height=page_h,
+                    canvas=self,
+                )
+                self.scene.addItem(text_item)
+                self.text_items.append(text_item)
             elif ann_type in ("line", "connector"):
                 x1 = float(ann.get("x1", 0.0)) * page_w
                 y1 = float(ann.get("y1", 0.0)) * page_h
@@ -511,9 +781,145 @@ class LayoutCanvas(QGraphicsView):
         self.scene.update()
 
     def fit_page_to_window(self) -> None:
-        """Fits the entire physical page cleanly within the current view window."""
-        if self.page_item is not None:
-            self.fitInView(self.page_item, Qt.AspectRatioMode.KeepAspectRatio)
+        """Fits the entire physical page cleanly within the current view window without compounding zoom."""
+        if self.current_layout is not None and self.page_item is not None:
+            page_w, page_h = self.current_layout.get_dimensions_pt()
+            page_rect = QRectF(0, 0, page_w, page_h)
+            self.resetTransform()
+            self.fitInView(page_rect, Qt.AspectRatioMode.KeepAspectRatio)
+
+    def contextMenuEvent(self, event) -> None:
+        """Displays layout canvas right-click context menu."""
+        if self.current_layout is None:
+            return
+
+        menu = QMenu(self)
+        act_add_placeholder = menu.addAction("➕ Add Graph Placeholder")
+        act_add_text = menu.addAction("📝 Add Text Box / Legend")
+        menu.addSeparator()
+        act_page_setup = menu.addAction("📄 Page Setup...")
+
+        chosen = menu.exec(event.globalPos())
+        if chosen == act_add_placeholder:
+            self.action_add_placeholder_at(event.pos())
+        elif chosen == act_add_text:
+            self.action_add_text_at(event.pos())
+        elif chosen == act_page_setup:
+            self.action_page_setup()
+
+    def action_add_placeholder_at(self, viewport_pos: QPoint) -> None:
+        """Adds a new Graph Placeholder at the cursor location matching existing dimensions."""
+        if self.current_layout is None:
+            return
+        page_w, page_h = self.current_layout.get_dimensions_pt()
+        scene_pos = self.mapToScene(viewport_pos)
+
+        # Match size of existing placeholders on page or default to 40% x 40%
+        if self.current_layout.placeholders:
+            first_p = self.current_layout.placeholders[0]
+            def_w = first_p.rect[2]
+            def_h = first_p.rect[3]
+        else:
+            def_w = 0.40
+            def_h = 0.40
+
+        norm_x = scene_pos.x() / page_w
+        norm_y = scene_pos.y() / page_h
+        norm_x = max(0.02, min(1.0 - def_w - 0.02, norm_x))
+        norm_y = max(0.02, min(1.0 - def_h - 0.02, norm_y))
+
+        existing_slots = [
+            p.slot_id for p in self.current_layout.placeholders
+            if isinstance(p.slot_id, int)
+        ]
+        new_slot_id = max(existing_slots, default=0) + 1
+
+        new_p = Placeholder(
+            slot_id=new_slot_id,
+            rect=(round(norm_x, 4), round(norm_y, 4), round(def_w, 4), round(def_h, 4)),
+        )
+
+        layout_view = getattr(self, "layout_view", None)
+        if layout_view is not None and hasattr(layout_view, "push_add_placeholder_command"):
+            layout_view.push_add_placeholder_command(new_p)
+        else:
+            self.current_layout.add_placeholder(new_p)
+            self.rebuild_scene()
+            self.layoutModifiedSignal.emit()
+
+    def action_add_text_at(self, viewport_pos: Optional[QPoint] = None) -> None:
+        """Adds a floating rich text box at the cursor position or default top-left."""
+        if self.current_layout is None:
+            return
+        page_w, page_h = self.current_layout.get_dimensions_pt()
+        if viewport_pos is not None:
+            scene_pos = self.mapToScene(viewport_pos)
+            nx = max(0.04, min(0.75, scene_pos.x() / page_w))
+            ny = max(0.04, min(0.85, scene_pos.y() / page_h))
+        else:
+            nx, ny = 0.08, 0.08
+
+        new_ann: Dict[str, Any] = {
+            "id": f"text_{uuid.uuid4().hex[:8]}",
+            "type": "text",
+            "text": "Figure 1. Panel Description",
+            "html": "<b>Figure 1.</b> Panel Description",
+            "x": round(nx, 4),
+            "y": round(ny, 4),
+            "font_size": 13,
+            "font_family": "Helvetica",
+            "bold": False,
+            "italic": False,
+            "color": "#000000",
+        }
+
+        layout_view = getattr(self, "layout_view", None)
+        if layout_view is not None and hasattr(layout_view, "push_add_text_command"):
+            layout_view.push_add_text_command(new_ann)
+        else:
+            if not hasattr(self.current_layout, "annotations") or self.current_layout.annotations is None:
+                self.current_layout.annotations = []
+            self.current_layout.annotations.append(new_ann)
+            self.rebuild_scene()
+            self.layoutModifiedSignal.emit()
+
+    def action_page_setup(self) -> None:
+        """Opens Page Setup dialog allowing user to switch page format and orientation."""
+        if self.current_layout is None:
+            return
+        dialog = PageSetupDialog(
+            current_format=self.current_layout.page_format,
+            current_orientation=self.current_layout.orientation,
+            parent=self,
+        )
+        if dialog.exec():
+            fmt, orient = dialog.get_settings()
+            self.current_layout.page_format = fmt
+            self.current_layout.orientation = orient
+            layout_view = getattr(self, "layout_view", None)
+            if layout_view is not None:
+                layout_view.set_layout(self.current_layout, self.current_document)
+            else:
+                self.rebuild_scene()
+            self.layoutModifiedSignal.emit()
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        """Dispatches double-click events directly to any targeted placeholder slot."""
+        scene_pos = self.mapToScene(event.pos())
+        items = self.scene.items(scene_pos)
+        target = None
+        for it in items:
+            cur = it
+            while cur is not None and not isinstance(cur, GraphPlaceholderItem):
+                cur = cur.parentItem()
+            if isinstance(cur, GraphPlaceholderItem):
+                target = cur
+                break
+        if target is not None:
+            target.open_assign_dialog()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         """Smooth zooming with mouse wheel."""
@@ -552,3 +958,36 @@ class LayoutCanvas(QGraphicsView):
             event.accept()
         else:
             super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Handles canvas key shortcuts: Delete key deletes selected placeholders or text items."""
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            # Check selected items
+            deleted = False
+            for it in list(self.placeholder_items):
+                if it.isSelected() and self.current_layout:
+                    layout_view = getattr(self, "layout_view", None)
+                    if layout_view is not None and hasattr(layout_view, "push_delete_placeholder_command"):
+                        layout_view.push_delete_placeholder_command(it.placeholder)
+                    else:
+                        self.current_layout.remove_placeholder(it.placeholder.slot_id)
+                        self.rebuild_scene()
+                    deleted = True
+                    break
+            if not deleted:
+                for t in list(self.text_items):
+                    if t.isSelected() and self.current_layout:
+                        layout_view = getattr(self, "layout_view", None)
+                        if layout_view is not None and hasattr(layout_view, "push_delete_text_command"):
+                            layout_view.push_delete_text_command(t.annotation)
+                        else:
+                            self.current_layout.annotations = [a for a in self.current_layout.annotations if a.get("id") != t.annotation.get("id")]
+                            self.rebuild_scene()
+                        deleted = True
+                        break
+            if deleted:
+                self.layoutModifiedSignal.emit()
+                event.accept()
+                return
+
+        super().keyPressEvent(event)

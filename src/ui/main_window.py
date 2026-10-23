@@ -459,7 +459,7 @@ class MainWindow(QMainWindow):
 
     def _update_contextual_toolbar(self, table_type: TableType) -> None:
         self.context_toolbar.clear()
-        self.context_toolbar.addWidget(QLabel(f"<b>{table_type.value} Shortcuts:</b> "))
+        self.context_toolbar.addWidget(QLabel(f"<b>💡  {table_type.value} Shortcuts:</b> "))
 
         if table_type == TableType.XY:
             self.context_toolbar.addAction("Linear Reg", self.action_run_linear)
@@ -491,7 +491,6 @@ class MainWindow(QMainWindow):
 
         self.context_toolbar.addSeparator()
         self.context_toolbar.addAction("Hook (s)", self.action_hook_constant)
-        self.context_toolbar.addAction("Checklist", self.action_analysis_checklist)
 
     def _setup_statusbar(self) -> None:
         self.status = QStatusBar()
@@ -560,8 +559,9 @@ class MainWindow(QMainWindow):
             self.status.showMessage(f"Active Graph: {sheet.title}")
 
         elif sheet.sheet_type == SheetType.LAYOUT:
-            self.layout_view.set_layout(sheet, self.document)
             self.center_stack.setCurrentWidget(self.layout_view)
+            self.layout_view.set_layout(sheet, self.document)
+            self.layout_view.canvas.fit_page_to_window()
             self.status.showMessage(f"Active Layout: {sheet.title}")
 
     def on_sheet_deleted(self, sheet_id: str) -> None:
@@ -742,7 +742,7 @@ class MainWindow(QMainWindow):
 
     def action_undo(self) -> None:
         focused = QApplication.focusWidget() or self.focusWidget()
-        from PyQt6.QtWidgets import QTextEdit, QLineEdit
+        from PyQt6.QtWidgets import QTextEdit, QLineEdit, QGraphicsTextItem
         from src.ui.rich_text_editor import RichTextEdit
         if isinstance(focused, (QTextEdit, RichTextEdit, QLineEdit)):
             focused.undo()
@@ -750,19 +750,41 @@ class MainWindow(QMainWindow):
         if hasattr(focused, "editor") and isinstance(focused.editor, (QTextEdit, RichTextEdit)):
             focused.editor.undo()
             return
+        if self.center_stack.currentWidget() == self.layout_view:
+            if hasattr(self.layout_view, "canvas") and self.layout_view.canvas.scene.focusItem() is not None:
+                focus_item = self.layout_view.canvas.scene.focusItem()
+                if isinstance(focus_item, QGraphicsTextItem):
+                    doc = focus_item.document()
+                    if doc is not None and doc.isUndoAvailable():
+                        doc.undo()
+                        return
+            if hasattr(self.layout_view, "undo_stack") and self.layout_view.undo_stack.canUndo():
+                self.layout_view.undo_stack.undo()
+            return
         if self.undo_stack.undo():
             self.spreadsheet_model.layoutChanged.emit()
             self._on_table_data_modified()
 
     def action_redo(self) -> None:
         focused = QApplication.focusWidget() or self.focusWidget()
-        from PyQt6.QtWidgets import QTextEdit, QLineEdit
+        from PyQt6.QtWidgets import QTextEdit, QLineEdit, QGraphicsTextItem
         from src.ui.rich_text_editor import RichTextEdit
         if isinstance(focused, (QTextEdit, RichTextEdit, QLineEdit)):
             focused.redo()
             return
         if hasattr(focused, "editor") and isinstance(focused.editor, (QTextEdit, RichTextEdit)):
             focused.editor.redo()
+            return
+        if self.center_stack.currentWidget() == self.layout_view:
+            if hasattr(self.layout_view, "canvas") and self.layout_view.canvas.scene.focusItem() is not None:
+                focus_item = self.layout_view.canvas.scene.focusItem()
+                if isinstance(focus_item, QGraphicsTextItem):
+                    doc = focus_item.document()
+                    if doc is not None and doc.isRedoAvailable():
+                        doc.redo()
+                        return
+            if hasattr(self.layout_view, "undo_stack") and self.layout_view.undo_stack.canRedo():
+                self.layout_view.undo_stack.redo()
             return
         if self.undo_stack.redo():
             self.spreadsheet_model.layoutChanged.emit()

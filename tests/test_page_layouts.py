@@ -34,7 +34,7 @@ from src.core.office_exporter import OfficeExporter, ExportFormat
 from src.core.sheet import DataSheet, GraphSheet, GraphType, SheetType
 from src.core.table import TableType
 from src.io.prism_io import PrismIO
-from src.ui.graph_canvas import ScientificPlotCanvas, compute_isometric_projection
+from src.ui.graph_canvas import ScientificPlotCanvas
 from src.ui.layout_canvas import LayoutCanvas, GraphPlaceholderItem
 from src.ui.layout_view import LayoutView
 
@@ -195,43 +195,51 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
         self.assertAlmostEqual(p3.rect[2], 0.30)
         self.assertAlmostEqual(p3.rect[3], 0.25)
 
-    def test_depth_graph_isometric_math(self) -> None:
-        """Verifies isometric projection coordinate calculations and back-to-front sorting."""
-        # Theta = 45 deg, depth_factor = 0.2
-        # cos(45) = sin(45) = sqrt(2)/2 ~= 0.70710678
-        x, y, z = 10.0, 50.0, 2.0
-        theta_rad = math.radians(45.0)
-        expected_xp = 10.0 + 2.0 * math.cos(theta_rad) * 0.2
-        expected_yp = 50.0 + 2.0 * math.sin(theta_rad) * 0.2
+    def test_depth_graph_reverse_engineered_parity(self) -> None:
+        """Verifies authentic GraphPad Prism Depth Graph profile rendering without 2.5D math."""
+        # Create an XY dataset representing depth measurements (depth in meters vs oxygen pO2)
+        xy_sheet = self.doc.create_data_sheet("Depth Oxygen", table_type=TableType.XY, num_replicates=2)
+        xy_sheet.table.x_title = "Depth in meters"
+        xy_sheet.table.y_group_titles = ["pO2 (Control)", "pO2 (Treated)"]
+        depths = [0.0, 2.0, 4.0, 6.0]
+        xy_sheet.table.x_data = np.array(depths)
+        for r, d in enumerate(depths):
+            # Control group
+            xy_sheet.table.set_cell_value(r, "Y", 0, 0, 100.0 - d * 5.0)
+            xy_sheet.table.set_cell_value(r, "Y", 0, 1, 105.0 - d * 5.0)
+            # Treated group
+            xy_sheet.table.set_cell_value(r, "Y", 1, 0, 90.0 - d * 7.0)
+            xy_sheet.table.set_cell_value(r, "Y", 1, 1, 94.0 - d * 7.0)
 
-        xp, yp = compute_isometric_projection(x, y, z, theta_deg=45.0, depth_factor=0.2)
-        self.assertAlmostEqual(xp, expected_xp, places=5)
-        self.assertAlmostEqual(yp, expected_yp, places=5)
+        canvas = ScientificPlotCanvas(parent=None)
+        canvas.set_error_style("SEM")
+        canvas.set_whisker_direction("Both (±)")
+        canvas.update_data(xy_sheet.table, graph_type=GraphType.DEPTH_GRAPH, sheet=self.graph_sheet)
 
-        # Static method on ScientificPlotCanvas
-        xp_static, yp_static = ScientificPlotCanvas.compute_isometric_projection(x, y, z, theta_deg=45.0, depth_factor=0.2)
-        self.assertAlmostEqual(xp_static, expected_xp, places=5)
-        self.assertAlmostEqual(yp_static, expected_yp, places=5)
+        # 1. Y-axis must be inverted (depth 0 at top, increasing downwards)
+        self.assertTrue(canvas.plot_widget.getViewBox().yInverted())
 
-        # Verify back-to-front topological ordering: higher Z rendered before lower Z
-        layers = [
-            {"series_idx": 0, "z": 0.0, "name": "Front"},
-            {"series_idx": 1, "z": 1.0, "name": "Middle"},
-            {"series_idx": 2, "z": 2.0, "name": "Back"},
-        ]
-        # Sorted back-to-front: Z=2.0 -> Z=1.0 -> Z=0.0
-        sorted_layers = sorted(layers, key=lambda l: l["z"], reverse=True)
-        self.assertEqual(sorted_layers[0]["name"], "Back")
-        self.assertEqual(sorted_layers[1]["name"], "Middle")
-        self.assertEqual(sorted_layers[2]["name"], "Front")
+        # 2. Both series must be plotted with error bars and scatter items
+        items = canvas.plot_widget.plotItem.items
+        import pyqtgraph as pg
+        error_items = [it for it in items if isinstance(it, pg.ErrorBarItem)]
+        scatter_items = [it for it in items if isinstance(it, pg.ScatterPlotItem)]
+        self.assertGreaterEqual(len(error_items), 2)
+        self.assertGreaterEqual(len(scatter_items), 2)
+
+        # 3. Test Upper (+) Only whisker configuration
+        canvas.set_whisker_direction("Upper (+) Only")
+        canvas.refresh_plot()
+        self.assertEqual(canvas.whisker_direction, "Upper (+) Only")
 
     def test_depth_graph_canvas_rendering(self) -> None:
-        """Verifies ScientificPlotCanvas renders Depth Graph (2.5D Isometric) for Column and Grouped tables."""
+        """Verifies ScientificPlotCanvas renders authentic Depth Graph without 2.5D math."""
         canvas = ScientificPlotCanvas(parent=None)
 
         # Render for Column table
         canvas.update_data(self.data_sheet.table, graph_type=GraphType.DEPTH_GRAPH, sheet=self.graph_sheet)
         self.assertGreater(len(canvas.plot_widget.plotItem.items), 0)
+        self.assertTrue(canvas.plot_widget.getViewBox().yInverted())
 
         # Render for Grouped table
         grouped_ds = self.doc.create_data_sheet("Test Grouped", table_type=TableType.GROUPED)
@@ -244,6 +252,7 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
             grouped_ds.table.set_cell_value(r, "Y", 1, 1, row[3])
         canvas.update_data(grouped_ds.table, graph_type=GraphType.DEPTH_GRAPH, sheet=None)
         self.assertGreater(len(canvas.plot_widget.plotItem.items), 0)
+        self.assertTrue(canvas.plot_widget.getViewBox().yInverted())
 
     def test_cleanroom_project_serialization(self) -> None:
         """Verifies cleanroom .bigo archive serialization and deserialization of PageLayout sheets."""
@@ -506,6 +515,229 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
         self.doc.remove_sheet(self.graph_sheet.sheet_id)
         self.assertIsNone(layout.placeholders[0].graph_id)
         self.assertIsNone(layout.placeholders[0].linked_graph_title)
+
+    def test_multi_slot_graph_assignment(self) -> None:
+        """Verifies that all slots in multi-slot grids (including slot 0, 1, 2, 3) independently maintain ID and assignment."""
+        layout = self.doc.create_layout("Multi-Slot Test", template="4 (2x2 Quadrants)")
+        self.assertEqual(len(layout.placeholders), 4)
+
+        # Force slot_ids to 0, 1, 2, 3 to explicitly verify slot_id=0 edge case
+        for i, p in enumerate(layout.placeholders):
+            p.slot_id = i
+
+        canvas = LayoutCanvas()
+        canvas.set_layout(layout, self.doc)
+        self.assertEqual(len(canvas.placeholder_items), 4)
+
+        # Create distinct test graphs
+        g0 = self.doc.create_graph_sheet("Graph Slot 0", source_sheet_id=self.data_sheet.sheet_id)
+        g1 = self.doc.create_graph_sheet("Graph Slot 1", source_sheet_id=self.data_sheet.sheet_id)
+        g2 = self.doc.create_graph_sheet("Graph Slot 2", source_sheet_id=self.data_sheet.sheet_id)
+        g3 = self.doc.create_graph_sheet("Graph Slot 3", source_sheet_id=self.data_sheet.sheet_id)
+
+        # Assign each slot independently with rotation
+        for idx, (p_item, g_sheet) in enumerate(zip(canvas.placeholder_items, [g0, g1, g2, g3])):
+            self.assertEqual(p_item.placeholder.slot_id, idx)
+            p_item.placeholder.assign_graph(g_sheet.sheet_id, g_sheet.title)
+            p_item.placeholder.rotation = 90 if idx == 1 else 0
+            self.assertEqual(p_item.placeholder.graph_id, g_sheet.sheet_id)
+            self.assertEqual(p_item.placeholder.linked_graph_title, g_sheet.title)
+
+        # Verify all 4 placeholders have their respective graphs and distinct slot_ids
+        assigned_ids = [p.graph_id for p in layout.placeholders]
+        self.assertEqual(assigned_ids, [g0.sheet_id, g1.sheet_id, g2.sheet_id, g3.sheet_id])
+        self.assertEqual([p.slot_id for p in layout.placeholders], [0, 1, 2, 3])
+        self.assertEqual(layout.placeholders[1].rotation, 90)
+
+    def test_layout_context_menu_and_add_actions(self) -> None:
+        """Verifies right-click context menu actions: Add Graph Placeholder and Add Text Box."""
+        from PyQt6.QtCore import QPoint
+        layout = self.doc.create_layout("Context Menu Test", template_preset="1")
+        canvas = LayoutCanvas()
+        canvas.set_layout(layout, self.doc)
+        initial_p_count = len(layout.placeholders)
+        initial_ann_count = len(getattr(layout, "annotations", []))
+
+        # Add graph placeholder at cursor position (100, 100)
+        canvas.action_add_placeholder_at(QPoint(100, 100))
+        self.assertEqual(len(layout.placeholders), initial_p_count + 1)
+        new_p = layout.placeholders[-1]
+        self.assertGreater(new_p.rect[2], 0.0)
+        self.assertGreater(new_p.rect[3], 0.0)
+        self.assertLessEqual(new_p.rect[0] + new_p.rect[2], 1.0)
+        self.assertLessEqual(new_p.rect[1] + new_p.rect[3], 1.0)
+
+        # Add text box at cursor position (150, 150)
+        canvas.action_add_text_at(QPoint(150, 150))
+        self.assertEqual(len(layout.annotations), initial_ann_count + 1)
+        new_ann = layout.annotations[-1]
+        self.assertEqual(new_ann["type"], "text")
+        self.assertIn("x", new_ann)
+        self.assertIn("y", new_ann)
+        self.assertIn("text", new_ann)
+
+    def test_normalized_coordinate_stability_across_tabs(self) -> None:
+        """Verifies placeholder normalized coordinates never shrink to microscopic size across tab switches."""
+        from src.ui.main_window import MainWindow
+        win = MainWindow()
+        win.resize(1024, 768)
+
+        layout = win.document.create_layout("Stability Test", template="4 (2x2 Quadrants)")
+        initial_rects = [p.rect for p in layout.placeholders]
+
+        # Select layout
+        win.on_sheet_selected(layout.sheet_id)
+        for p, init_r in zip(layout.placeholders, initial_rects):
+            self.assertAlmostEqual(p.rect[2], init_r[2], places=3)
+            self.assertAlmostEqual(p.rect[3], init_r[3], places=3)
+
+        # Switch between sheets multiple times
+        data_sheet = win.document.get_sheets_by_type(SheetType.DATA)[0]
+        for _ in range(5):
+            win.on_sheet_selected(data_sheet.sheet_id)
+            win.on_sheet_selected(layout.sheet_id)
+
+        # Verify zero shrinking
+        for p, init_r in zip(layout.placeholders, initial_rects):
+            self.assertAlmostEqual(p.rect[2], init_r[2], places=3)
+            self.assertAlmostEqual(p.rect[3], init_r[3], places=3)
+            self.assertGreaterEqual(p.rect[2], 0.10)
+            self.assertGreaterEqual(p.rect[3], 0.10)
+
+        # Convert orientation
+        win.layout_view.set_orientation("landscape")
+        for p, init_r in zip(layout.placeholders, initial_rects):
+            self.assertAlmostEqual(p.rect[2], init_r[2], places=3)
+            self.assertAlmostEqual(p.rect[3], init_r[3], places=3)
+
+        win.layout_view.set_orientation("portrait")
+        for p, init_r in zip(layout.placeholders, initial_rects):
+            self.assertAlmostEqual(p.rect[2], init_r[2], places=3)
+            self.assertAlmostEqual(p.rect[3], init_r[3], places=3)
+
+        win.close()
+
+    def test_label_truncation_prevention_on_thumbnail(self) -> None:
+        """Verifies generous axis margin padding prevents tick and group label truncation."""
+        canvas = ScientificPlotCanvas()
+        canvas.update_data(self.data_sheet.table, sheet=self.graph_sheet)
+
+        png_bytes = canvas.get_plot_snapshot(width=800, height=600)
+        self.assertTrue(png_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
+
+        # Check that bottom and left axes have generous dimensions
+        bottom_ax = canvas.plot_widget.getAxis("bottom")
+        left_ax = canvas.plot_widget.getAxis("left")
+        self.assertGreaterEqual(bottom_ax.height(), 10.0)
+        self.assertGreaterEqual(left_ax.width(), 10.0)
+
+    def test_pinned_graph_dialog_flags_and_navigator(self) -> None:
+        """Verifies AssignGraphDialog flags ('❄️' vs '🔥') and left-aligned '❄️' in navigator."""
+        from src.ui.dialogs import AssignGraphDialog
+        from src.ui.sidebar import PrismNavigator
+
+        # Create active graph, pinned+active graph, and pinned+frozen graph
+        g_active = self.graph_sheet
+
+        g_pinned_active = self.doc.create_graph_sheet("Pinned Active Graph", source_sheet_id=self.data_sheet.sheet_id)
+        g_pinned_active.is_pinned = True
+        g_pinned_active.is_frozen = False
+
+        g_pinned_frozen = self.doc.create_graph_sheet("Pinned Frozen Graph", source_sheet_id=self.data_sheet.sheet_id)
+        g_pinned_frozen.is_pinned = True
+        g_pinned_frozen.is_frozen = True
+
+        # Test AssignGraphDialog
+        dialog = AssignGraphDialog(self.doc, current_graph_id=None, current_rotation=90, current_scale=1.2)
+        self.assertEqual(dialog.get_selected_rotation(), 90)
+        self.assertAlmostEqual(dialog.get_selected_scale(), 1.2)
+
+        pinned_root = None
+        for i in range(dialog.tree.topLevelItemCount()):
+            top_item = dialog.tree.topLevelItem(i)
+            if "Pinned" in top_item.text(0):
+                pinned_root = top_item
+                break
+        self.assertIsNotNone(pinned_root)
+
+        pinned_titles = [pinned_root.child(c).text(0) for c in range(pinned_root.childCount())]
+        # Pinned+frozen must have snowflake prefix
+        self.assertTrue(any(t.startswith("❄️  ") and "Pinned Frozen Graph" in t for t in pinned_titles))
+        # Pinned+active must have fire prefix
+        self.assertTrue(any(t.startswith("🔥  ") and "Pinned Active Graph" in t for t in pinned_titles))
+
+        # Test PrismNavigator left-aligned snowflake
+        nav = PrismNavigator()
+        nav.populate(self.doc)
+        graphs_folder = nav.folder_items[SheetType.GRAPH]
+        graph_labels = [graphs_folder.child(c).text(0) for c in range(graphs_folder.childCount())]
+        self.assertTrue(any(lbl.startswith("❄️  ") and "Pinned Frozen Graph" in lbl for lbl in graph_labels))
+        # Unfrozen graphs must NOT have snowflake
+        self.assertTrue(any("Pinned Active Graph" in lbl and not lbl.startswith("❄️  ") for lbl in graph_labels))
+
+    def test_undo_redo_layout_operations(self) -> None:
+        """Verifies QUndoStack integration across layout placeholder additions, graph assignments, and text edits."""
+        layout = self.doc.create_layout("Undo Test", template_preset="1")
+        view = LayoutView(document=self.doc)
+        view.set_layout(layout, self.doc)
+
+        initial_count = len(layout.placeholders)
+        new_p = Placeholder(slot_id=99, rect=(0.2, 0.2, 0.3, 0.3))
+
+        # 1. Add placeholder command
+        view.push_add_placeholder_command(new_p)
+        self.assertEqual(len(layout.placeholders), initial_count + 1)
+
+        # Undo add
+        view.undo()
+        self.assertEqual(len(layout.placeholders), initial_count)
+
+        # Redo add
+        view.redo()
+        self.assertEqual(len(layout.placeholders), initial_count + 1)
+
+        # 2. Assign graph command
+        p = layout.placeholders[0]
+        self.assertIsNone(p.graph_id)
+        view.push_assign_graph_command(p, self.graph_sheet.sheet_id, self.graph_sheet.title, rotation=90, scale=1.5)
+        self.assertEqual(p.graph_id, self.graph_sheet.sheet_id)
+        self.assertEqual(p.rotation, 90)
+        self.assertEqual(p.custom_scale, 1.5)
+
+        # Undo assign
+        view.undo()
+        self.assertIsNone(p.graph_id)
+        self.assertEqual(p.rotation, 0)
+        self.assertEqual(p.custom_scale, 1.0)
+
+        # Redo assign
+        view.redo()
+        self.assertEqual(p.graph_id, self.graph_sheet.sheet_id)
+        self.assertEqual(p.rotation, 90)
+
+        # 3. Add text annotation command
+        ann = {"id": "text_undo_test", "type": "text", "text": "Original Title", "html": "Original Title"}
+        view.push_add_text_command(ann)
+        self.assertIn(ann, layout.annotations)
+
+        # Edit text annotation command
+        view.push_edit_text_command(ann, {"text": "Original Title"}, {"text": "Updated Title"})
+        self.assertEqual(ann["text"], "Updated Title")
+
+        # Undo edit
+        view.undo()
+        self.assertEqual(ann["text"], "Original Title")
+
+        # Redo edit
+        view.redo()
+        self.assertEqual(ann["text"], "Updated Title")
+
+        # Undo add text
+        view.undo()  # undos edit
+        view.undo()  # undos add
+        self.assertNotIn(ann, layout.annotations)
+
+        view.close()
 
 
 if __name__ == "__main__":

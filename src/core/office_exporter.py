@@ -401,6 +401,15 @@ def render_graph_to_png_bytes(
             sheet=target_sheet,
         )
 
+        # Generous axis margin padding to prevent multi-line categorical/group label truncation
+        try:
+            bottom_ax = canvas.plot_widget.getAxis("bottom")
+            left_ax = canvas.plot_widget.getAxis("left")
+            bottom_ax.setHeight(max(60, int(height * 0.12)))
+            left_ax.setWidth(max(60, int(width * 0.10)))
+        except Exception:
+            pass
+
         img = QImage(width, height, QImage.Format.Format_ARGB32)
         img.fill(QColor(255, 255, 255))
         painter = QPainter(img)

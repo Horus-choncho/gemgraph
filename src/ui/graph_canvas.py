@@ -38,34 +38,8 @@ from src.ui.mediator import WorkspaceMediator
 from src.ui.dialogs import FormatSeriesDialog
 
 
-def compute_isometric_projection(
-    x: float,
-    y: float,
-    z: float,
-    theta: float = np.pi / 4,
-    d: float = 0.2,
-    y_scale: float = 1.0,
-    theta_deg: Optional[float] = None,
-    depth_factor: Optional[float] = None,
-) -> Tuple[float, float]:
-    """
-    Computes isometric 2.5D projection with depth offset:
-    X_proj = X + Z * cos(theta) * d
-    Y_proj = Y + Z * sin(theta) * d * y_scale
-    """
-    if theta_deg is not None:
-        theta = float(np.radians(theta_deg))
-    if depth_factor is not None:
-        d = float(depth_factor)
-    x_proj = x + z * float(np.cos(theta)) * d
-    y_proj = y + z * float(np.sin(theta)) * d * y_scale
-    return float(x_proj), float(y_proj)
-
-
 class ScientificPlotCanvas(QWidget):
     """
-
-    compute_isometric_projection = staticmethod(compute_isometric_projection)
     High-performance scientific plot widget rendering publication-grade vector graphs.
     Includes active analysis overlay registry, toolbar layer clearing UI,
     and journal publishing grayscale symbology.
@@ -529,7 +503,7 @@ class ScientificPlotCanvas(QWidget):
             GraphType.GROUPED_BARS_POINTS.value,
             "Grouped Bars + Replicate Points",
             GraphType.DEPTH_GRAPH.value,
-            "Depth Graph (2.5D Isometric)",
+            "Depth Profile",
             GraphType.FLOATING_BARS.value,
             "Floating Bars (Min to Max)",
         ):
@@ -795,7 +769,10 @@ class ScientificPlotCanvas(QWidget):
             return
 
         selected_type = self.type_combo.currentText()
-        if selected_type in (GraphType.DEPTH_GRAPH.value, "Depth Graph (2.5D Isometric)"):
+        if selected_type not in (GraphType.DEPTH_GRAPH.value, "Depth Graph", "Depth Profile"):
+            self.plot_widget.getViewBox().invertY(False)
+
+        if selected_type in (GraphType.DEPTH_GRAPH.value, "Depth Graph", "Depth Profile"):
             self._render_depth_graph()
         elif selected_type in (GraphType.FLOATING_BARS.value, "Floating Bars (Min to Max)"):
             self._render_floating_bars()
@@ -1236,15 +1213,24 @@ class ScientificPlotCanvas(QWidget):
                     )
                     self.plot_widget.addItem(scatter)
 
+    def get_plot_snapshot(self, width: int = 1200, height: int = 800) -> bytes:
+        """Renders high-DPI snapshot of the plot with generous axis margins to prevent label truncation."""
+        from src.core.office_exporter import render_graph_to_png_bytes
+        sheet = self.current_graph_sheet
+        return render_graph_to_png_bytes(
+            sheet if sheet is not None else self.current_table,
+            document=None,
+            graph_canvas=self,
+            width=width,
+            height=height,
+        )
+
     def _render_depth_graph(self) -> None:
         """
-        Renders isometric 2.5D depth graph for Column and Grouped tables.
-        Uses isometric projection:
-            X_proj = X + Z * cos(theta) * d
-            Y_proj = Y + Z * sin(theta) * d
-        with back-to-front topological order (Z_max -> Z_0),
-        front face (base color), top face (15% lighter), and side face (20% darker),
-        and error whiskers at the front face center.
+        Renders authentic GraphPad Prism Depth graph / profile.
+        Plots measurements on the horizontal axis and depth/categories on the vertical axis,
+        with depth 0 at top and increasing downwards (inverted vertical axis),
+        with horizontal error whiskers and high-contrast styling matching Prism specifications.
         """
         table = self.current_table
         if table is None:
@@ -1258,23 +1244,17 @@ class ScientificPlotCanvas(QWidget):
         else:
             error_label = "SEM"
 
-        theta = np.pi / 4  # 45 degrees
-        cfg = getattr(self.current_graph_sheet, "plot_config", {}) if self.current_graph_sheet else {}
-        d = float(cfg.get("depth_factor", 0.2))  # configurable between 0.1 and 0.3
-        bar_w = 0.5
-        extrusion = d * 0.5
-        delta_x = float(np.cos(theta) * extrusion)
-        delta_y = float(np.sin(theta) * extrusion)
-
         is_grayscale = self.is_grayscale_mode
+        vb = self.plot_widget.getViewBox()
+        vb.invertY(True)
 
         if table.table_type == TableType.GROUPED:
             num_groups = len(table.y_group_titles)
             if num_groups == 0:
                 return
 
-            self.plot_widget.setLabel("bottom", "Conditions", color="black")
-            self.plot_widget.setLabel("left", f"Value (Mean ± {error_label})", color="black")
+            self.plot_widget.setLabel("bottom", f"Value (Mean ± {error_label})", color="black")
+            self.plot_widget.setLabel("left", "Depth / Conditions", color="black")
 
             active_rows = []
             for r in range(table.num_rows):
@@ -1296,48 +1276,38 @@ class ScientificPlotCanvas(QWidget):
 
             ticks = []
             for idx, r in enumerate(active_rows):
-                title = table.row_titles[r] if r < len(table.row_titles) and table.row_titles[r].strip() else f"Row {r+1}"
+                title = table.row_titles[r] if r < len(table.row_titles) and table.row_titles[r].strip() else f"Depth {r}"
                 ticks.append((idx, title))
-            self.plot_widget.getAxis("bottom").setTicks([ticks])
+            self.plot_widget.getAxis("left").setTicks([ticks])
 
-            # Back-to-front topological order: Z_max -> Z_0
-            for g_idx in reversed(range(num_groups)):
+            for g_idx in range(num_groups):
                 g_title = table.y_group_titles[g_idx]
                 has_custom_color = g_title in self.custom_series_colors
                 custom_color = self.custom_series_colors.get(g_title)
                 custom_opacity = self.custom_series_opacities.get(g_title, 1.0 if is_grayscale else 0.8)
 
                 if is_grayscale and not has_custom_color:
-                    base_color = QColor(60 + (g_idx * 40) % 160, 60 + (g_idx * 40) % 160, 60 + (g_idx * 40) % 160)
+                    base_color = QColor(0, 0, 0)
                 else:
                     base_color = custom_color or self.COLOR_PALETTE[g_idx % len(self.COLOR_PALETTE)]
 
                 alpha = int(round(custom_opacity * 255))
-                front_color = QColor(base_color)
-                front_color.setAlpha(alpha)
-                top_color = base_color.lighter(115)
-                top_color.setAlpha(alpha)
-                side_color = base_color.darker(120)
-                side_color.setAlpha(alpha)
+                pt_color = QColor(base_color)
+                pt_color.setAlpha(alpha)
 
-                front_brush = QBrush(front_color)
-                top_brush = QBrush(top_color)
-                side_brush = QBrush(side_color)
-
-                front_pen = pg.mkPen(base_color.darker(140), width=1.0)
-                top_pen = pg.mkPen(base_color.darker(130), width=1.0)
-                side_pen = pg.mkPen(base_color.darker(150), width=1.0)
-                err_pen = pg.mkPen(base_color.darker(160), width=1.5)
+                pt_brush = pg.mkBrush(pt_color)
+                pt_pen = pg.mkPen("k" if is_grayscale else base_color.darker(140), width=1.5)
+                line_pen = pg.mkPen(color=base_color, width=2.0)
+                err_pen = pg.mkPen("k" if is_grayscale else base_color.darker(150), width=1.5)
 
                 if self.plot_widget.plotItem.legend is not None:
-                    dummy = pg.PlotDataItem(pen=front_pen, brush=front_brush, name=g_title)
+                    dummy = pg.PlotDataItem(pen=line_pen, brush=pt_brush, name=g_title)
                     self.plot_widget.plotItem.legend.addItem(dummy, g_title)
 
-                z = g_idx
-                dx_z, dy_z = compute_isometric_projection(0.0, 0.0, z, theta=theta, d=d)
-                base_z = (num_groups - g_idx) * 10
+                series_means = []
+                series_positions = []
 
-                for x_idx, r in enumerate(active_rows):
+                for y_idx, r in enumerate(active_rows):
                     valid_vals = []
                     for s in range(table.num_replicates):
                         if not table.is_excluded(r, "Y", g_idx, s):
@@ -1365,126 +1335,77 @@ class ScientificPlotCanvas(QWidget):
                     else:
                         err_val = 0.0
 
-                    x_center = x_idx
-                    x_l = x_center - bar_w / 2.0 + dx_z
-                    x_r = x_center + bar_w / 2.0 + dx_z
-                    y_b = dy_z
-                    y_t = mean + dy_z
+                    series_means.append(mean)
+                    series_positions.append(y_idx)
 
-                    # Top face
-                    top_poly = QPolygonF([
-                        QPointF(x_l, y_t),
-                        QPointF(x_r, y_t),
-                        QPointF(x_r + delta_x, y_t + delta_y),
-                        QPointF(x_l + delta_x, y_t + delta_y),
-                    ])
-                    top_item = QGraphicsPolygonItem(top_poly)
-                    top_item.setBrush(top_brush)
-                    top_item.setPen(top_pen)
-                    top_item.setZValue(base_z + 1)
-                    self.plot_widget.addItem(top_item)
-
-                    # Side face (right)
-                    side_poly = QPolygonF([
-                        QPointF(x_r, y_b),
-                        QPointF(x_r, y_t),
-                        QPointF(x_r + delta_x, y_t + delta_y),
-                        QPointF(x_r + delta_x, y_b + delta_y),
-                    ])
-                    side_item = QGraphicsPolygonItem(side_poly)
-                    side_item.setBrush(side_brush)
-                    side_item.setPen(side_pen)
-                    side_item.setZValue(base_z + 2)
-                    self.plot_widget.addItem(side_item)
-
-                    # Front face
-                    front_poly = QPolygonF([
-                        QPointF(x_l, y_b),
-                        QPointF(x_r, y_b),
-                        QPointF(x_r, y_t),
-                        QPointF(x_l, y_t),
-                    ])
-                    front_item = QGraphicsPolygonItem(front_poly)
-                    front_item.setBrush(front_brush)
-                    front_item.setPen(front_pen)
-                    front_item.setZValue(base_z + 3)
-                    self.plot_widget.addItem(front_item)
-
-                    # Error whiskers on front face
+                    # Horizontal error whiskers
                     if err_val > 0:
-                        top_err = np.array([err_val])
-                        bot_err = np.zeros_like(top_err) if self.whisker_direction == "Upper (+) Only" else top_err
+                        right_err = np.array([err_val])
+                        left_err = np.zeros_like(right_err) if self.whisker_direction == "Upper (+) Only" else right_err
                         err = pg.ErrorBarItem(
-                            x=np.array([(x_l + x_r) / 2.0]),
-                            y=np.array([y_t]),
-                            top=top_err,
-                            bottom=bot_err,
+                            x=np.array([mean]),
+                            y=np.array([y_idx]),
+                            left=left_err,
+                            right=right_err,
                             pen=err_pen,
-                            beam=0.1,
+                            beam=0.2,
                         )
-                        err.setZValue(base_z + 4)
                         self.plot_widget.addItem(err)
 
+                if series_means:
+                    line_item = pg.PlotDataItem(
+                        x=np.array(series_means),
+                        y=np.array(series_positions),
+                        pen=line_pen,
+                    )
+                    self.plot_widget.addItem(line_item)
+
+                    sym = self.GRAYSCALE_SYMBOLS[g_idx % len(self.GRAYSCALE_SYMBOLS)]["symbol"] if is_grayscale else "o"
+                    scatter = pg.ScatterPlotItem(
+                        x=np.array(series_means),
+                        y=np.array(series_positions),
+                        symbol=sym,
+                        size=8,
+                        brush=pt_brush,
+                        pen=pt_pen,
+                    )
+                    self.plot_widget.addItem(scatter)
+
         elif table.table_type == TableType.COLUMN:
-            # Column Table
             group_data = table.get_all_group_values()
             names = list(group_data.keys())
             num_cols = len(names)
             if num_cols == 0:
                 return
 
-            self.plot_widget.setLabel("bottom", "Groups", color="black")
-            self.plot_widget.setLabel("left", f"Value (Mean ± {error_label})", color="black")
+            self.plot_widget.setLabel("bottom", f"Value (Mean ± {error_label})", color="black")
+            self.plot_widget.setLabel("left", "Depth in meters", color="black")
 
-            ticks = []
+            ticks = [(pos, name) for pos, name in enumerate(names)]
+            self.plot_widget.getAxis("left").setTicks([ticks])
+
+            all_means = []
+            all_positions = []
+
             for pos, name in enumerate(names):
-                dx_pos = float(pos * np.cos(theta) * d)
-                ticks.append((pos + dx_pos, name))
-            self.plot_widget.getAxis("bottom").setTicks([ticks])
-
-            # Back-to-front topological order: Z_max -> Z_0
-            for pos in reversed(range(num_cols)):
-                name = names[pos]
                 vals = np.array(group_data[name], dtype=np.float64)
-                if len(vals) == 0:
+                if len(vals) == 0 or np.all(np.isnan(vals)):
                     continue
 
-                has_custom_color = name in self.custom_series_colors
-                custom_color = self.custom_series_colors.get(name)
-                custom_opacity = self.custom_series_opacities.get(name, 1.0 if is_grayscale else 0.8)
+                valid_vals = vals[~np.isnan(vals)]
+                if len(valid_vals) == 0:
+                    continue
 
-                if is_grayscale and not has_custom_color:
-                    base_color = QColor(60 + (pos * 40) % 160, 60 + (pos * 40) % 160, 60 + (pos * 40) % 160)
-                else:
-                    base_color = custom_color or self.COLOR_PALETTE[pos % len(self.COLOR_PALETTE)]
-
-                alpha = int(round(custom_opacity * 255))
-                front_color = QColor(base_color)
-                front_color.setAlpha(alpha)
-                top_color = base_color.lighter(115)
-                top_color.setAlpha(alpha)
-                side_color = base_color.darker(120)
-                side_color.setAlpha(alpha)
-
-                front_brush = QBrush(front_color)
-                top_brush = QBrush(top_color)
-                side_brush = QBrush(side_color)
-
-                front_pen = pg.mkPen(base_color.darker(140), width=1.0)
-                top_pen = pg.mkPen(base_color.darker(130), width=1.0)
-                side_pen = pg.mkPen(base_color.darker(150), width=1.0)
-                err_pen = pg.mkPen(base_color.darker(160), width=1.5)
-
-                mean = float(np.mean(vals))
-                if len(vals) > 1:
-                    sd = float(np.std(vals, ddof=1))
-                    sem = sd / np.sqrt(len(vals))
+                mean = float(np.mean(valid_vals))
+                if len(valid_vals) > 1:
+                    sd = float(np.std(valid_vals, ddof=1))
+                    sem = sd / np.sqrt(len(valid_vals))
                     if error_label == "SD":
                         err_val = sd
                     elif error_label == "95% CI":
                         try:
                             from scipy import stats
-                            t_crit = float(stats.t.ppf(0.975, df=len(vals) - 1))
+                            t_crit = float(stats.t.ppf(0.975, df=len(valid_vals) - 1))
                             err_val = sem * t_crit
                         except Exception:
                             err_val = sem * 1.96
@@ -1493,69 +1414,160 @@ class ScientificPlotCanvas(QWidget):
                 else:
                     err_val = 0.0
 
-                z = pos
-                dx_z, dy_z = compute_isometric_projection(0.0, 0.0, z, theta=theta, d=d)
-                base_z = (num_cols - pos) * 10
+                all_means.append(mean)
+                all_positions.append(pos)
 
-                x_center = pos
-                x_l = x_center - bar_w / 2.0 + dx_z
-                x_r = x_center + bar_w / 2.0 + dx_z
-                y_b = dy_z
-                y_t = mean + dy_z
+                has_custom_color = name in self.custom_series_colors
+                custom_color = self.custom_series_colors.get(name)
+                custom_opacity = self.custom_series_opacities.get(name, 1.0 if is_grayscale else 0.8)
 
-                # Top face
-                top_poly = QPolygonF([
-                    QPointF(x_l, y_t),
-                    QPointF(x_r, y_t),
-                    QPointF(x_r + delta_x, y_t + delta_y),
-                    QPointF(x_l + delta_x, y_t + delta_y),
-                ])
-                top_item = QGraphicsPolygonItem(top_poly)
-                top_item.setBrush(top_brush)
-                top_item.setPen(top_pen)
-                top_item.setZValue(base_z + 1)
-                self.plot_widget.addItem(top_item)
+                if is_grayscale and not has_custom_color:
+                    base_color = QColor(0, 0, 0)
+                else:
+                    base_color = custom_color or self.COLOR_PALETTE[pos % len(self.COLOR_PALETTE)]
 
-                # Side face (right)
-                side_poly = QPolygonF([
-                    QPointF(x_r, y_b),
-                    QPointF(x_r, y_t),
-                    QPointF(x_r + delta_x, y_t + delta_y),
-                    QPointF(x_r + delta_x, y_b + delta_y),
-                ])
-                side_item = QGraphicsPolygonItem(side_poly)
-                side_item.setBrush(side_brush)
-                side_item.setPen(side_pen)
-                side_item.setZValue(base_z + 2)
-                self.plot_widget.addItem(side_item)
+                pt_pen = pg.mkPen("k", width=1.5)
+                pt_brush = pg.mkBrush("k" if is_grayscale else base_color)
+                err_pen = pg.mkPen("k", width=1.5)
 
-                # Front face
-                front_poly = QPolygonF([
-                    QPointF(x_l, y_b),
-                    QPointF(x_r, y_b),
-                    QPointF(x_r, y_t),
-                    QPointF(x_l, y_t),
-                ])
-                front_item = QGraphicsPolygonItem(front_poly)
-                front_item.setBrush(front_brush)
-                front_item.setPen(front_pen)
-                front_item.setZValue(base_z + 3)
-                self.plot_widget.addItem(front_item)
-
-                # Error whiskers on front face
                 if err_val > 0:
-                    top_err = np.array([err_val])
-                    bot_err = np.zeros_like(top_err) if self.whisker_direction == "Upper (+) Only" else top_err
+                    right_err = np.array([err_val])
+                    left_err = np.zeros_like(right_err) if self.whisker_direction == "Upper (+) Only" else right_err
                     err = pg.ErrorBarItem(
-                        x=np.array([(x_l + x_r) / 2.0]),
-                        y=np.array([y_t]),
-                        top=top_err,
-                        bottom=bot_err,
+                        x=np.array([mean]),
+                        y=np.array([pos]),
+                        left=left_err,
+                        right=right_err,
                         pen=err_pen,
-                        beam=0.1,
+                        beam=0.2,
                     )
-                    err.setZValue(base_z + 4)
                     self.plot_widget.addItem(err)
+
+            if all_means:
+                line_item = pg.PlotDataItem(
+                    x=np.array(all_means),
+                    y=np.array(all_positions),
+                    pen=pg.mkPen("k" if is_grayscale else "b", width=2.0),
+                )
+                self.plot_widget.addItem(line_item)
+
+                scatter = pg.ScatterPlotItem(
+                    x=np.array(all_means),
+                    y=np.array(all_positions),
+                    symbol="o",
+                    size=9,
+                    brush=pg.mkBrush("k"),
+                    pen=pg.mkPen("k", width=1.5),
+                )
+                self.plot_widget.addItem(scatter)
+
+        elif table.table_type == TableType.XY:
+            # XY table: X column is Depth, Y columns are measurements
+            num_groups = len(table.y_group_titles)
+            if num_groups == 0:
+                return
+
+            y_lbl = table.x_title or "Depth in meters"
+            self.plot_widget.setLabel("left", y_lbl, color="black")
+            if num_groups == 1 and table.y_group_titles[0]:
+                x_lbl = f"{table.y_group_titles[0]} (Mean ± {error_label})"
+            else:
+                x_lbl = f"Measurement (Mean ± {error_label})"
+            self.plot_widget.setLabel("bottom", x_lbl, color="black")
+
+            x_vals = table.x_data
+
+            for g_idx in range(num_groups):
+                g_title = table.y_group_titles[g_idx]
+                has_custom_color = g_title in self.custom_series_colors
+                custom_color = self.custom_series_colors.get(g_title)
+                custom_opacity = self.custom_series_opacities.get(g_title, 1.0 if is_grayscale else 0.8)
+
+                if is_grayscale and not has_custom_color:
+                    base_color = QColor(0, 0, 0)
+                else:
+                    base_color = custom_color or self.COLOR_PALETTE[g_idx % len(self.COLOR_PALETTE)]
+
+                alpha = int(round(custom_opacity * 255))
+                pt_color = QColor(base_color)
+                pt_color.setAlpha(alpha)
+
+                pt_brush = pg.mkBrush(pt_color)
+                pt_pen = pg.mkPen("k" if is_grayscale else base_color.darker(140), width=1.5)
+                line_pen = pg.mkPen(color=base_color, width=2.0)
+                err_pen = pg.mkPen("k" if is_grayscale else base_color.darker(150), width=1.5)
+
+                if num_groups > 1 and self.plot_widget.plotItem.legend is not None:
+                    dummy = pg.PlotDataItem(pen=line_pen, brush=pt_brush, name=g_title)
+                    self.plot_widget.plotItem.legend.addItem(dummy, g_title)
+
+                series_means = []
+                series_depths = []
+
+                for r, x in enumerate(x_vals):
+                    if np.isnan(x):
+                        continue
+                    valid_y = []
+                    for s in range(table.num_replicates):
+                        if not table.is_excluded(r, "Y", g_idx, s):
+                            v = table.y_data[g_idx, r, s]
+                            if not np.isnan(v):
+                                valid_y.append(float(v))
+                    if not valid_y:
+                        continue
+
+                    mean = float(np.mean(valid_y))
+                    if len(valid_y) > 1:
+                        sd = float(np.std(valid_y, ddof=1))
+                        sem = sd / np.sqrt(len(valid_y))
+                        if error_label == "SD":
+                            err_val = sd
+                        elif error_label == "95% CI":
+                            try:
+                                from scipy import stats
+                                t_crit = float(stats.t.ppf(0.975, df=len(valid_y) - 1))
+                                err_val = sem * t_crit
+                            except Exception:
+                                err_val = sem * 1.96
+                        else:
+                            err_val = sem
+                    else:
+                        err_val = 0.0
+
+                    series_means.append(mean)
+                    series_depths.append(float(x))
+
+                    if err_val > 0:
+                        right_err = np.array([err_val])
+                        left_err = np.zeros_like(right_err) if self.whisker_direction == "Upper (+) Only" else right_err
+                        err = pg.ErrorBarItem(
+                            x=np.array([mean]),
+                            y=np.array([float(x)]),
+                            left=left_err,
+                            right=right_err,
+                            pen=err_pen,
+                            beam=0.2,
+                        )
+                        self.plot_widget.addItem(err)
+
+                if series_means:
+                    line_item = pg.PlotDataItem(
+                        x=np.array(series_means),
+                        y=np.array(series_depths),
+                        pen=line_pen,
+                    )
+                    self.plot_widget.addItem(line_item)
+
+                    sym = self.GRAYSCALE_SYMBOLS[g_idx % len(self.GRAYSCALE_SYMBOLS)]["symbol"] if is_grayscale else "o"
+                    scatter = pg.ScatterPlotItem(
+                        x=np.array(series_means),
+                        y=np.array(series_depths),
+                        symbol=sym,
+                        size=9,
+                        brush=pt_brush,
+                        pen=pt_pen,
+                    )
+                    self.plot_widget.addItem(scatter)
 
         else:
             self._render_xy_graph()
@@ -1874,6 +1886,4 @@ class ScientificPlotCanvas(QWidget):
             painter.end()
 
 
-# Alias for backward compatibility
-ScientificPlotCanvas.compute_isometric_projection = staticmethod(compute_isometric_projection)
 GraphCanvasWidget = ScientificPlotCanvas

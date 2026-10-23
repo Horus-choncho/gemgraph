@@ -25,6 +25,9 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QTreeWidget,
     QTreeWidgetItem,
+    QRadioButton,
+    QTabWidget,
+    QWidget,
 )
 from src.math.nonlinear import STANDARD_MODELS, ConvergencePreset
 
@@ -381,25 +384,82 @@ class NewLayoutDialog(QDialog):
 
 
 class AssignGraphDialog(QDialog):
-    """Dialog allowing user to link an available project graph or pinned snapshot to a layout placeholder."""
+    """
+    Dialog allowing user to link an available project graph or pinned snapshot to a layout placeholder,
+    and configure scaling and rotation (Normal, 90° clockwise Depth chart, 90° counter-clockwise).
+    Matches GraphPad Prism 'Place Graph on Layout' dialog.
+    """
 
-    def __init__(self, document: Any, current_graph_id: Optional[str] = None, parent=None) -> None:
+    def __init__(
+        self,
+        document: Any,
+        current_graph_id: Optional[str] = None,
+        current_rotation: int = 0,
+        current_scale: float = 1.0,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.document = document
         self.selected_graph_id: Optional[str] = current_graph_id
         self.selected_graph_title: Optional[str] = None
 
-        self.setWindowTitle("Assign Graph to Placeholder")
-        self.resize(460, 400)
+        self.setWindowTitle("Place Graph on Layout")
+        self.resize(500, 440)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Select a graph or snapshot to display in this placeholder slot:"))
+        main_layout = QVBoxLayout(self)
 
-        self.tree = QTreeWidget()
+        self.tab_widget = QTabWidget(self)
+
+        # Tab 1: Assign Graph
+        tab_assign = QWidget(self)
+        assign_layout = QVBoxLayout(tab_assign)
+        assign_layout.addWidget(QLabel("Select a graph or snapshot to display in this placeholder slot:"))
+
+        self.tree = QTreeWidget(tab_assign)
         self.tree.setHeaderLabels(["Graph / Snapshot Title", "Type"])
         self.tree.setAnimated(True)
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
-        layout.addWidget(self.tree)
+        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        assign_layout.addWidget(self.tree)
+
+        self.tab_widget.addTab(tab_assign, "Assign Graph")
+
+        # Tab 2: Size and Location
+        tab_size = QWidget(self)
+        size_layout = QVBoxLayout(tab_size)
+
+        grp_scale = QGroupBox("Scaling Factor", tab_size)
+        scale_form = QFormLayout(grp_scale)
+        self.spin_scale = QSpinBox(grp_scale)
+        self.spin_scale.setRange(10, 500)
+        self.spin_scale.setSingleStep(5)
+        self.spin_scale.setSuffix(" %")
+        self.spin_scale.setValue(int(round(max(0.1, min(5.0, current_scale)) * 100)))
+        scale_form.addRow("Scaling Factor:", self.spin_scale)
+        size_layout.addWidget(grp_scale)
+
+        grp_rot = QGroupBox("Rotation", tab_size)
+        rot_vbox = QVBoxLayout(grp_rot)
+        self.radio_rot_0 = QRadioButton("Normal (0°)", grp_rot)
+        self.radio_rot_90 = QRadioButton("90 degrees clockwise (depth chart)", grp_rot)
+        self.radio_rot_270 = QRadioButton("90 degrees counter clockwise", grp_rot)
+        rot_vbox.addWidget(self.radio_rot_0)
+        rot_vbox.addWidget(self.radio_rot_90)
+        rot_vbox.addWidget(self.radio_rot_270)
+
+        norm_rot = current_rotation % 360
+        if norm_rot == 90:
+            self.radio_rot_90.setChecked(True)
+        elif norm_rot in (270, -90):
+            self.radio_rot_270.setChecked(True)
+        else:
+            self.radio_rot_0.setChecked(True)
+
+        size_layout.addWidget(grp_rot)
+        size_layout.addStretch()
+
+        self.tab_widget.addTab(tab_size, "Size and Location")
+        main_layout.addWidget(self.tab_widget)
 
         self._populate_graphs()
 
@@ -410,7 +470,7 @@ class AssignGraphDialog(QDialog):
         self.btn_ok.setText("Assign Graph")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        main_layout.addWidget(buttons)
 
     def _populate_graphs(self) -> None:
         self.tree.clear()
@@ -430,13 +490,33 @@ class AssignGraphDialog(QDialog):
             from src.core.sheet import SheetType, GraphSheet
             if sheet.sheet_type == SheetType.GRAPH and isinstance(sheet, GraphSheet):
                 gt_val = sheet.graph_type.value if hasattr(sheet.graph_type, "value") else str(sheet.graph_type)
-                parent_node = pinned_root if sheet.is_pinned else graphs_root
-                item = QTreeWidgetItem(parent_node, [sheet.title, gt_val])
+                clean_title = sheet.title.replace("❄️", "").replace("🔥", "").strip()
+                if sheet.is_pinned:
+                    parent_node = pinned_root
+                    if getattr(sheet, "is_frozen", False):
+                        display_title = f"❄️  {clean_title}"
+                    else:
+                        display_title = f"🔥  {clean_title}"
+                else:
+                    parent_node = graphs_root
+                    if getattr(sheet, "is_frozen", False):
+                        display_title = f"❄️  {clean_title}"
+                    else:
+                        display_title = clean_title
+
+                item = QTreeWidgetItem(parent_node, [display_title, gt_val])
                 item.setData(0, Qt.ItemDataRole.UserRole, sheet.sheet_id)
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, sheet.title)
                 if sheet.sheet_id == self.selected_graph_id:
                     self.tree.setCurrentItem(item)
 
         self.tree.expandAll()
+
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+        sid = item.data(0, Qt.ItemDataRole.UserRole)
+        if sid is not None:
+            self._on_selection_changed()
+            self.accept()
 
     def _on_selection_changed(self) -> None:
         item = self.tree.currentItem()
@@ -448,7 +528,55 @@ class AssignGraphDialog(QDialog):
             self.selected_graph_title = None
         elif sid:
             self.selected_graph_id = sid
-            self.selected_graph_title = item.text(0)
+            # Return sheet title or display title
+            raw_title = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            self.selected_graph_title = raw_title if raw_title else item.text(0)
 
     def get_selected_graph(self) -> Tuple[Optional[str], Optional[str]]:
         return self.selected_graph_id, self.selected_graph_title
+
+    def get_selected_rotation(self) -> int:
+        if self.radio_rot_90.isChecked():
+            return 90
+        elif self.radio_rot_270.isChecked():
+            return 270
+        return 0
+
+    def get_selected_scale(self) -> float:
+        return float(self.spin_scale.value()) / 100.0
+
+
+class PageSetupDialog(QDialog):
+    """Dialog allowing user to configure page format and orientation for a PageLayout."""
+
+    def __init__(self, current_format: str = "A4", current_orientation: str = "Portrait", parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Page Setup")
+        self.resize(320, 160)
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.combo_format = QComboBox()
+        self.combo_format.addItems(["A4", "Letter", "Slide 16:9", "Slide 4:3"])
+        idx = self.combo_format.findText(current_format)
+        if idx >= 0:
+            self.combo_format.setCurrentIndex(idx)
+        form.addRow("Page Format:", self.combo_format)
+
+        self.combo_orientation = QComboBox()
+        self.combo_orientation.addItems(["Portrait", "Landscape"])
+        idx_o = self.combo_orientation.findText(current_orientation, Qt.MatchFlag.MatchFixedString)
+        if idx_o >= 0:
+            self.combo_orientation.setCurrentIndex(idx_o)
+        form.addRow("Orientation:", self.combo_orientation)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_settings(self) -> Tuple[str, str]:
+        return self.combo_format.currentText(), self.combo_orientation.currentText()

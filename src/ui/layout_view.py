@@ -1,14 +1,14 @@
 """
 Presentation Page Layout View Widget for GemGraph.
 Integrates LayoutCanvas with manipulation toolbar for template presets, alignment tools,
-dimension equalization, page setup controls, and high-DPI export actions.
+dimension equalization, page setup controls, rich text boxes, global undo/redo, and high-DPI export actions.
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction, QIcon, QUndoCommand, QUndoStack
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -37,6 +37,191 @@ from src.core.layout import (
 from src.ui.layout_canvas import LayoutCanvas
 
 
+# =============================================================================
+# Undo / Redo Commands for Presentation Page Layouts
+# =============================================================================
+
+class AddPlaceholderCommand(QUndoCommand):
+    def __init__(self, layout: PageLayout, placeholder: Placeholder, view: LayoutView) -> None:
+        super().__init__("Add Graph Placeholder")
+        self.layout = layout
+        self.placeholder = placeholder
+        self.view = view
+
+    def redo(self) -> None:
+        if self.placeholder not in self.layout.placeholders:
+            self.layout.add_placeholder(self.placeholder)
+        self.view.canvas.rebuild_scene()
+        self.view.layoutModified.emit()
+
+    def undo(self) -> None:
+        self.layout.remove_placeholder(self.placeholder.slot_id)
+        self.view.canvas.rebuild_scene()
+        self.view.layoutModified.emit()
+
+
+class DeletePlaceholderCommand(QUndoCommand):
+    def __init__(self, layout: PageLayout, placeholder: Placeholder, view: LayoutView) -> None:
+        super().__init__("Delete Graph Placeholder")
+        self.layout = layout
+        self.placeholder = placeholder
+        self.view = view
+
+    def redo(self) -> None:
+        self.layout.remove_placeholder(self.placeholder.slot_id)
+        self.view.canvas.rebuild_scene()
+        self.view.layoutModified.emit()
+
+    def undo(self) -> None:
+        if self.placeholder not in self.layout.placeholders:
+            self.layout.add_placeholder(self.placeholder)
+        self.view.canvas.rebuild_scene()
+        self.view.layoutModified.emit()
+
+
+class AssignGraphCommand(QUndoCommand):
+    def __init__(
+        self,
+        placeholder: Placeholder,
+        new_graph_id: Optional[str],
+        new_title: Optional[str],
+        view: LayoutView,
+        new_rotation: int = 0,
+        new_scale: float = 1.0,
+    ) -> None:
+        super().__init__("Assign Graph to Slot")
+        self.placeholder = placeholder
+        self.new_graph_id = new_graph_id
+        self.new_title = new_title
+        self.new_rotation = new_rotation
+        self.new_scale = new_scale
+        self.old_graph_id = placeholder.graph_id
+        self.old_title = placeholder.linked_graph_title
+        self.old_rotation = getattr(placeholder, "rotation", 0)
+        self.old_scale = getattr(placeholder, "custom_scale", 1.0)
+        self.view = view
+
+    def redo(self) -> None:
+        if self.new_graph_id:
+            self.placeholder.assign_graph(self.new_graph_id, self.new_title)
+        else:
+            self.placeholder.unassign_graph()
+        self.placeholder.rotation = self.new_rotation
+        self.placeholder.custom_scale = self.new_scale
+        self.view.canvas.rebuild_scene()
+        self.view.canvas.placeholderAssigned.emit(self.placeholder.slot_id)
+        self.view.layoutModified.emit()
+
+    def undo(self) -> None:
+        if self.old_graph_id:
+            self.placeholder.assign_graph(self.old_graph_id, self.old_title)
+        else:
+            self.placeholder.unassign_graph()
+        self.placeholder.rotation = self.old_rotation
+        self.placeholder.custom_scale = self.old_scale
+        self.view.canvas.rebuild_scene()
+        self.view.canvas.placeholderAssigned.emit(self.placeholder.slot_id)
+        self.view.layoutModified.emit()
+
+
+class MoveResizePlaceholderCommand(QUndoCommand):
+    def __init__(
+        self,
+        placeholder: Placeholder,
+        old_rect: Tuple[float, float, float, float],
+        new_rect: Tuple[float, float, float, float],
+        view: LayoutView,
+    ) -> None:
+        super().__init__("Move / Resize Placeholder")
+        self.placeholder = placeholder
+        self.old_rect = old_rect
+        self.new_rect = new_rect
+        self.view = view
+
+    def redo(self) -> None:
+        self.placeholder.rect = self.new_rect
+        self.view.canvas.rebuild_scene()
+        self.view.layoutModified.emit()
+
+    def undo(self) -> None:
+        self.placeholder.rect = self.old_rect
+        self.view.canvas.rebuild_scene()
+        self.view.layoutModified.emit()
+
+
+class AddTextAnnotationCommand(QUndoCommand):
+    def __init__(self, layout: PageLayout, annotation: Dict[str, Any], view: LayoutView) -> None:
+        super().__init__("Add Text Box")
+        self.layout = layout
+        self.annotation = annotation
+        self.view = view
+
+    def redo(self) -> None:
+        if not hasattr(self.layout, "annotations") or self.layout.annotations is None:
+            self.layout.annotations = []
+        if self.annotation not in self.layout.annotations:
+            self.layout.annotations.append(self.annotation)
+        self.view.canvas.rebuild_scene()
+        self.view.layoutModified.emit()
+
+    def undo(self) -> None:
+        if hasattr(self.layout, "annotations") and self.layout.annotations:
+            self.layout.annotations = [a for a in self.layout.annotations if a.get("id") != self.annotation.get("id")]
+        self.view.canvas.rebuild_scene()
+        self.view.layoutModified.emit()
+
+
+class DeleteTextAnnotationCommand(QUndoCommand):
+    def __init__(self, layout: PageLayout, annotation: Dict[str, Any], view: LayoutView) -> None:
+        super().__init__("Delete Text Box")
+        self.layout = layout
+        self.annotation = annotation
+        self.view = view
+
+    def redo(self) -> None:
+        if hasattr(self.layout, "annotations") and self.layout.annotations:
+            self.layout.annotations = [a for a in self.layout.annotations if a.get("id") != self.annotation.get("id")]
+        self.view.canvas.rebuild_scene()
+        self.view.layoutModified.emit()
+
+    def undo(self) -> None:
+        if not hasattr(self.layout, "annotations") or self.layout.annotations is None:
+            self.layout.annotations = []
+        if self.annotation not in self.layout.annotations:
+            self.layout.annotations.append(self.annotation)
+        self.view.canvas.rebuild_scene()
+        self.view.layoutModified.emit()
+
+
+class EditTextAnnotationCommand(QUndoCommand):
+    def __init__(
+        self,
+        annotation: Dict[str, Any],
+        old_data: Dict[str, Any],
+        new_data: Dict[str, Any],
+        view: LayoutView,
+    ) -> None:
+        super().__init__("Edit Text Box")
+        self.annotation = annotation
+        self.old_data = old_data
+        self.new_data = new_data
+        self.view = view
+
+    def redo(self) -> None:
+        self.annotation.update(self.new_data)
+        self.view.canvas.rebuild_scene()
+        self.view.layoutModified.emit()
+
+    def undo(self) -> None:
+        self.annotation.update(self.old_data)
+        self.view.canvas.rebuild_scene()
+        self.view.layoutModified.emit()
+
+
+# =============================================================================
+# LayoutView Central Widget
+# =============================================================================
+
 class LayoutView(QWidget):
     """
     Center pane widget hosting presentation layout canvas and manipulation toolbar.
@@ -48,6 +233,7 @@ class LayoutView(QWidget):
         super().__init__(parent)
         self.current_layout: Optional[PageLayout] = None
         self.current_document: Any = document
+        self.undo_stack = QUndoStack(self)
 
         self._setup_ui()
 
@@ -126,7 +312,14 @@ class LayoutView(QWidget):
 
         self.toolbar.addSeparator()
 
-        # 4. Page Setup Controls
+        # 4. Rich Text Box Creation Button
+        self.btn_add_text = QPushButton("📝 Add Text Box", self)
+        self.btn_add_text.clicked.connect(lambda: self.canvas.action_add_text_at(None))
+        self.toolbar.addWidget(self.btn_add_text)
+
+        self.toolbar.addSeparator()
+
+        # 5. Page Setup Controls
         self.toolbar.addWidget(QLabel(" Format: "))
         self.combo_format = QComboBox(self)
         self.combo_format.addItems(["A4", "Letter", "Slide 16:9", "Slide 4:3"])
@@ -141,7 +334,7 @@ class LayoutView(QWidget):
 
         self.toolbar.addSeparator()
 
-        # 5. Fit & Refresh Actions
+        # 6. Fit & Refresh Actions
         self.btn_fit = QPushButton("🔍 Fit Page", self)
         self.btn_fit.clicked.connect(self._fit_page)
         self.toolbar.addWidget(self.btn_fit)
@@ -152,7 +345,7 @@ class LayoutView(QWidget):
 
         self.toolbar.addSeparator()
 
-        # 6. Export Layout Button
+        # 7. Export Layout Button
         self.btn_export = QPushButton("📤 Export Layout...", self)
         self.btn_export.clicked.connect(self._export_layout_dialog)
         self.toolbar.addWidget(self.btn_export)
@@ -161,12 +354,64 @@ class LayoutView(QWidget):
 
         # Layout Presentation Canvas
         self.canvas = LayoutCanvas(self)
+        self.canvas.layout_view = self
         self.canvas.placeholderAssigned.connect(lambda slot: self.layoutModified.emit())
         self.canvas.layoutModifiedSignal.connect(self.layoutModified.emit)
         main_layout.addWidget(self.canvas)
 
+    def undo(self) -> None:
+        """Executes undo on layout operations."""
+        if self.undo_stack.canUndo():
+            self.undo_stack.undo()
+
+    def redo(self) -> None:
+        """Executes redo on layout operations."""
+        if self.undo_stack.canRedo():
+            self.undo_stack.redo()
+
+    def push_add_placeholder_command(self, placeholder: Placeholder) -> None:
+        if self.current_layout:
+            self.undo_stack.push(AddPlaceholderCommand(self.current_layout, placeholder, self))
+
+    def push_delete_placeholder_command(self, placeholder: Placeholder) -> None:
+        if self.current_layout:
+            self.undo_stack.push(DeletePlaceholderCommand(self.current_layout, placeholder, self))
+
+    def push_assign_graph_command(
+        self,
+        placeholder: Placeholder,
+        graph_id: Optional[str],
+        title: Optional[str],
+        rotation: int = 0,
+        scale: float = 1.0,
+    ) -> None:
+        self.undo_stack.push(AssignGraphCommand(placeholder, graph_id, title, self, new_rotation=rotation, new_scale=scale))
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.canvas.fit_page_to_window()
+
+    def push_move_resize_command(
+        self,
+        placeholder: Placeholder,
+        old_rect: Tuple[float, float, float, float],
+        new_rect: Tuple[float, float, float, float],
+    ) -> None:
+        self.undo_stack.push(MoveResizePlaceholderCommand(placeholder, old_rect, new_rect, self))
+
+    def push_add_text_command(self, annotation: Dict[str, Any]) -> None:
+        if self.current_layout:
+            self.undo_stack.push(AddTextAnnotationCommand(self.current_layout, annotation, self))
+
+    def push_delete_text_command(self, annotation: Dict[str, Any]) -> None:
+        if self.current_layout:
+            self.undo_stack.push(DeleteTextAnnotationCommand(self.current_layout, annotation, self))
+
+    def push_edit_text_command(self, annotation: Dict[str, Any], old_data: Dict[str, Any], new_data: Dict[str, Any]) -> None:
+        self.undo_stack.push(EditTextAnnotationCommand(annotation, old_data, new_data, self))
+
     def set_layout(self, layout: PageLayout, document: Any = None) -> None:
-        """Sets the active PageLayout and updates toolbar controls and canvas."""
+        """Sets the active PageLayout and updates toolbar controls and canvas without collapsing items."""
         self.current_layout = layout
         if document is not None:
             self.current_document = document

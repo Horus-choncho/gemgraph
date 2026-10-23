@@ -259,5 +259,50 @@ class TestFormatSeriesDialog(unittest.TestCase):
         self.assertAlmostEqual(brush_a.color().alpha(), int(255 * 0.60), delta=2)
 
 
+class TestDepthGraphParityRefinements(unittest.TestCase):
+    """Verifies reverse-engineered Depth Graph parity without 2.5D projection math."""
+
+    def test_depth_graph_rendering_and_whisker_modes(self) -> None:
+        table = DataTable(table_id="tbl_depth", title="Depth Test", table_type=TableType.XY, num_rows=4, num_replicates=2)
+        table.x_columns[0]["data"] = np.array([0.0, 10.0, 20.0, 30.0])
+        for r in range(4):
+            table.set_cell_value(r, "Y", 0, 0, 50.0 - r * 5.0)
+            table.set_cell_value(r, "Y", 0, 1, 52.0 - r * 5.0)
+
+        canvas = ScientificPlotCanvas()
+        canvas.set_error_style("SD")
+        canvas.set_whisker_direction("Both (±)")
+        canvas.update_data(table, graph_type=GraphType.DEPTH_GRAPH)
+
+        # Inverted vertical axis
+        self.assertTrue(canvas.plot_widget.getViewBox().yInverted())
+
+        # Contains horizontal error whiskers and scatter points
+        items = canvas.plot_widget.plotItem.items
+        err_items = [it for it in items if isinstance(it, pg.ErrorBarItem)]
+        scatter_items = [it for it in items if isinstance(it, pg.ScatterPlotItem)]
+        self.assertGreater(len(err_items), 0)
+        self.assertGreater(len(scatter_items), 0)
+
+        # Toggle whisker direction
+        canvas.set_whisker_direction("Upper (+) Only")
+        self.assertEqual(canvas.whisker_direction, "Upper (+) Only")
+
+        # Column table depth profile
+        col_table = DataTable(
+            table_id="tbl_col_d",
+            title="Col Depth",
+            table_type=TableType.COLUMN,
+            num_rows=3,
+            num_replicates=1,
+            y_group_titles=["0-5m", "5-10m", "10-20m"],
+        )
+        col_table.set_cell_value(0, "Y", 0, 0, 12.0)
+        col_table.set_cell_value(0, "Y", 1, 0, 8.5)
+        col_table.set_cell_value(0, "Y", 2, 0, 4.2)
+        canvas.update_data(col_table, graph_type=GraphType.DEPTH_GRAPH)
+        self.assertTrue(canvas.plot_widget.getViewBox().yInverted())
+
+
 if __name__ == "__main__":
     unittest.main()
