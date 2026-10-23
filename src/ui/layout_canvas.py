@@ -135,6 +135,7 @@ class ResizeHandleItem(QGraphicsRectItem):
         if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
             self.drag_start_pos = None
             old_rect = self._handle_start_rect
+            self._handle_start_rect = None
             new_rect = self.parent_placeholder.placeholder.rect
             if old_rect is not None and old_rect != new_rect:
                 layout_view = getattr(self.parent_placeholder.canvas, "layout_view", None)
@@ -414,6 +415,7 @@ class GraphPlaceholderItem(QGraphicsRectItem):
             pass
         self._sync_placeholder_from_geometry()
         old_rect = getattr(self, "_drag_start_rect", None)
+        self._drag_start_rect = None
         new_rect = self.placeholder.rect
         if old_rect is not None and old_rect != new_rect:
             layout_view = getattr(self.canvas, "layout_view", None)
@@ -454,11 +456,15 @@ class GraphPlaceholderItem(QGraphicsRectItem):
 
     def mouseDoubleClickEvent(self, event) -> None:
         """Opens AssignGraphDialog on mouse double-click."""
-        if event.button() == Qt.MouseButton.LeftButton:
+        if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
             self.open_assign_dialog()
-            event.accept()
+            if hasattr(event, "accept"):
+                event.accept()
         else:
-            super().mouseDoubleClickEvent(event)
+            try:
+                super().mouseDoubleClickEvent(event)
+            except (TypeError, RuntimeError):
+                pass
 
     def paint(self, painter: QPainter, option: Any, widget: Optional[QWidget] = None) -> None:
         if not painter or not painter.isActive():
@@ -571,34 +577,47 @@ class TextResizeHandleItem(QGraphicsRectItem):
         self._start_pos: Optional[QPointF] = None
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_start_pos = event.scenePos()
+        if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
+            self.drag_start_pos = event.scenePos() if hasattr(event, "scenePos") else None
             self._start_width = self.parent_text_item.boundingRect().width()
             self._start_pos = self.parent_text_item.pos()
-            event.accept()
+            if hasattr(event, "accept"):
+                event.accept()
         else:
-            super().mousePressEvent(event)
+            try:
+                super().mousePressEvent(event)
+            except (TypeError, RuntimeError):
+                pass
 
     def mouseMoveEvent(self, event) -> None:
         if self.drag_start_pos is not None:
+            pos = event.scenePos() if hasattr(event, "scenePos") else event.pos()
             self.parent_text_item.handle_resize(
                 self.handle_index,
-                event.scenePos(),
+                pos,
                 self.drag_start_pos,
                 self._start_width,
                 self._start_pos,
             )
-            event.accept()
+            if hasattr(event, "accept"):
+                event.accept()
         else:
-            super().mouseMoveEvent(event)
+            try:
+                super().mouseMoveEvent(event)
+            except (TypeError, RuntimeError):
+                pass
 
     def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
+        if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
             self.drag_start_pos = None
             self.parent_text_item.finish_resize()
-            event.accept()
+            if hasattr(event, "accept"):
+                event.accept()
         else:
-            super().mouseReleaseEvent(event)
+            try:
+                super().mouseReleaseEvent(event)
+            except (TypeError, RuntimeError):
+                pass
 
 
 class LayoutTextItem(QGraphicsTextItem):

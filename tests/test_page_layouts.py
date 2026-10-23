@@ -1312,7 +1312,8 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
         """Verifies modifying placeholder coordinates triggers deferred command queue safely without mid-event destruction."""
         layout = self.doc.create_layout("Placeholder Deferred Undo Layout")
         layout.placeholders.clear()
-        p = Placeholder(slot_id="slot_def_undo", rect=(0.1, 0.1, 0.3, 0.3))
+        initial_rect = (0.1, 0.1, 0.3, 0.3)
+        p = Placeholder(slot_id="slot_def_undo", rect=initial_rect)
         layout.add_placeholder(p)
 
         view = LayoutView()
@@ -1334,6 +1335,8 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
         app.processEvents()
         self.assertTrue(view.undo_stack.canUndo())
         self.assertEqual(view.undo_stack.count(), 1)
+        moved_rect = layout.placeholders[0].rect
+        self.assertNotEqual(moved_rect, initial_rect)
 
         # 2. Test resize handle mouse release
         item = view.canvas.placeholder_items[0]
@@ -1344,7 +1347,8 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
         handle.mousePressEvent(h_press)
 
         # Simulate resize modification
-        item.placeholder.rect = (0.1, 0.1, 0.45, 0.45)
+        resized_rect = (0.1, 0.1, 0.45, 0.45)
+        item.placeholder.rect = resized_rect
         h_rel = MagicMock()
         h_rel.button.return_value = Qt.MouseButton.LeftButton
         handle.mouseReleaseEvent(h_rel)
@@ -1352,11 +1356,172 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
         # Process deferred resize command
         app.processEvents()
         self.assertEqual(view.undo_stack.count(), 2)
+        self.assertEqual(view.undo_stack.index(), 2)
+
+        # Test undo resize
+        view.undo()
+        app.processEvents()
+        self.assertEqual(view.undo_stack.index(), 1)
+        self.assertEqual(layout.placeholders[0].rect, moved_rect)
+
+        # Test undo move
+        view.undo()
+        app.processEvents()
+        self.assertEqual(view.undo_stack.index(), 0)
+        self.assertEqual(layout.placeholders[0].rect, initial_rect)
+
+        # Test redo
+        view.redo()
+        app.processEvents()
+        self.assertEqual(view.undo_stack.index(), 1)
+        self.assertEqual(layout.placeholders[0].rect, moved_rect)
+
+        view.close()
+
+    def test_layout_text_item_drag_and_resize_undo(self) -> None:
+        """Verifies text item movement and resize handle release triggers deferred undo pushes cleanly."""
+        layout = self.doc.create_layout("Text Drag and Resize Layout")
+        ann = {
+            "id": "ann_text_drag",
+            "type": "text",
+            "text": "Draggable Text",
+            "html": "Draggable Text",
+            "x": 0.15,
+            "y": 0.20,
+            "w": 0.25,
+            "h": 0.15,
+        }
+        layout.annotations = [ann]
+
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        text_item = view.canvas.text_items[0]
+
+        # 1. Drag move text item
+        page_w, page_h = layout.get_dimensions_pt()
+        ev_press = MagicMock()
+        ev_press.button.return_value = Qt.MouseButton.LeftButton
+        text_item.mousePressEvent(ev_press)
+        # Move annotation position via item setPos
+        text_item.setPos(QPointF(0.35 * page_w, 0.40 * page_h))
+        ev_rel = MagicMock()
+        ev_rel.button.return_value = Qt.MouseButton.LeftButton
+        text_item.mouseReleaseEvent(ev_rel)
+
+        app.processEvents()
+        self.assertTrue(view.undo_stack.canUndo())
+        self.assertEqual(view.undo_stack.count(), 1)
+        self.assertAlmostEqual(layout.annotations[0]["x"], 0.35, places=2)
+        self.assertAlmostEqual(layout.annotations[0]["y"], 0.40, places=2)
+
+        # 2. Resize text item via TextResizeHandleItem
+        text_item = view.canvas.text_items[0]
+        handle = text_item.handles[4]  # Bottom-right handle
+        h_press = MagicMock()
+        h_press.button.return_value = Qt.MouseButton.LeftButton
+        h_press.scenePos.return_value = QPointF(100, 100)
+        handle.mousePressEvent(h_press)
+
+        # Mutate width via handle_resize
+        text_item.handle_resize(4, QPointF(180, 100), QPointF(100, 100), 100.0, QPointF(50, 50))
+        h_rel = MagicMock()
+        h_rel.button.return_value = Qt.MouseButton.LeftButton
+        handle.mouseReleaseEvent(h_rel)
+
+        app.processEvents()
+        self.assertEqual(view.undo_stack.count(), 2)
 
         # Test undo
         view.undo()
         app.processEvents()
+        self.assertEqual(view.undo_stack.index(), 1)
+
+        view.undo()
+        app.processEvents()
+        self.assertEqual(view.undo_stack.index(), 0)
+        self.assertAlmostEqual(layout.annotations[0]["x"], 0.15, places=2)
+        self.assertAlmostEqual(layout.annotations[0]["y"], 0.20, places=2)
+
+        view.close()
+
+    def test_layout_text_editing_no_change_and_escape(self) -> None:
+        """Verifies text editing with no changes does not push commands, and Escape key defers command."""
+        layout = self.doc.create_layout("Text Escape Layout")
+        ann = {
+            "id": "ann_text_esc",
+            "type": "text",
+            "text": "Initial Text",
+            "html": "Initial Text",
+            "x": 0.1,
+            "y": 0.1,
+        }
+        layout.annotations = [ann]
+
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        text_item = view.canvas.text_items[0]
+
+        # Double click and unfocus without changing text
+        ev_dbl = MagicMock()
+        ev_dbl.button.return_value = Qt.MouseButton.LeftButton
+        text_item.mouseDoubleClickEvent(ev_dbl)
+        focus_ev = QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.OtherFocusReason)
+        text_item.focusOutEvent(focus_ev)
+        app.processEvents()
+        self.assertEqual(view.undo_stack.count(), 0)
+
+        # Double click, change text, and press Escape
+        text_item.mouseDoubleClickEvent(ev_dbl)
+        text_item.setPlainText("Modified Before Escape")
+        key_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+        text_item.keyPressEvent(key_ev)
+        app.processEvents()
+        self.assertEqual(view.undo_stack.count(), 1)
+        self.assertEqual(layout.annotations[0]["text"], "Modified Before Escape")
+
+        view.close()
+
+    def test_layout_canvas_key_delete_deferred_undo(self) -> None:
+        """Verifies deleting placeholder and text items via Delete key is safely deferred."""
+        layout = self.doc.create_layout("Delete Key Layout")
+        layout.placeholders.clear()
+        p = Placeholder(slot_id="slot_del_test", rect=(0.1, 0.1, 0.3, 0.3))
+        layout.add_placeholder(p)
+        ann = {"id": "ann_del_test", "type": "text", "text": "To Delete", "x": 0.5, "y": 0.5}
+        layout.annotations = [ann]
+
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        self.assertEqual(len(view.canvas.placeholder_items), 1)
+        self.assertEqual(len(view.canvas.text_items), 1)
+
+        # Select placeholder and press Delete
+        view.canvas.placeholder_items[0].setSelected(True)
+        del_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Delete, Qt.KeyboardModifier.NoModifier)
+        view.canvas.keyPressEvent(del_ev)
+        app.processEvents()
+
+        self.assertEqual(view.undo_stack.count(), 1)
+        self.assertEqual(len(layout.placeholders), 0)
+
+        # Select text item and press Delete
+        view.canvas.text_items[0].setSelected(True)
+        view.canvas.keyPressEvent(del_ev)
+        app.processEvents()
+
         self.assertEqual(view.undo_stack.count(), 2)
+        self.assertEqual(len(layout.annotations), 0)
+
+        # Undo text item deletion
+        view.undo()
+        app.processEvents()
+        self.assertEqual(len(layout.annotations), 1)
+
+        # Undo placeholder deletion
+        view.undo()
+        app.processEvents()
+        self.assertEqual(len(layout.placeholders), 1)
+
         view.close()
 
 
