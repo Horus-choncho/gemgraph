@@ -270,6 +270,8 @@ def _save_canvas_state(canvas: Any) -> Dict[str, Any]:
         "result": getattr(canvas, "current_result", None),
         "active_sheet": getattr(canvas, "active_sheet", None),
         "graph_sheet": getattr(canvas, "current_graph_sheet", None),
+        "canvas_size": canvas.size() if hasattr(canvas, "size") else None,
+        "plot_geometry": canvas.plot_widget.geometry() if hasattr(canvas, "plot_widget") else None,
         "type_idx": canvas.type_combo.currentIndex() if hasattr(canvas, "type_combo") else 0,
         "type_text": canvas.type_combo.currentText() if hasattr(canvas, "type_combo") else "",
         "pal_idx": canvas.palette_combo.currentIndex() if hasattr(canvas, "palette_combo") else 0,
@@ -300,6 +302,10 @@ def _restore_canvas_state(canvas: Any, state: Dict[str, Any]) -> None:
         ctrl.blockSignals(True)
 
     try:
+        if state.get("canvas_size") and hasattr(canvas, "resize"):
+            canvas.resize(state["canvas_size"])
+        if state.get("plot_geometry") and hasattr(canvas, "plot_widget"):
+            canvas.plot_widget.setGeometry(state["plot_geometry"])
         canvas.current_table = state["table"]
         canvas.current_result = state["result"]
         canvas.active_sheet = state["active_sheet"]
@@ -349,7 +355,7 @@ def render_graph_to_png_bytes(
         doc = graph_canvas or (target_sheet.document if hasattr(target_sheet, "document") else PrismDocument())
     else:
         target_sheet = graph_sheet
-        doc = document
+        doc = document or getattr(target_sheet, "document", None)
         canvas = graph_canvas
 
     created_canvas = False
@@ -362,6 +368,9 @@ def render_graph_to_png_bytes(
         created_canvas = True
     else:
         saved_state = _save_canvas_state(canvas)
+        canvas.resize(width, height)
+        if hasattr(canvas, "plot_widget"):
+            canvas.plot_widget.setGeometry(0, 0, width, height)
 
     try:
         if isinstance(target_sheet, DataSheet):
@@ -400,17 +409,36 @@ def render_graph_to_png_bytes(
                     if data_sheets:
                         src_sheet = data_sheets[0]
 
-                src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else getattr(src_sheet, "table", None)
+                if isinstance(src_sheet, ResultSheet):
+                    res_sheet = src_sheet
+                    src_table = None
+                    if doc:
+                        for pid in getattr(src_sheet, "parent_sheet_ids", []):
+                            ps = doc.get_sheet(pid)
+                            if isinstance(ps, DataSheet):
+                                src_sheet = ps
+                                src_table = ps.table
+                                break
+                else:
+                    src_table = src_sheet.table if isinstance(src_sheet, DataSheet) else getattr(src_sheet, "table", None)
+                    res_sheet = (
+                        doc.get_sheet(target_sheet.result_sheet_id)
+                        if (doc and target_sheet.result_sheet_id)
+                        else None
+                    )
+
                 if src_table is None and getattr(target_sheet, "snapshot_table", None) is not None:
                     src_table = target_sheet.snapshot_table
 
-                res_sheet = (
-                    doc.get_sheet(target_sheet.result_sheet_id)
-                    if (doc and target_sheet.result_sheet_id)
-                    else None
-                )
                 if res_sheet is None and getattr(target_sheet, "snapshot_result_data", None):
                     res_sheet = ResultSheet.from_dict(target_sheet.snapshot_result_data)
+
+                if res_sheet is None and doc:
+                    for pid in getattr(target_sheet, "parent_sheet_ids", []):
+                        ps = doc.get_sheet(pid)
+                        if isinstance(ps, ResultSheet):
+                            res_sheet = ps
+                            break
             gt = target_sheet.graph_type
         else:
             src_table = getattr(target_sheet, "table", None)

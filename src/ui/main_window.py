@@ -749,8 +749,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, "layout_view") and self.layout_view is not None:
             if self.center_stack.currentWidget() == self.layout_view:
                 self.layout_view.refresh_hot_placeholders()
-            else:
-                self.layout_view.refresh_all_snapshots()
         self.workspace_modified.emit()
 
     def action_undo(self) -> None:

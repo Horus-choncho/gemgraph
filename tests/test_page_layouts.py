@@ -856,6 +856,34 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
         text_item.handle_resize(1, QPointF(500, 100), QPointF(200, 100), initial_w, text_item.pos())
         self.assertGreater(text_item.boundingRect().width(), initial_w)
         text_item.finish_resize()
+        text_item = view.canvas.text_items[0]
+
+        # 6. Double click again, click outside exits editing mode
+        text_item.mouseDoubleClickEvent(dbl_click)
+        self.assertEqual(text_item.textInteractionFlags(), Qt.TextInteractionFlag.TextEditorInteraction)
+        outside_event = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPointF(500, 500),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        view.canvas.mousePressEvent(outside_event)
+        self.assertEqual(text_item.textInteractionFlags(), Qt.TextInteractionFlag.NoTextInteraction)
+
+        # 7. Backspace while editing does NOT delete text item
+        text_item.mouseDoubleClickEvent(dbl_click)
+        self.assertEqual(text_item.textInteractionFlags(), Qt.TextInteractionFlag.TextEditorInteraction)
+        initial_count = len(view.canvas.text_items)
+        bksp_event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Backspace, Qt.KeyboardModifier.NoModifier)
+        view.canvas.keyPressEvent(bksp_event)
+        self.assertEqual(len(view.canvas.text_items), initial_count)
+
+        # 8. Selection preservation across scene rebuild
+        text_item.setSelected(True)
+        view.canvas.rebuild_scene()
+        self.assertTrue(view.canvas.text_items[0].isSelected())
+
         view.close()
 
     def test_depth_graph_dynamic_vertical_axis_label(self) -> None:

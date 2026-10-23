@@ -303,6 +303,25 @@ class TestDepthGraphParityRefinements(unittest.TestCase):
         canvas.update_data(col_table, graph_type=GraphType.DEPTH_GRAPH)
         self.assertTrue(canvas.plot_widget.getViewBox().yInverted())
 
+    def test_depth_graph_vertical_axis_dynamic_binding(self) -> None:
+        """Verifies that Depth Graph dynamically binds its vertical axis and eliminates hardcoded 'Depth in meters'."""
+        canvas = ScientificPlotCanvas()
+
+        # 1. XY table: vertical axis reflects Y column titles, no "Depth in meters"
+        table_xy = DataTable(table_id="tbl_xy", title="Core Depth", table_type=TableType.XY, num_rows=3, y_group_titles=["Oxygen (mg/L)", "Phosphate (uM)"])
+        canvas.update_data(table_xy, graph_type=GraphType.DEPTH_GRAPH)
+        lbl_xy = canvas.plot_widget.getAxis("left").labelText
+        self.assertIn("Oxygen (mg/L)", lbl_xy)
+        self.assertIn("Phosphate (uM)", lbl_xy)
+        self.assertNotIn("Depth in meters", lbl_xy)
+
+        # 2. Column table: vertical axis reflects table title / factor title, no "Depth in meters"
+        col_table = DataTable(table_id="tbl_col", title="Substrate Strata", table_type=TableType.COLUMN, num_rows=3, y_group_titles=["Topsoil", "Subsoil", "Bedrock"])
+        canvas.update_data(col_table, graph_type=GraphType.DEPTH_GRAPH)
+        lbl_col = canvas.plot_widget.getAxis("left").labelText
+        self.assertEqual(lbl_col, "Substrate Strata")
+        self.assertNotIn("Depth in meters", lbl_col)
+
 
 if __name__ == "__main__":
     unittest.main()

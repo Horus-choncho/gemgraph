@@ -250,8 +250,13 @@ class GraphPlaceholderItem(QGraphicsRectItem):
 
     def update_snapshot(self) -> None:
         """Forces an immediate snapshot refresh with the latest data from upstream table."""
-        if self.placeholder.graph_id and self.document is not None:
-            graph_sheet = self.document.get_sheet(self.placeholder.graph_id)
+        doc = (
+            self.document
+            or getattr(self.canvas, "current_document", None)
+            or getattr(self.canvas, "document", None)
+        )
+        if self.placeholder.graph_id and doc is not None:
+            graph_sheet = doc.get_sheet(self.placeholder.graph_id)
             if graph_sheet:
                 try:
                     from src.core.office_exporter import render_graph_to_png_bytes
@@ -260,7 +265,7 @@ class GraphPlaceholderItem(QGraphicsRectItem):
                     h = max(450, int(r.height() * 2))
                     png_data = render_graph_to_png_bytes(
                         graph_sheet,
-                        document=self.document,
+                        document=doc,
                         width=w,
                         height=h,
                     )
@@ -652,7 +657,12 @@ class LayoutTextItem(QGraphicsTextItem):
                 h.setVisible(visible)
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any) -> Any:
-        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange and self.scene():
+            new_pos = value
+            clamped_x = max(0.0, min(self.page_width - 20.0, new_pos.x()))
+            clamped_y = max(0.0, min(self.page_height - 20.0, new_pos.y()))
+            return QPointF(clamped_x, clamped_y)
+        elif change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
             if not self._syncing_geometry:
                 self._sync_annotation_from_geometry()
                 if hasattr(self.canvas, "layoutModifiedSignal"):
@@ -691,6 +701,10 @@ class LayoutTextItem(QGraphicsTextItem):
 
     def mouseDoubleClickEvent(self, event) -> None:
         if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
+            self._initial_edit_data = {
+                "text": self.toPlainText(),
+                "html": self.toHtml(),
+            }
             self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
             self.setFocus(Qt.FocusReason.MouseFocusReason)
             self.setCursor(Qt.CursorShape.IBeamCursor)
@@ -699,14 +713,32 @@ class LayoutTextItem(QGraphicsTextItem):
         except (TypeError, RuntimeError):
             pass
 
-    def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key.Key_Escape:
-            self.clearFocus()
+    def finish_text_editing(self) -> None:
+        """Exits inline editing mode, restores idle drag mode, and pushes undo command if changed."""
+        if self.textInteractionFlags() != Qt.TextInteractionFlag.NoTextInteraction:
             self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
             cursor = self.textCursor()
             cursor.clearSelection()
             self.setTextCursor(cursor)
             self.setCursor(Qt.CursorShape.ArrowCursor)
+            self.clearFocus()
+            init_data = getattr(self, "_initial_edit_data", None)
+            if init_data is not None:
+                cur_text = self.toPlainText()
+                cur_html = self.toHtml()
+                if cur_text != init_data["text"] or cur_html != init_data["html"]:
+                    layout_view = getattr(self.canvas, "layout_view", None)
+                    if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                        layout_view.push_edit_text_command(
+                            self.annotation,
+                            init_data,
+                            {"text": cur_text, "html": cur_html},
+                        )
+                self._initial_edit_data = None
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.finish_text_editing()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -719,24 +751,8 @@ class LayoutTextItem(QGraphicsTextItem):
         super().focusInEvent(event)
 
     def focusOutEvent(self, event) -> None:
-        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        cursor = self.textCursor()
-        cursor.clearSelection()
-        self.setTextCursor(cursor)
-        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.finish_text_editing()
         super().focusOutEvent(event)
-        init_data = getattr(self, "_initial_edit_data", None)
-        if init_data is not None:
-            cur_text = self.toPlainText()
-            cur_html = self.toHtml()
-            if cur_text != init_data["text"] or cur_html != init_data["html"]:
-                layout_view = getattr(self.canvas, "layout_view", None)
-                if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
-                    layout_view.push_edit_text_command(
-                        self.annotation,
-                        init_data,
-                        {"text": cur_text, "html": cur_html},
-                    )
 
     def handle_resize(
         self,
@@ -920,6 +936,17 @@ class LayoutCanvas(QGraphicsView):
 
     def rebuild_scene(self) -> None:
         """Constructs physical page surface, interactive graph placeholders, and annotations."""
+        selected_slots = {
+            item.placeholder.slot_id
+            for item in self.placeholder_items
+            if item.isSelected()
+        }
+        selected_text_ids = {
+            item.annotation.get("id")
+            for item in self.text_items
+            if item.isSelected()
+        }
+
         self.scene.clear()
         self.placeholder_items.clear()
         self.text_items.clear()
@@ -944,6 +971,8 @@ class LayoutCanvas(QGraphicsView):
                 canvas=self,
             )
             self.scene.addItem(item)
+            if p.slot_id in selected_slots:
+                item.setSelected(True)
             self.placeholder_items.append(item)
 
         # Add annotations (text boxes, connector lines)
@@ -957,6 +986,8 @@ class LayoutCanvas(QGraphicsView):
                     canvas=self,
                 )
                 self.scene.addItem(text_item)
+                if ann.get("id") in selected_text_ids:
+                    text_item.setSelected(True)
                 self.text_items.append(text_item)
             elif ann_type in ("line", "connector"):
                 x1 = float(ann.get("x1", 0.0)) * page_w
@@ -993,8 +1024,9 @@ class LayoutCanvas(QGraphicsView):
         doc = getattr(self, "current_document", None) or getattr(self, "document", None)
         for item in self.placeholder_items:
             gid = getattr(item.placeholder, "graph_id", None)
-            if gid and doc:
-                graph = doc.get_sheet(gid)
+            target_doc = doc or getattr(item, "document", None)
+            if gid and target_doc:
+                graph = target_doc.get_sheet(gid)
                 if graph and not getattr(graph, "is_frozen", False):
                     item.invalidate_cache()
                     item.update_snapshot()
@@ -1153,6 +1185,13 @@ class LayoutCanvas(QGraphicsView):
         event.accept()
 
     def mousePressEvent(self, event) -> None:
+        # Exit text editing mode if clicking outside an actively editing text item
+        for it in list(self.text_items):
+            if it.textInteractionFlags() != Qt.TextInteractionFlag.NoTextInteraction:
+                scene_pos = self.mapToScene(event.pos())
+                if not it.sceneBoundingRect().contains(scene_pos):
+                    it.finish_text_editing()
+
         if event.button() == Qt.MouseButton.MiddleButton:
             self.panning = True
             self.pan_start = event.pos()
@@ -1180,6 +1219,12 @@ class LayoutCanvas(QGraphicsView):
             super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        # If any text item is actively being edited, let the text item process Backspace/Delete/typing
+        for t in self.text_items:
+            if t.textInteractionFlags() != Qt.TextInteractionFlag.NoTextInteraction:
+                super().keyPressEvent(event)
+                return
+
         """Handles canvas key shortcuts: Delete key deletes selected placeholders or text items."""
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             # Check selected items
@@ -1196,7 +1241,7 @@ class LayoutCanvas(QGraphicsView):
                     break
             if not deleted:
                 for t in list(self.text_items):
-                    if t.isSelected() and self.current_layout:
+                    if t.isSelected() and self.current_layout and t.textInteractionFlags() == Qt.TextInteractionFlag.NoTextInteraction:
                         layout_view = getattr(self, "layout_view", None)
                         if layout_view is not None and hasattr(layout_view, "push_delete_text_command"):
                             layout_view.push_delete_text_command(t.annotation)
