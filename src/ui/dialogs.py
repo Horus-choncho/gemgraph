@@ -431,10 +431,13 @@ class AssignGraphDialog(QDialog):
         grp_scale = QGroupBox("Scaling Factor", tab_size)
         scale_form = QFormLayout(grp_scale)
         self.spin_scale = QSpinBox(grp_scale)
-        self.spin_scale.setRange(10, 500)
+        self.spin_scale.setRange(20, 500)
         self.spin_scale.setSingleStep(5)
         self.spin_scale.setSuffix(" %")
-        self.spin_scale.setValue(int(round(max(0.1, min(5.0, current_scale)) * 100)))
+        norm_scale = float(current_scale)
+        if norm_scale > 10.0:  # If 100 was passed instead of 1.0
+            norm_scale = norm_scale / 100.0
+        self.spin_scale.setValue(int(round(max(0.2, min(5.0, norm_scale)) * 100)))
         scale_form.addRow("Scaling Factor:", self.spin_scale)
         size_layout.addWidget(grp_scale)
 
@@ -543,7 +546,8 @@ class AssignGraphDialog(QDialog):
         return 0
 
     def get_selected_scale(self) -> float:
-        return float(self.spin_scale.value()) / 100.0
+        val = float(self.spin_scale.value()) / 100.0
+        return max(0.2, min(5.0, val))
 
 
 class PageSetupDialog(QDialog):

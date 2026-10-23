@@ -1925,7 +1925,16 @@ class ScientificPlotCanvas(QWidget):
                 return
             scene = self.plot_widget.scene() if hasattr(self.plot_widget, "scene") else None
             if scene is not None:
-                scene.render(painter, QRectF(self.plot_widget.rect()), scene.sceneRect())
+                plot_item = getattr(self.plot_widget, "plotItem", None)
+                if plot_item is None and hasattr(self.plot_widget, "getPlotItem"):
+                    plot_item = self.plot_widget.getPlotItem()
+                if plot_item is not None and hasattr(plot_item, "mapToScene") and hasattr(plot_item, "boundingRect"):
+                    source_rect = plot_item.mapToScene(plot_item.boundingRect()).boundingRect()
+                else:
+                    source_rect = QRectF(self.plot_widget.rect())
+                if source_rect.isEmpty() or not source_rect.isValid() or source_rect.width() < 10 or source_rect.height() < 10:
+                    source_rect = QRectF(self.plot_widget.rect())
+                scene.render(painter, QRectF(self.plot_widget.rect()), source_rect)
             else:
                 self.plot_widget.render(painter)
         finally:

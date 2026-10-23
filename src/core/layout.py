@@ -453,7 +453,7 @@ def render_layout_to_image(
                                 painter.translate(target_rect.center())
                                 painter.rotate(rot)
                                 painter.translate(-target_rect.center())
-                            scale = max(0.1, min(5.0, getattr(p, "custom_scale", 1.0)))
+                            scale = max(0.2, min(5.0, getattr(p, "custom_scale", 1.0)))
                             if abs(scale - 1.0) > 1e-4:
                                 cx = target_rect.center().x()
                                 cy = target_rect.center().y()
@@ -618,7 +618,7 @@ def render_layout_to_svg(
                         if not graph_img.isNull():
                             painter.save()
                             painter.setClipRect(target_rect)
-                            scale = max(0.1, min(5.0, getattr(p, "custom_scale", 1.0)))
+                            scale = max(0.2, min(5.0, getattr(p, "custom_scale", 1.0)))
                             if abs(scale - 1.0) > 1e-4:
                                 cx = target_rect.center().x()
                                 cy = target_rect.center().y()

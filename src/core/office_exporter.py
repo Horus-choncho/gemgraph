@@ -371,7 +371,12 @@ def render_graph_to_png_bytes(
         from src.ui.graph_canvas import GraphCanvasWidget
         canvas = GraphCanvasWidget()
         canvas.resize(width, height)
-        canvas.plot_widget.setGeometry(0, 0, width, height)
+        if hasattr(canvas, "plot_widget"):
+            canvas.plot_widget.setGeometry(0, 0, width, height)
+            if hasattr(canvas.plot_widget, "centralWidget") and canvas.plot_widget.centralWidget:
+                cw = canvas.plot_widget.centralWidget() if callable(canvas.plot_widget.centralWidget) else canvas.plot_widget.centralWidget
+                if cw is not None and hasattr(cw, "setGeometry"):
+                    cw.setGeometry(0, 0, width, height)
         created_canvas = True
     else:
         if not is_live:
@@ -379,6 +384,10 @@ def render_graph_to_png_bytes(
             canvas.resize(width, height)
             if hasattr(canvas, "plot_widget"):
                 canvas.plot_widget.setGeometry(0, 0, width, height)
+                if hasattr(canvas.plot_widget, "centralWidget") and canvas.plot_widget.centralWidget:
+                    cw = canvas.plot_widget.centralWidget() if callable(canvas.plot_widget.centralWidget) else canvas.plot_widget.centralWidget
+                    if cw is not None and hasattr(cw, "setGeometry"):
+                        cw.setGeometry(0, 0, width, height)
 
     try:
         if isinstance(target_sheet, DataSheet):
@@ -466,6 +475,15 @@ def render_graph_to_png_bytes(
                 sheet=target_sheet,
             )
 
+        if created_canvas or not is_live:
+            canvas.resize(width, height)
+            if hasattr(canvas, "plot_widget"):
+                canvas.plot_widget.setGeometry(0, 0, width, height)
+                if hasattr(canvas.plot_widget, "centralWidget") and canvas.plot_widget.centralWidget:
+                    cw = canvas.plot_widget.centralWidget() if callable(canvas.plot_widget.centralWidget) else canvas.plot_widget.centralWidget
+                    if cw is not None and hasattr(cw, "setGeometry"):
+                        cw.setGeometry(0, 0, width, height)
+
         # Generous axis margin padding to prevent multi-line categorical/group label truncation
         if not is_live:
             try:
@@ -483,14 +501,19 @@ def render_graph_to_png_bytes(
         try:
             if painter.isActive():
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
                 scene = plot_widget.scene() if hasattr(plot_widget, "scene") else None
                 if scene is not None:
-                    scene_rect = scene.sceneRect()
-                    if scene_rect.isEmpty() or scene_rect.isNull():
-                        scene_rect = scene.itemsBoundingRect()
-                    if scene_rect.isEmpty() or scene_rect.isNull():
-                        scene_rect = QRectF(0, 0, width, height)
-                    scene.render(painter, QRectF(0, 0, width, height), scene_rect)
+                    plot_item = getattr(plot_widget, "plotItem", None)
+                    if plot_item is None and hasattr(plot_widget, "getPlotItem"):
+                        plot_item = plot_widget.getPlotItem()
+                    if plot_item is not None and hasattr(plot_item, "mapToScene") and hasattr(plot_item, "boundingRect"):
+                        source_rect = plot_item.mapToScene(plot_item.boundingRect()).boundingRect()
+                    else:
+                        source_rect = QRectF(0, 0, width, height)
+                    if source_rect.isEmpty() or not source_rect.isValid() or source_rect.width() < 10 or source_rect.height() < 10:
+                        source_rect = QRectF(0, 0, width, height)
+                    scene.render(painter, QRectF(0, 0, width, height), source_rect)
                 elif not is_live:
                     plot_widget.render(painter)
         finally:

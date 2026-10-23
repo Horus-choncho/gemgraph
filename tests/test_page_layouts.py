@@ -1099,6 +1099,168 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
 
         parent_win.close()
 
+    def test_placeholder_initialization_lock_prevents_corruption(self) -> None:
+        """Verifies initializing GraphPlaceholderItem never corrupts placeholder.rect to 0.02."""
+        initial_rect = (0.15, 0.20, 0.50, 0.40)
+        p = Placeholder("slot_lock_test", rect=initial_rect, graph_id=self.graph_sheet.sheet_id)
+        canvas = LayoutCanvas()
+        item = GraphPlaceholderItem(p, 800.0, 600.0, self.doc, canvas)
+
+        # 1. Bounds must remain untouched post-initialization
+        self.assertEqual(p.rect, initial_rect)
+        self.assertNotEqual(p.rect[2], 0.02)
+        self.assertNotEqual(p.rect[3], 0.02)
+
+        # 2. Early itemChange or small geometry updates (< 20px) must abort and never corrupt rect
+        item.setRect(0, 0, 10, 10)
+        item._sync_placeholder_from_geometry()
+        self.assertEqual(p.rect, initial_rect)
+
+        # 3. Paint invocation on sub-40px geometry forces automatic re-sync from placeholder
+        img = QImage(100, 100, QImage.Format.Format_ARGB32)
+        painter = QPainter(img)
+        item.paint(painter, None)
+        painter.end()
+        self.assertEqual(item.rect().width(), 400.0)
+        self.assertEqual(item.rect().height(), 240.0)
+        self.assertEqual(p.rect, initial_rect)
+        canvas.close()
+
+    def test_render_graph_to_png_bytes_offscreen_fills_target_buffer(self) -> None:
+        """Verifies calling render_graph_to_png_bytes on offscreen canvas produces tightly bounded snapshot."""
+        w, h = 800, 600
+        png_bytes = render_graph_to_png_bytes(
+            self.graph_sheet,
+            document=self.doc,
+            width=w,
+            height=h,
+        )
+        self.assertTrue(png_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
+        img = QImage.fromData(png_bytes)
+        self.assertFalse(img.isNull())
+        self.assertEqual(img.width(), w)
+        self.assertEqual(img.height(), h)
+
+        # Verify that non-white content spans substantially across the buffer,
+        # confirming plotItem fills the target image rather than shrinking to a microscopic speck.
+        non_white_xs = []
+        non_white_ys = []
+        for y in range(0, h, 2):
+            for x in range(0, w, 2):
+                c = img.pixelColor(x, y)
+                if (c.red(), c.green(), c.blue()) != (255, 255, 255):
+                    non_white_xs.append(x)
+                    non_white_ys.append(y)
+
+        self.assertGreater(len(non_white_xs), 1000)
+        min_x, max_x = min(non_white_xs), max(non_white_xs)
+        min_y, max_y = min(non_white_ys), max(non_white_ys)
+        # Content must span at least 80% of width and 70% of height
+        self.assertLess(min_x, w * 0.20)
+        self.assertGreater(max_x, w * 0.80)
+        self.assertLess(min_y, h * 0.20)
+        self.assertGreater(max_y, h * 0.80)
+
+    def test_assign_graphs_slots_renders_snapshots_cleanly(self) -> None:
+        """Verifies assigning graphs to slots 0, 1, 2, 3 renders snapshots scaled cleanly to the placeholder rectangle."""
+        layout = self.doc.create_layout("Four Slot Layout", template_preset="4")
+        self.assertEqual(len(layout.placeholders), 4)
+
+        for p in layout.placeholders:
+            p.graph_id = self.graph_sheet.sheet_id
+
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        self.assertEqual(len(view.canvas.placeholder_items), 4)
+
+        for item in view.canvas.placeholder_items:
+            item.update_snapshot()
+            self.assertIsNotNone(item.cached_pixmap)
+            self.assertFalse(item.cached_pixmap.isNull())
+            # Cached pixmap should be high-DPI rendered snapshot
+            self.assertGreaterEqual(item.cached_pixmap.width(), 600)
+            self.assertGreaterEqual(item.cached_pixmap.height(), 450)
+            # Placeholder rect must maintain proportional page coordinates (> 0.05)
+            rx, ry, rw, rh = item.placeholder.rect
+            self.assertGreater(rw, 0.20)
+            self.assertGreater(rh, 0.20)
+
+        # Full layout rendering must succeed with non-empty snapshot composition
+        png_layout = render_layout_to_png_bytes(layout, self.doc, dpi=150)
+        self.assertTrue(png_layout.startswith(b"\x89PNG\r\n\x1a\n"))
+        layout_img = QImage.fromData(png_layout)
+        self.assertFalse(layout_img.isNull())
+        self.assertGreater(layout_img.width(), 800)
+        self.assertGreater(layout_img.height(), 800)
+        view.close()
+
+    def test_assign_graph_dialog_scale_normalization(self) -> None:
+        """Verifies AssignGraphDialog correctly normalizes and clamps scale factors."""
+        from src.ui.dialogs import AssignGraphDialog
+
+        # 1. Float 1.0 -> 100%
+        dlg1 = AssignGraphDialog(self.doc, current_scale=1.0)
+        self.assertEqual(dlg1.spin_scale.value(), 100)
+        self.assertEqual(dlg1.get_selected_scale(), 1.0)
+        dlg1.close()
+
+        # 2. Percentage 100.0 -> normalized to 100% (1.0)
+        dlg2 = AssignGraphDialog(self.doc, current_scale=100.0)
+        self.assertEqual(dlg2.spin_scale.value(), 100)
+        self.assertEqual(dlg2.get_selected_scale(), 1.0)
+        dlg2.close()
+
+        # 3. Microscopic 0.01 -> clamped to minimum 20% (0.2)
+        dlg3 = AssignGraphDialog(self.doc, current_scale=0.01)
+        self.assertEqual(dlg3.spin_scale.value(), 20)
+        self.assertEqual(dlg3.get_selected_scale(), 0.2)
+        dlg3.close()
+
+        # 4. Out-of-bounds 10.0 -> clamped to maximum 500% (5.0)
+        dlg4 = AssignGraphDialog(self.doc, current_scale=10.0)
+        self.assertEqual(dlg4.spin_scale.value(), 500)
+        self.assertEqual(dlg4.get_selected_scale(), 5.0)
+        dlg4.close()
+
+        # 5. Normal custom scale 2.5 -> 250%
+        dlg5 = AssignGraphDialog(self.doc, current_scale=2.5)
+        self.assertEqual(dlg5.spin_scale.value(), 250)
+        self.assertEqual(dlg5.get_selected_scale(), 2.5)
+        # Interactive spinbox edit
+        dlg5.spin_scale.setValue(150)
+        self.assertEqual(dlg5.get_selected_scale(), 1.5)
+        dlg5.close()
+
+    def test_render_graph_to_png_bytes_with_passed_offscreen_canvas(self) -> None:
+        """Verifies rendering with a passed offscreen (not live) canvas forces geometry update and fills buffer."""
+        passed_canvas = ScientificPlotCanvas()
+        w, h = 800, 600
+        png_bytes = render_graph_to_png_bytes(
+            self.graph_sheet,
+            document=self.doc,
+            graph_canvas=passed_canvas,
+            width=w,
+            height=h,
+        )
+        self.assertTrue(png_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
+        img = QImage.fromData(png_bytes)
+        self.assertFalse(img.isNull())
+        self.assertEqual(img.width(), w)
+        self.assertEqual(img.height(), h)
+
+        non_white_xs = []
+        for y in range(0, h, 2):
+            for x in range(0, w, 2):
+                c = img.pixelColor(x, y)
+                if (c.red(), c.green(), c.blue()) != (255, 255, 255):
+                    non_white_xs.append(x)
+
+        self.assertGreater(len(non_white_xs), 1000)
+        min_x, max_x = min(non_white_xs), max(non_white_xs)
+        self.assertLess(min_x, w * 0.20)
+        self.assertGreater(max_x, w * 0.80)
+        passed_canvas.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -163,13 +163,13 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         document: Any,
         canvas: LayoutCanvas,
     ) -> None:
+        self._syncing_geometry = True
         super().__init__()
         self.placeholder = placeholder
         self.page_width = float(page_width)
         self.page_height = float(page_height)
         self.document = document
         self.canvas = canvas
-        self._syncing_geometry = False
         self._drag_start_rect: Optional[Tuple[float, float, float, float]] = None
 
         self.cached_pixmap: Optional[QPixmap] = None
@@ -191,8 +191,10 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         self._sync_geometry_from_placeholder()
         self._update_handle_positions()
         self._update_handle_visibility()
+        self._syncing_geometry = False
 
     def _sync_geometry_from_placeholder(self) -> None:
+        was_syncing = getattr(self, "_syncing_geometry", False)
         self._syncing_geometry = True
         try:
             rx, ry, rw, rh = self.placeholder.rect
@@ -203,7 +205,7 @@ class GraphPlaceholderItem(QGraphicsRectItem):
             self.setRect(0, 0, pw, ph)
             self.setPos(px, py)
         finally:
-            self._syncing_geometry = False
+            self._syncing_geometry = was_syncing
 
     def _sync_placeholder_from_geometry(self) -> None:
         if getattr(self, "_syncing_geometry", False):
@@ -212,14 +214,19 @@ class GraphPlaceholderItem(QGraphicsRectItem):
             return
         pos = self.pos()
         rect = self.rect()
+        if rect.width() < 20.0 or rect.height() < 20.0:
+            return
         rw = rect.width() / self.page_width
         rh = rect.height() / self.page_height
         rx = pos.x() / self.page_width
         ry = pos.y() / self.page_height
 
+        if rw < 0.02 or rh < 0.02:
+            return
+
         # Clamp normalized values between 0.0 and 1.0
-        rw = max(0.02, min(1.0, rw))
-        rh = max(0.02, min(1.0, rh))
+        rw = min(1.0, rw)
+        rh = min(1.0, rh)
         rx = max(0.0, min(1.0 - rw, rx))
         ry = max(0.0, min(1.0 - rh, ry))
 
@@ -454,6 +461,11 @@ class GraphPlaceholderItem(QGraphicsRectItem):
         if not painter or not painter.isActive():
             return
         r = self.rect()
+        if r.width() < 40.0 or r.height() < 40.0:
+            self._sync_geometry_from_placeholder()
+            r = self.rect()
+        if r.width() < 40.0 or r.height() < 40.0:
+            r = QRectF(r.x(), r.y(), max(40.0, r.width()), max(40.0, r.height()))
 
         doc = (
             self.document
@@ -477,7 +489,7 @@ class GraphPlaceholderItem(QGraphicsRectItem):
                         painter.translate(r.center())
                         painter.rotate(rot)
                         painter.translate(-r.center())
-                    scale = max(0.1, min(5.0, getattr(self.placeholder, "custom_scale", 1.0)))
+                    scale = max(0.2, min(5.0, getattr(self.placeholder, "custom_scale", 1.0)))
                     if abs(scale - 1.0) > 1e-4:
                         cx = r.center().x()
                         cy = r.center().y()
