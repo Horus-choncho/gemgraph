@@ -94,6 +94,71 @@ def _linear_heuristic(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     return np.array([1.0, 0.0], dtype=np.float64)
 
 
+def _michaelis_menten(x: np.ndarray, p: np.ndarray) -> np.ndarray:
+    vmax, km = p
+    return (vmax * x) / np.maximum(km + x, 1e-12)
+
+
+def _michaelis_menten_heuristic(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    vmax = float(np.max(y)) * 1.1 if len(y) > 0 else 1.0
+    half_y = np.max(y) / 2.0 if len(y) > 0 else 0.5
+    idx = int(np.argmin(np.abs(y - half_y))) if len(y) > 0 else 0
+    km = float(np.maximum(x[idx], 1e-6)) if len(x) > 0 else 1.0
+    return np.array([vmax, km], dtype=np.float64)
+
+
+def _substrate_inhibition(x: np.ndarray, p: np.ndarray) -> np.ndarray:
+    vmax, km, ki = p
+    denom = km + x * (1.0 + x / np.maximum(ki, 1e-12))
+    return (vmax * x) / np.maximum(denom, 1e-12)
+
+
+def _substrate_inhibition_heuristic(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    vmax = float(np.max(y)) * 1.2 if len(y) > 0 else 1.0
+    half_y = np.max(y) / 2.0 if len(y) > 0 else 0.5
+    idx = int(np.argmin(np.abs(y - half_y))) if len(y) > 0 else 0
+    km = float(np.maximum(x[idx], 1e-6)) if len(x) > 0 else 1.0
+    ki = float(np.max(x) * 2.0) if len(x) > 0 else 100.0
+    return np.array([vmax, km, ki], dtype=np.float64)
+
+
+def _hill_kinetics(x: np.ndarray, p: np.ndarray) -> np.ndarray:
+    vmax, khalf, h = p
+    x_pos = np.maximum(x, 1e-12)
+    kh_pos = np.maximum(khalf, 1e-12)
+    h_clip = np.clip(h, 0.1, 20.0)
+    xh = x_pos ** h_clip
+    khh = kh_pos ** h_clip
+    return (vmax * xh) / np.maximum(khh + xh, 1e-12)
+
+
+def _hill_kinetics_heuristic(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    vmax = float(np.max(y)) * 1.1 if len(y) > 0 else 1.0
+    half_y = np.max(y) / 2.0 if len(y) > 0 else 0.5
+    idx = int(np.argmin(np.abs(y - half_y))) if len(y) > 0 else 0
+    khalf = float(np.maximum(x[idx], 1e-6)) if len(x) > 0 else 1.0
+    return np.array([vmax, khalf, 2.0], dtype=np.float64)
+
+
+def _competitive_inhibition(x: np.ndarray, p: np.ndarray) -> np.ndarray:
+    if len(p) >= 4:
+        vmax, km, ki, I = p[:4]
+    else:
+        vmax, km, ki = p[:3]
+        I = 1.0
+    apparent_km = km * (1.0 + I / np.maximum(ki, 1e-12))
+    return (vmax * x) / np.maximum(apparent_km + x, 1e-12)
+
+
+def _competitive_inhibition_heuristic(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    vmax = float(np.max(y)) * 1.1 if len(y) > 0 else 1.0
+    half_y = np.max(y) / 2.0 if len(y) > 0 else 0.5
+    idx = int(np.argmin(np.abs(y - half_y))) if len(y) > 0 else 0
+    km = float(np.maximum(x[idx], 1e-6)) if len(x) > 0 else 1.0
+    ki = km
+    return np.array([vmax, km, ki], dtype=np.float64)
+
+
 STANDARD_MODELS: Dict[str, RegressionModel] = {
     "Sigmoidal Dose-Response (4PL)": RegressionModel(
         name="Sigmoidal Dose-Response (4PL)",
@@ -122,6 +187,34 @@ STANDARD_MODELS: Dict[str, RegressionModel] = {
         func=_linear_model,
         heuristic=_linear_heuristic,
         description="Y = Slope * X + Intercept",
+    ),
+    "Michaelis-Menten": RegressionModel(
+        name="Michaelis-Menten",
+        param_names=["Vmax", "Km"],
+        func=_michaelis_menten,
+        heuristic=_michaelis_menten_heuristic,
+        description="Y = Vmax * X / (Km + X)",
+    ),
+    "Substrate Inhibition": RegressionModel(
+        name="Substrate Inhibition",
+        param_names=["Vmax", "Km", "Ki"],
+        func=_substrate_inhibition,
+        heuristic=_substrate_inhibition_heuristic,
+        description="Y = Vmax * X / (Km + X * (1 + X / Ki))",
+    ),
+    "Allosteric Sigmoidal (Hill Kinetics)": RegressionModel(
+        name="Allosteric Sigmoidal (Hill Kinetics)",
+        param_names=["Vmax", "Khalf", "h"],
+        func=_hill_kinetics,
+        heuristic=_hill_kinetics_heuristic,
+        description="Y = Vmax * X^h / (Khalf^h + X^h)",
+    ),
+    "Competitive Inhibition": RegressionModel(
+        name="Competitive Inhibition",
+        param_names=["Vmax", "Km", "Ki"],
+        func=_competitive_inhibition,
+        heuristic=_competitive_inhibition_heuristic,
+        description="Y = Vmax * X / (Km * (1 + I / Ki) + X) where I is a user-supplied constant (default I=1.0)",
     ),
 }
 
@@ -274,4 +367,74 @@ class NonlinearEngine:
             "x_dense": x_dense,
             "y_dense": y_dense,
             "p_opt": p_opt,
+        }
+
+    @classmethod
+    def compare_models(
+        cls,
+        x: np.ndarray,
+        y: np.ndarray,
+        model_a: RegressionModel,
+        model_b: RegressionModel,
+        preset: ConvergencePreset = ConvergencePreset.STANDARD,
+    ) -> Dict[str, Any]:
+        """
+        Compares two nested models using Extra-Sum-of-Squares F-test and AICc.
+        Formula: F = ((SS1 - SS2) / (df1 - df2)) / (SS2 / df2)
+        Reject comparisons where the simpler model is not nested (fewer parameters) with a clear error.
+        """
+        k_a = len(model_a.param_names)
+        k_b = len(model_b.param_names)
+        if k_a == k_b:
+            raise ValueError(
+                f"Model comparison requires nested models with different parameter counts. "
+                f"Both '{model_a.name}' and '{model_b.name}' have {k_a} parameters."
+            )
+
+        if k_a < k_b:
+            simpler_model, complex_model = model_a, model_b
+        else:
+            simpler_model, complex_model = model_b, model_a
+
+        fit_simpler = cls.fit(x, y, simpler_model, preset=preset)
+        fit_complex = cls.fit(x, y, complex_model, preset=preset)
+
+        ss1 = float(fit_simpler["ss_res"])
+        ss2 = float(fit_complex["ss_res"])
+        df1 = int(fit_simpler["degrees_of_freedom"])
+        df2 = int(fit_complex["degrees_of_freedom"])
+
+        df_num = df1 - df2
+        df_denom = df2
+
+        if df_num <= 0 or df_denom <= 0:
+            raise ValueError(
+                f"Invalid degrees of freedom for F-test: df_num={df_num}, df_denom={df_denom}."
+            )
+
+        if ss2 <= 0.0 or ss1 <= ss2:
+            f_stat = 0.0
+            p_value = 1.0
+        else:
+            f_stat = ((ss1 - ss2) / df_num) / (ss2 / df_denom)
+            p_value = float(stats.f.sf(f_stat, df_num, df_denom))
+
+        preferred_model = complex_model.name if p_value < 0.05 else simpler_model.name
+
+        return {
+            "f_stat": float(f_stat),
+            "df_num": int(df_num),
+            "df_denom": int(df_denom),
+            "p_value": float(p_value),
+            "preferred_model": preferred_model,
+            "simpler_model": simpler_model.name,
+            "complex_model": complex_model.name,
+            "fit_simpler": fit_simpler,
+            "fit_complex": fit_complex,
+            "ss_simpler": ss1,
+            "ss_complex": ss2,
+            "df_simpler": df1,
+            "df_complex": df2,
+            "aicc_simpler": float(fit_simpler["aicc"]),
+            "aicc_complex": float(fit_complex["aicc"]),
         }

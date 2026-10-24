@@ -314,7 +314,8 @@ class TestTextbookSampleProject(unittest.TestCase):
         window = MainWindow()
         window.action_open_sample_project()
         self.assertIn("Textbook", window.document.title)
-        self.assertEqual(len(window.document.get_sheets_by_type(SheetType.DATA)), 3)
+        self.assertEqual(len(window.document.get_sheets_by_type(SheetType.DATA)), 7)
+        self.assertEqual(window.windowTitle(), "textbook_sample.bigo - GemGraph - v0.1.2-nightly - Clean Room Edition")
         window.close()
 
     def test_data_table_from_and_update_dataframe(self) -> None:

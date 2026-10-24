@@ -184,55 +184,148 @@ class ConstantRegistry:
         extracted: List[HookedConstant] = []
         raw = result.raw_result_data
 
-        # Best-fit parameters
+        # Best-fit parameters (dict or list format)
         params = raw.get("params", {})
-        for p_name, p_val in params.items():
-            if isinstance(p_val, (int, float)):
-                cid = f"{result.sheet_id}_{p_name.lower()}"
-                hc = HookedConstant(
-                    constant_id=cid,
-                    sheet_id=result.sheet_id,
-                    sheet_title=result.title,
-                    name=p_name,
-                    value=float(p_val),
-                    description=f"Fitted parameter {p_name} from {result.title}",
-                    category="Best-fit Values",
-                )
-                self.register(hc)
-                extracted.append(hc)
-
-                # If parameter is LogEC50 or LogIC50, also register antilog EC50
-                if "logec50" in p_name.lower() or "logic50" in p_name.lower():
-                    ec50_val = 10.0 ** float(p_val)
-                    ec50_name = "EC50" if "ec50" in p_name.lower() else "IC50"
-                    hc_ec50 = HookedConstant(
-                        constant_id=f"{result.sheet_id}_{ec50_name.lower()}",
+        if isinstance(params, dict):
+            for p_name, p_val in params.items():
+                if isinstance(p_val, (int, float)):
+                    cid = f"{result.sheet_id}_{p_name.lower()}"
+                    hc = HookedConstant(
+                        constant_id=cid,
                         sheet_id=result.sheet_id,
                         sheet_title=result.title,
-                        name=ec50_name,
-                        value=ec50_val,
-                        description=f"Antilog of {p_name} ({ec50_name})",
+                        name=p_name,
+                        value=float(p_val),
+                        description=f"Fitted parameter {p_name} from {result.title}",
                         category="Best-fit Values",
                     )
-                    self.register(hc_ec50)
-                    extracted.append(hc_ec50)
+                    self.register(hc)
+                    extracted.append(hc)
 
-        # Goodness of fit (R2, Sy.x, AICc)
+                    # If parameter is LogEC50 or LogIC50, also register antilog EC50
+                    if "logec50" in p_name.lower() or "logic50" in p_name.lower():
+                        ec50_val = 10.0 ** float(p_val)
+                        ec50_name = "EC50" if "ec50" in p_name.lower() else "IC50"
+                        hc_ec50 = HookedConstant(
+                            constant_id=f"{result.sheet_id}_{ec50_name.lower()}",
+                            sheet_id=result.sheet_id,
+                            sheet_title=result.title,
+                            name=ec50_name,
+                            value=ec50_val,
+                            description=f"Antilog of {p_name} ({ec50_name})",
+                            category="Best-fit Values",
+                        )
+                        self.register(hc_ec50)
+                        extracted.append(hc_ec50)
+
+        # Handle list format for parameters (e.g. NonlinearEngine / Enzyme Kinetics)
+        param_list = raw.get("parameters", [])
+        if isinstance(param_list, list):
+            for p_info in param_list:
+                if isinstance(p_info, dict):
+                    p_name = p_info.get("name")
+                    p_val = p_info.get("best_fit", p_info.get("value"))
+                    if p_name and isinstance(p_val, (int, float)):
+                        cid = f"{result.sheet_id}_{str(p_name).lower()}"
+                        hc = HookedConstant(
+                            constant_id=cid,
+                            sheet_id=result.sheet_id,
+                            sheet_title=result.title,
+                            name=str(p_name),
+                            value=float(p_val),
+                            description=f"Fitted parameter {p_name} from {result.title}",
+                            category="Best-fit Values",
+                        )
+                        self.register(hc)
+                        extracted.append(hc)
+
+        # Goodness of fit (R2, Sy.x, AICc) from dict or top-level keys
         goodness = raw.get("goodness_of_fit", {})
-        for m_name, m_val in goodness.items():
-            if isinstance(m_val, (int, float)):
-                cid = f"{result.sheet_id}_{m_name.lower()}"
+        if isinstance(goodness, dict):
+            for m_name, m_val in goodness.items():
+                if isinstance(m_val, (int, float)):
+                    cid = f"{result.sheet_id}_{m_name.lower()}"
+                    hc = HookedConstant(
+                        constant_id=cid,
+                        sheet_id=result.sheet_id,
+                        sheet_title=result.title,
+                        name=m_name,
+                        value=float(m_val),
+                        description=f"Goodness of fit metric {m_name}",
+                        category="Goodness of Fit",
+                    )
+                    self.register(hc)
+                    extracted.append(hc)
+
+        for top_key, (disp_name, cat) in [
+            ("r_squared", ("R-squared", "Goodness of Fit")),
+            ("syx", ("Sy.x", "Goodness of Fit")),
+            ("aicc", ("AICc", "Goodness of Fit")),
+        ]:
+            val = raw.get(top_key)
+            if isinstance(val, (int, float)) and not np.isnan(val):
+                cid = f"{result.sheet_id}_{top_key.lower()}"
                 hc = HookedConstant(
                     constant_id=cid,
                     sheet_id=result.sheet_id,
                     sheet_title=result.title,
-                    name=m_name,
-                    value=float(m_val),
-                    description=f"Goodness of fit metric {m_name}",
-                    category="Goodness of Fit",
+                    name=disp_name,
+                    value=float(val),
+                    description=f"{disp_name} from {result.title}",
+                    category=cat,
                 )
                 self.register(hc)
                 extracted.append(hc)
+
+        # Survival analysis constants (log-rank p-value, hazard ratio)
+        if raw.get("log_rank_p") is not None:
+            lr_p = float(raw["log_rank_p"])
+            hc_lr = HookedConstant(
+                constant_id=f"{result.sheet_id}_log_rank_p",
+                sheet_id=result.sheet_id,
+                sheet_title=result.title,
+                name="Log-rank P",
+                value=lr_p,
+                description=f"Log-rank test P-value from {result.title}",
+                category="Survival Analysis",
+            )
+            self.register(hc_lr)
+            extracted.append(hc_lr)
+
+        if raw.get("hazard_ratio") is not None:
+            hr_val = float(raw["hazard_ratio"])
+            hc_hr = HookedConstant(
+                constant_id=f"{result.sheet_id}_hazard_ratio",
+                sheet_id=result.sheet_id,
+                sheet_title=result.title,
+                name="Hazard Ratio",
+                value=hr_val,
+                description=f"Hazard ratio from {result.title}",
+                category="Survival Analysis",
+            )
+            self.register(hc_hr)
+            extracted.append(hc_hr)
+
+        # Cox regression covariates
+        cov_list = raw.get("covariates", [])
+        if isinstance(cov_list, list):
+            for cov in cov_list:
+                if isinstance(cov, dict):
+                    c_name = cov.get("name", "Covariate")
+                    c_hr = cov.get("hazard_ratio")
+                    if c_hr is not None and isinstance(c_hr, (int, float)):
+                        cid = f"{result.sheet_id}_{str(c_name).lower()}_hr"
+                        hc_cov = HookedConstant(
+                            constant_id=cid,
+                            sheet_id=result.sheet_id,
+                            sheet_title=result.title,
+                            name=f"HR ({c_name})",
+                            value=float(c_hr),
+                            description=f"Hazard ratio for {c_name} from {result.title}",
+                            category="Cox Regression",
+                        )
+                        self.register(hc_cov)
+                        extracted.append(hc_cov)
 
         return extracted
 

@@ -584,3 +584,139 @@ class PageSetupDialog(QDialog):
 
     def get_settings(self) -> Tuple[str, str]:
         return self.combo_format.currentText(), self.combo_orientation.currentText()
+
+
+class EnzymeKineticsDialog(QDialog):
+    """Configuration dialog for Enzyme Kinetics nonlinear fitting, F-test model comparison, and diagnostic plots."""
+
+    def __init__(self, group_names: List[str], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Parameters: Enzyme Kinetics")
+        self.setMinimumWidth(440)
+
+        layout = QVBoxLayout(self)
+
+        model_group = QGroupBox("Model Equation & Data")
+        form = QFormLayout(model_group)
+
+        self.model_combo = QComboBox()
+        enzyme_models = [
+            "Michaelis-Menten",
+            "Substrate Inhibition",
+            "Allosteric Sigmoidal (Hill Kinetics)",
+            "Competitive Inhibition",
+        ]
+        self.model_combo.addItems(enzyme_models)
+        form.addRow("Kinetic Model:", self.model_combo)
+
+        self.group_combo = QComboBox()
+        self.group_combo.addItems(group_names)
+        form.addRow("Velocity Group (Y):", self.group_combo)
+
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItem("Standard (1e-4)", ConvergencePreset.STANDARD)
+        self.preset_combo.addItem("Strict (1e-6)", ConvergencePreset.STRICT)
+        form.addRow("Convergence Tolerance:", self.preset_combo)
+
+        layout.addWidget(model_group)
+
+        comp_group = QGroupBox("Hypothesis Testing & Diagnostics")
+        comp_layout = QVBoxLayout(comp_group)
+
+        self.cb_compare_mm = QCheckBox("Compare with simple Michaelis-Menten (Extra-SS F-test)")
+        self.cb_compare_mm.setChecked(True)
+        comp_layout.addWidget(self.cb_compare_mm)
+
+        self.cb_diagnostic = QCheckBox("Show Lineweaver-Burk / Eadie-Hofstee diagnostic plot")
+        self.cb_diagnostic.setChecked(True)
+        comp_layout.addWidget(self.cb_diagnostic)
+
+        diag_form = QFormLayout()
+        self.diag_combo = QComboBox()
+        self.diag_combo.addItems(["Lineweaver-Burk (1/X, 1/Y)", "Eadie-Hofstee (Y/X, Y)"])
+        diag_form.addRow("Diagnostic Transform:", self.diag_combo)
+        comp_layout.addLayout(diag_form)
+
+        layout.addWidget(comp_group)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_settings(self) -> Tuple[str, int, bool, bool, str, ConvergencePreset]:
+        return (
+            self.model_combo.currentText(),
+            self.group_combo.currentIndex(),
+            self.cb_compare_mm.isChecked(),
+            self.cb_diagnostic.isChecked(),
+            self.diag_combo.currentText(),
+            self.preset_combo.currentData(),
+        )
+
+
+class CoxRegressionDialog(QDialog):
+    """Dialog allowing user to select time, event, and covariate columns for Cox Proportional Hazards regression."""
+
+    def __init__(
+        self,
+        column_names: List[str],
+        default_time_idx: int = 0,
+        default_event_idx: int = 1,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Parameters: Cox Proportional Hazards")
+        self.setMinimumWidth(440)
+        self.column_names = column_names
+
+        layout = QVBoxLayout(self)
+
+        col_group = QGroupBox("Survival Variables")
+        form = QFormLayout(col_group)
+
+        self.combo_time = QComboBox()
+        self.combo_time.addItems(column_names)
+        if 0 <= default_time_idx < len(column_names):
+            self.combo_time.setCurrentIndex(default_time_idx)
+        form.addRow("Time Variable (X):", self.combo_time)
+
+        self.combo_event = QComboBox()
+        self.combo_event.addItems(column_names)
+        if 0 <= default_event_idx < len(column_names):
+            self.combo_event.setCurrentIndex(default_event_idx)
+        form.addRow("Event/Outcome (1=Event, 0=Censored):", self.combo_event)
+
+        layout.addWidget(col_group)
+
+        cov_group = QGroupBox("Covariates (Predictors)")
+        cov_layout = QVBoxLayout(cov_group)
+        self.cov_checkboxes: List[QCheckBox] = []
+
+        for i, col_name in enumerate(column_names):
+            cb = QCheckBox(col_name)
+            if i != default_time_idx and i != default_event_idx:
+                cb.setChecked(True)
+            self.cov_checkboxes.append(cb)
+            cov_layout.addWidget(cb)
+
+        layout.addWidget(cov_group)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_selection(self) -> Tuple[int, int, List[int]]:
+        time_idx = self.combo_time.currentIndex()
+        event_idx = self.combo_event.currentIndex()
+        selected_covs = [
+            i for i, cb in enumerate(self.cov_checkboxes)
+            if cb.isChecked() and i != time_idx and i != event_idx
+        ]
+        return time_idx, event_idx, selected_covs
+

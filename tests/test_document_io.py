@@ -211,7 +211,7 @@ class TestHeadlessUI(unittest.TestCase):
 
         window = MainWindow()
         self.assertIsNotNone(window)
-        self.assertEqual(window.windowTitle(), "GemGraph — Clean-Room Edition")
+        self.assertEqual(window.windowTitle(), "Untitled - GemGraph - v0.1.2-nightly - Clean Room Edition")
         # Ensure 3-pane components are active
         self.assertIsNotNone(window.navigator)
         self.assertIsNotNone(window.center_stack)

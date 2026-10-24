@@ -68,8 +68,17 @@ from src.ui.graph_canvas import GraphCanvasWidget
 from src.ui.results_view import ResultTabsWidget
 from src.ui.analyze_dialog import AnalyzeDataDialog, AnalysisChecklistDialog
 from src.ui.format_table_dialog import FormatDataTableDialog
-from src.ui.dialogs import NonlinearRegressionDialog, OutlierDialog, AnovaDialog
+from src.ui.dialogs import (
+    NonlinearRegressionDialog,
+    OutlierDialog,
+    AnovaDialog,
+    EnzymeKineticsDialog,
+    CoxRegressionDialog,
+)
 from src.ui.mediator import WorkspaceMediator
+from src.math.survival import SurvivalEngine
+
+APP_VERSION_LABEL = "v0.1.2-nightly"
 
 # Compatibility alias
 ResultSheetWidget = ResultTabsWidget
@@ -87,7 +96,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("GemGraph — Clean-Room Edition")
+        self.current_file_path: Optional[str] = None
+        self._update_window_title()
         self.resize(1300, 800)
         self.setAcceptDrops(True)
 
@@ -106,6 +116,10 @@ class MainWindow(QMainWindow):
         self.navigator.populate(self.document)
         if self.document.active_sheet_id:
             self.on_sheet_selected(self.document.active_sheet_id)
+
+    def _update_window_title(self) -> None:
+        file_name = os.path.basename(self.current_file_path) if self.current_file_path else "Untitled"
+        self.setWindowTitle(f"{file_name} - GemGraph - {APP_VERSION_LABEL} - Clean Room Edition")
 
     def _on_workspace_modified(self) -> None:
         if hasattr(self, "layout_view") and self.layout_view is not None:
@@ -245,6 +259,10 @@ class MainWindow(QMainWindow):
         open_sample_act = QAction("Open Sample Project (.bigo)", self)
         open_sample_act.triggered.connect(self.action_open_sample_project)
         file_menu.addAction(open_sample_act)
+
+        load_sample_datasets_act = QAction("Load Sample Datasets", self)
+        load_sample_datasets_act.triggered.connect(self.action_load_sample_datasets)
+        file_menu.addAction(load_sample_datasets_act)
 
         save_act = QAction("&Save Project (.bigo)", self)
         save_act.setShortcut(QKeySequence.StandardKey.Save)
@@ -391,6 +409,7 @@ class MainWindow(QMainWindow):
         # 3. Regression and Curves
         rc_menu = analysis_menu.addMenu("&Regression and Curves")
         rc_menu.addAction("Nonlinear Regression (Curve Fit)...", self.action_run_nonlinear)
+        rc_menu.addAction("Enzyme Kinetics...", self.action_run_enzyme_kinetics)
         rc_menu.addAction("Linear Regression...", self.action_run_linear)
         rc_menu.addAction("Multiple Regression...", self.action_run_multiple_reg)
         rc_menu.addAction("Logistic Regression...", self.action_run_logistic)
@@ -406,6 +425,7 @@ class MainWindow(QMainWindow):
         # 5. Survival Analysis
         surv_menu = analysis_menu.addMenu("&Survival Analysis")
         surv_menu.addAction("Kaplan-Meier Survival Analysis...", self.action_run_survival)
+        surv_menu.addAction("Cox Proportional Hazards...", self.action_run_cox_regression)
 
         # 6. Simulation
         sim_menu = analysis_menu.addMenu("S&imulation")
@@ -1008,37 +1028,28 @@ class MainWindow(QMainWindow):
     def action_new_project(self) -> None:
         self.document = PrismDocument("Untitled Project")
         self.undo_stack.clear()
+        self.current_file_path = None
+        self._update_window_title()
         self._create_blank_project()
         self.navigator.populate(self.document)
         if self.document.active_sheet_id:
             self.on_sheet_selected(self.document.active_sheet_id)
 
     def action_load_sample_data(self) -> None:
-        """Loads sample/demo dose-response dataset when explicitly requested via Help > Load Sample Data."""
-        self.document = PrismDocument("Sample Analysis Project")
+        """Loads textbook sample document in-memory via build_textbook_sample_document()."""
+        from src.data_engine.sample_generator import build_textbook_sample_document
+        self.document = build_textbook_sample_document()
         self.undo_stack.clear()
-
-        sheet = self.document.create_data_sheet(
-            title="Dose Response", table_type=TableType.XY, num_rows=8, num_replicates=3
-        )
-        table = sheet.table
-        table.x_title = "Log [Agonist], M"
-        x_vals = [-9.0, -8.0, -7.0, -6.5, -6.0, -5.5, -5.0, -4.0]
-        # Realistic 4PL sigmoid curve: Bottom=10, Top=100, LogEC50=-6.0, Hill=1.0
-        for r, x in enumerate(x_vals):
-            table.set_cell_value(r, "X", 0, 0, x)
-            expected = 10.0 + (100.0 - 10.0) / (1.0 + 10.0 ** (-6.0 - x))
-            table.set_cell_value(r, "Y", 0, 0, round(expected - 2.5, 2))
-            table.set_cell_value(r, "Y", 0, 1, round(expected + 1.2, 2))
-            table.set_cell_value(r, "Y", 0, 2, round(expected + 0.8, 2))
-
-        self.document.create_info_sheet(title="Project Info")
-        self.document.create_graph_sheet(title="Dose Response Curve", source_sheet_id=sheet.sheet_id)
-
+        self.current_file_path = None
+        self._update_window_title()
         self.navigator.populate(self.document)
-        if self.document.active_sheet_id:
-            self.on_sheet_selected(self.document.active_sheet_id)
-        self.status.showMessage("Loaded sample dose-response dataset.")
+        if len(self.document.sheet_order) > 0:
+            first_id = self.document.sheet_order[0]
+            self.navigator.select_sheet(first_id)
+            self.on_sheet_selected(first_id)
+        self.status.showMessage("Loaded Textbook Sample Datasets.")
+
+    action_load_sample_datasets = action_load_sample_data
 
     @staticmethod
     def get_smart_initial_dir() -> str:
@@ -1143,6 +1154,8 @@ class MainWindow(QMainWindow):
                 self.spreadsheet_model.set_table(data_sheets[0].table)
                 self.center_stack.setCurrentWidget(self.spreadsheet_view)
 
+        self.current_file_path = filepath
+        self._update_window_title()
         self.status.showMessage(f"Opened: {filepath}")
 
     def action_open_sample_project(self) -> None:
@@ -1169,7 +1182,7 @@ class MainWindow(QMainWindow):
 
     def action_save_project(self) -> None:
         initial_dir = self.get_smart_initial_dir()
-        default_path = os.path.join(initial_dir, f"{self.document.title}.bigo")
+        default_path = self.current_file_path or os.path.join(initial_dir, f"{self.document.title}.bigo")
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Project",
@@ -1179,6 +1192,8 @@ class MainWindow(QMainWindow):
         if file_path:
             try:
                 PrismIO.save(self.document, file_path)
+                self.current_file_path = file_path
+                self._update_window_title()
                 self.status.showMessage(f"Saved: {file_path}")
             except Exception as e:
                 QMessageBox.critical(self, "Error Saving Project", str(e))
@@ -1632,6 +1647,7 @@ class MainWindow(QMainWindow):
                 "Correlation Matrix...": self.action_run_correlation,
                 "Frequency Distribution...": self.action_run_frequency_dist,
                 "Nonlinear Regression (Curve Fit)...": self.action_run_nonlinear,
+                "Enzyme Kinetics...": self.action_run_enzyme_kinetics,
                 "Linear Regression...": self.action_run_linear,
                 "Multiple Regression...": self.action_run_multiple_reg,
                 "Logistic Regression...": self.action_run_logistic,
@@ -1645,6 +1661,7 @@ class MainWindow(QMainWindow):
                 "Chi-Square / Fisher's Exact (Contingency)...": self.action_run_contingency_test,
                 "Chi-Square Goodness of Fit...": self.action_run_goodness_of_fit,
                 "Kaplan-Meier Survival Analysis...": self.action_run_survival,
+                "Cox Proportional Hazards...": self.action_run_cox_regression,
                 "Simulate XY Data...": self.action_run_simulate_xy,
                 "Simulate Column Data...": self.action_run_simulate_column,
             }
@@ -2353,8 +2370,136 @@ class MainWindow(QMainWindow):
         self.navigator.populate(self.document)
         self.on_sheet_selected(res_sheet.sheet_id)
 
+    def action_run_enzyme_kinetics(self) -> None:
+        """Executes Enzyme Kinetics suite with candidate kinetic models, Extra-SS F-test, and diagnostic transforms."""
+        active_sheet = self.document.get_sheet(self.document.active_sheet_id or "")
+        if not isinstance(active_sheet, DataSheet):
+            QMessageBox.warning(self, "Enzyme Kinetics", "Please select a Data Sheet with Substrate (X) and Velocity (Y) data.")
+            return
+
+        table: DataTable = active_sheet.table
+        if table.x_data is None:
+            QMessageBox.warning(self, "Enzyme Kinetics", "Table does not contain an X column for substrate concentration.")
+            return
+
+        dlg = EnzymeKineticsDialog(table.y_group_titles, parent=self)
+        if not dlg.exec():
+            return
+
+        model_name, group_idx, compare_mm, show_diag, diag_type, preset = dlg.get_settings()
+        if model_name not in STANDARD_MODELS:
+            QMessageBox.warning(self, "Enzyme Kinetics", f"Unknown kinetic model: {model_name}")
+            return
+
+        model = STANDARD_MODELS[model_name]
+        xs, ys = table.get_clean_xy(group_idx)
+        if len(xs) <= len(model.param_names):
+            QMessageBox.warning(self, "Enzyme Kinetics", "Not enough valid data points to fit the chosen model.")
+            return
+
+        try:
+            fit_result = NonlinearEngine.fit(xs, ys, model, preset=preset)
+        except Exception as e:
+            QMessageBox.critical(self, "Enzyme Kinetics Error", f"Model fitting failed: {e}")
+            return
+
+        # 1. Table of results tab
+        res_headers = ["Parameter", "Best-Fit Value", "Std. Error", "95% CI Lower", "95% CI Upper"]
+        res_rows = []
+        for p in fit_result["parameters"]:
+            res_rows.append([
+                p["name"],
+                f"{p['best_fit']:.4f}",
+                f"{p['std_error']:.4f}",
+                f"{p['ci_lower']:.4f}",
+                f"{p['ci_upper']:.4f}",
+            ])
+        res_rows.append(["--- Goodness of Fit ---", "", "", "", ""])
+        res_rows.append(["Degrees of Freedom", str(fit_result["degrees_of_freedom"]), "", "", ""])
+        res_rows.append(["R squared", f"{fit_result['r_squared']:.4f}", "", "", ""])
+        res_rows.append(["Sy.x (Std Error of Fit)", f"{fit_result['syx']:.4f}", "", "", ""])
+        res_rows.append(["AICc", f"{fit_result['aicc']:.2f}", "", "", ""])
+
+        # 2. Curve tab
+        x_min, x_max = float(np.min(xs)), float(np.max(xs))
+        x_dense = np.linspace(max(0.0, x_min * 0.9), x_max * 1.1, 100)
+        y_dense = model.evaluate(x_dense, fit_result["p_opt"])
+        curve_headers = ["Substrate [S]", "Fitted Velocity (v)"]
+        curve_rows = [[f"{x:.4f}", f"{y:.4f}"] for x, y in zip(x_dense, y_dense)]
+
+        tabs = [
+            {"name": "Table of results", "grid_type": "green", "headers": res_headers, "rows": res_rows, "visible": True},
+            {"name": "Curve", "grid_type": "green", "headers": curve_headers, "rows": curve_rows, "visible": True},
+        ]
+
+        # 3. Model comparison tab
+        if compare_mm:
+            comp_headers = ["Comparison Metric", "Value"]
+            if model_name != "Michaelis-Menten":
+                try:
+                    mm_model = STANDARD_MODELS["Michaelis-Menten"]
+                    comp = NonlinearEngine.compare_models(xs, ys, mm_model, model, preset=preset)
+                    comp_rows = [
+                        ["Simpler Model", comp["simpler_model"]],
+                        ["Alternative Model", comp["complex_model"]],
+                        ["Extra-SS F-statistic", f"{comp['f_stat']:.4f}"],
+                        ["Degrees of Freedom (Num, Denom)", f"{comp['df_num']}, {comp['df_denom']}"],
+                        ["P-value (Extra-SS F-test)", f"{comp['p_value']:.4e}" if comp['p_value'] < 0.0001 else f"{comp['p_value']:.4f}"],
+                        ["AICc (Simpler)", f"{comp['aicc_simpler']:.2f}"],
+                        ["AICc (Alternative)", f"{comp['aicc_complex']:.2f}"],
+                        ["Delta AICc (Simpler - Alt)", f"{comp['aicc_simpler'] - comp['aicc_complex']:.2f}"],
+                        ["Preferred Model", comp["preferred_model"]],
+                    ]
+                except Exception as comp_err:
+                    comp_rows = [["Comparison Error", str(comp_err)]]
+            else:
+                comp_rows = [
+                    ["Simpler Model", "Michaelis-Menten"],
+                    ["Note", "Michaelis-Menten is already the simplest kinetic model."],
+                ]
+            tabs.append({"name": "Model comparison", "grid_type": "green", "headers": comp_headers, "rows": comp_rows, "visible": True})
+
+        # 4. Diagnostic transform tab
+        if show_diag:
+            try:
+                diag_key = "lineweaver_burk" if "Lineweaver-Burk" in diag_type else "eadie_hofstee"
+                txs, tys = pharmacological_transform(xs, ys, diag_key)
+                valid_diag = ~np.isnan(txs) & ~np.isnan(tys)
+                d_headers = ["1/[S]", "1/v"] if diag_key == "lineweaver_burk" else ["v/[S]", "v"]
+                d_rows = [[f"{x:.4f}", f"{y:.4f}"] for x, y in zip(txs[valid_diag], tys[valid_diag])]
+            except Exception as e:
+                d_headers = ["Diagnostic Error"]
+                d_rows = [[str(e)]]
+            tabs.append({"name": "Diagnostic transform", "grid_type": "green", "headers": d_headers, "rows": d_rows, "visible": True})
+
+        raw_data = dict(fit_result)
+        raw_data["curves"] = [{
+            "name": f"{model_name} Fit",
+            "x_dense": x_dense.tolist(),
+            "y_dense": y_dense.tolist(),
+        }]
+
+        res_sheet = self.document.create_result_sheet(
+            title=f"Enzyme Kinetics ({model_name})",
+            analysis_type="Enzyme Kinetics",
+            source_sheet_id=active_sheet.sheet_id,
+            tabs=tabs,
+            summary_tables=[{"title": "Parameter Estimates", "headers": res_headers, "rows": res_rows}],
+            raw_result_data=raw_data,
+            grid_type="green",
+        )
+        GLOBAL_REGISTRY.extract_from_result(res_sheet)
+        self.graph_canvas.add_fitted_curve(
+            f"enzyme_{res_sheet.sheet_id}",
+            f"{model_name} Fit",
+            x_dense,
+            y_dense,
+        )
+        self.navigator.populate(self.document)
+        self.on_sheet_selected(res_sheet.sheet_id)
+
     def action_run_survival(self) -> None:
-        """Computes Kaplan-Meier survival curve with Greenwood standard errors."""
+        """Computes Kaplan-Meier survival curves with Greenwood SE, log-log 95% CIs, and multi-group log-rank test."""
         active_sheet = self.document.get_sheet(self.document.active_sheet_id or "")
         if not isinstance(active_sheet, DataSheet):
             QMessageBox.warning(self, "Survival Analysis", "Please select a Data Sheet.")
@@ -2366,63 +2511,253 @@ class MainWindow(QMainWindow):
             return
 
         times = np.copy(table.x_data)
-        events = np.array([table.get_cell_value(r, "Y", 0, 0) for r in range(table.num_rows)])
-        valid = ~np.isnan(times) & ~np.isnan(events)
+        km_results: Dict[str, Any] = {}
+        groups_data: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
-        t_clean = times[valid]
-        e_clean = events[valid]
-        order = np.argsort(t_clean)
-        t_sorted = t_clean[order]
-        e_sorted = e_clean[order]
+        for g_idx, g_name in enumerate(table.y_group_titles):
+            events = np.array([table.get_cell_value(r, "Y", g_idx, 0) for r in range(table.num_rows)], dtype=np.float64)
+            valid = ~np.isnan(times) & ~np.isnan(events)
+            t_clean = times[valid]
+            e_clean = events[valid]
+            if len(t_clean) > 0:
+                km = SurvivalEngine.kaplan_meier(t_clean, e_clean)
+                km_results[g_name] = km
+                groups_data[g_name] = (t_clean, e_clean)
 
-        unique_times = np.unique(t_sorted)
-        n_at_risk = len(t_sorted)
-        survival_frac = 1.0
-        greenwood_sum = 0.0
+        if not km_results:
+            QMessageBox.warning(self, "Survival Analysis", "No valid survival observations found.")
+            return
 
-        headers = ["Time", "Number at Risk", "Number of Deaths", "Censored", "Fractional Survival", "Std Error"]
-        rows = []
-        curve_coords = [[0.0, 1.0]]
+        lr_logrank = None
+        hr_res = None
+        if len(groups_data) >= 2:
+            try:
+                lr_logrank = SurvivalEngine.log_rank_test(list(groups_data.values()))
+            except Exception:
+                pass
 
-        for ut in unique_times:
-            mask = t_sorted == ut
-            d = int(np.sum(e_sorted[mask] == 1))
-            c = int(np.sum(e_sorted[mask] == 0))
-            if n_at_risk > 0:
-                if d > 0:
-                    survival_frac *= (1.0 - d / n_at_risk)
-                    if n_at_risk > d:
-                        greenwood_sum += d / (n_at_risk * (n_at_risk - d))
-                se = survival_frac * np.sqrt(greenwood_sum)
-                rows.append([
+            if len(groups_data) == 2:
+                g_keys = list(groups_data.keys())
+                try:
+                    hr_res = SurvivalEngine.hazard_ratio_logrank(
+                        groups_data[g_keys[0]],
+                        groups_data[g_keys[1]],
+                    )
+                except Exception:
+                    pass
+
+        # Build tabs
+        table_headers = [
+            "Group", "Time", "Number at Risk", "Number of Deaths", "Censored",
+            "Fractional Survival", "Std Error", "95% CI Lower", "95% CI Upper"
+        ]
+        table_rows = []
+        for g_name, km in km_results.items():
+            t_arr = km["times"]
+            s_arr = km["survival"]
+            se_arr = km["se"]
+            ci_l = km["ci_lower"]
+            ci_u = km["ci_upper"]
+            risk = km["n_at_risk"]
+            evs = km["n_events"]
+            cens = km["n_censored"]
+            for i, ut in enumerate(t_arr):
+                table_rows.append([
+                    g_name,
                     f"{ut:.4f}",
-                    str(n_at_risk),
-                    str(d),
-                    str(c),
-                    f"{survival_frac:.4f}",
-                    f"{se:.4f}",
+                    str(risk[i]),
+                    str(evs[i]),
+                    str(cens[i]),
+                    f"{s_arr[i]:.4f}",
+                    f"{se_arr[i]:.4f}",
+                    f"{ci_l[i]:.4f}",
+                    f"{ci_u[i]:.4f}",
                 ])
-                curve_coords.append([float(ut), float(survival_frac)])
-                n_at_risk -= (d + c)
+
+        coord_headers = ["Group", "Time", "Survival Fraction"]
+        coord_rows = []
+        for g_name, km in km_results.items():
+            coord_rows.append([g_name, "0.0000", "1.0000"])
+            for t, s in zip(km["times"], km["survival"]):
+                coord_rows.append([g_name, f"{t:.4f}", f"{s:.4f}"])
 
         tabs = [
-            {"name": "Survival Table", "grid_type": "green", "headers": headers, "rows": rows, "visible": True},
-            {
-                "name": "Curve Coordinates",
-                "grid_type": "green",
-                "headers": ["Time", "Survival Fraction"],
-                "rows": [[f"{x:.4f}", f"{y:.4f}"] for x, y in curve_coords],
-                "visible": True,
-            },
+            {"name": "Survival Table", "grid_type": "green", "headers": table_headers, "rows": table_rows, "visible": True},
+            {"name": "Curve Coordinates", "grid_type": "green", "headers": coord_headers, "rows": coord_rows, "visible": True},
         ]
+
+        if lr_logrank is not None:
+            comp_headers = ["Comparison / Metric", "Value"]
+            comp_rows = [
+                ["Log-rank (Mantel-Cox) Chi-Square", f"{lr_logrank['chi2']:.4f}"],
+                ["Log-rank Degrees of Freedom", str(lr_logrank['df'])],
+                ["Log-rank P-value", f"{lr_logrank['p_value']:.4e}" if lr_logrank['p_value'] < 0.0001 else f"{lr_logrank['p_value']:.4f}"],
+                ["Gehan-Breslow-Wilcoxon Chi-Square", f"{lr_logrank['gehan_wilcoxon_chi2']:.4f}"],
+                ["Gehan-Breslow-Wilcoxon P-value", f"{lr_logrank['gehan_wilcoxon_p']:.4e}" if lr_logrank['gehan_wilcoxon_p'] < 0.0001 else f"{lr_logrank['gehan_wilcoxon_p']:.4f}"],
+            ]
+            if hr_res is not None:
+                g_keys = list(groups_data.keys())
+                comp_rows.extend([
+                    [f"Hazard Ratio (Mantel-Haenszel) ({g_keys[0]} / {g_keys[1]})", f"{hr_res['hazard_ratio']:.4f}"],
+                    ["95% CI of Hazard Ratio", f"{hr_res['ci_lower']:.4f} to {hr_res['ci_upper']:.4f}"],
+                    ["ln(Hazard Ratio)", f"{hr_res['log_hr']:.4f}"],
+                    ["SE of ln(Hazard Ratio)", f"{hr_res['se']:.4f}"],
+                ])
+            tabs.append({"name": "Comparison", "grid_type": "green", "headers": comp_headers, "rows": comp_rows, "visible": True})
+
+        surv_groups_list = []
+        for g_name, km in km_results.items():
+            surv_groups_list.append({
+                "name": g_name,
+                "times": km["times"].tolist(),
+                "survival": km["survival"].tolist(),
+                "ci_lower": km["ci_lower"].tolist(),
+                "ci_upper": km["ci_upper"].tolist(),
+                "censor_times": km["censor_times"].tolist(),
+                "censor_survival": km["censor_survival"].tolist(),
+                "median": km["median_survival"],
+            })
+
+        raw_result_data = {
+            "survival_groups": surv_groups_list,
+            "log_rank_p": lr_logrank["p_value"] if lr_logrank else None,
+            "hazard_ratio": hr_res["hazard_ratio"] if hr_res else None,
+        }
 
         res_sheet = self.document.create_result_sheet(
             title="Kaplan-Meier Survival",
             analysis_type="Survival Analysis",
             source_sheet_id=active_sheet.sheet_id,
             tabs=tabs,
+            raw_result_data=raw_result_data,
             grid_type="green",
         )
+        GLOBAL_REGISTRY.extract_from_result(res_sheet)
+        self.navigator.populate(self.document)
+        self.on_sheet_selected(res_sheet.sheet_id)
+
+    def action_run_cox_regression(self) -> None:
+        """Executes Cox Proportional Hazards regression with Efron tie handling and step-halving."""
+        active_sheet = self.document.get_sheet(self.document.active_sheet_id or "")
+        if not isinstance(active_sheet, DataSheet):
+            QMessageBox.warning(self, "Cox Regression", "Please select a Data Sheet with survival time, status, and covariates.")
+            return
+
+        table: DataTable = active_sheet.table
+        col_names: List[str] = []
+        col_getters = []
+
+        if table.table_type == TableType.MULTIPLE_VARIABLES and table.variables:
+            col_names = [v.name for v in table.variables]
+            for c_idx in range(len(table.variables)):
+                col_getters.append(
+                    lambda idx=c_idx: np.array([
+                        float(table.multi_var_data[r][idx])
+                        if r < len(table.multi_var_data) and idx < len(table.multi_var_data[r]) and table.multi_var_data[r][idx] is not None
+                        else np.nan
+                        for r in range(table.num_rows)
+                    ], dtype=np.float64)
+                )
+        else:
+            if table.x_data is not None:
+                col_names.append(table.x_title or "Time (X)")
+                col_getters.append(lambda: np.copy(table.x_data))
+            for g_idx, g_name in enumerate(table.y_group_titles):
+                col_names.append(g_name)
+                col_getters.append(
+                    lambda idx=g_idx: np.array([table.get_cell_value(r, "Y", idx, 0) for r in range(table.num_rows)], dtype=np.float64)
+                )
+
+        if len(col_names) < 3:
+            QMessageBox.warning(self, "Cox Regression", "Cox regression requires at least 3 columns: Time, Status, and at least 1 Covariate.")
+            return
+
+        dlg = CoxRegressionDialog(col_names, default_time_idx=0, default_event_idx=1, parent=self)
+        if not dlg.exec():
+            return
+
+        time_idx, event_idx, cov_indices = dlg.get_selection()
+        if not cov_indices:
+            QMessageBox.warning(self, "Cox Regression", "Please select at least one covariate.")
+            return
+
+        time_arr = col_getters[time_idx]()
+        event_arr = col_getters[event_idx]()
+        cov_arrays = [col_getters[ci]() for ci in cov_indices]
+        cov_mat = np.column_stack(cov_arrays)
+
+        valid = ~np.isnan(time_arr) & ~np.isnan(event_arr) & ~np.any(np.isnan(cov_mat), axis=1)
+        t_clean = time_arr[valid]
+        e_clean = event_arr[valid]
+        cov_clean = cov_mat[valid]
+
+        if len(t_clean) < len(cov_indices) + 2 or np.sum(e_clean == 1) == 0:
+            QMessageBox.warning(self, "Cox Regression", "Not enough valid event observations for the selected covariates.")
+            return
+
+        cov_names = [col_names[ci] for ci in cov_indices]
+        try:
+            res = SurvivalEngine.cox_ph(t_clean, e_clean, cov_clean, names=cov_names)
+        except Exception as e:
+            QMessageBox.critical(self, "Cox Regression Error", f"Cox regression failed to converge: {e}")
+            return
+
+        # 1. Coefficients & Hazard Ratios tab
+        coef_headers = [
+            "Covariate", "Coefficient (b)", "Std. Error", "z", "P-value",
+            "Hazard Ratio (e^b)", "95% CI Lower", "95% CI Upper"
+        ]
+        coef_rows = []
+        for cov_dict in res["covariates"]:
+            coef_rows.append([
+                cov_dict["name"],
+                f"{cov_dict['coef']:.4f}",
+                f"{cov_dict['se']:.4f}",
+                f"{cov_dict['z']:.4f}",
+                f"{cov_dict['p_value']:.4e}" if cov_dict['p_value'] < 0.0001 else f"{cov_dict['p_value']:.4f}",
+                f"{cov_dict['hazard_ratio']:.4f}",
+                f"{cov_dict['hr_ci_lower']:.4f}",
+                f"{cov_dict['hr_ci_upper']:.4f}",
+            ])
+
+        # 2. Global tests tab
+        global_headers = ["Metric / Test", "Value"]
+        global_rows = [
+            ["Number of Subjects", str(res["n_samples"])],
+            ["Number of Events", str(res["n_events"])],
+            ["Log-Likelihood (Null Model)", f"{res['log_likelihood_null']:.4f}"],
+            ["Log-Likelihood (Fitted Model)", f"{res['log_likelihood']:.4f}"],
+            ["Likelihood Ratio Test (Chi-Square)", f"{res['lrt_stat']:.4f}"],
+            ["LRT Degrees of Freedom", str(res["lrt_df"])],
+            ["LRT P-value", f"{res['lrt_p']:.4e}" if res['lrt_p'] < 0.0001 else f"{res['lrt_p']:.4f}"],
+            ["AIC", f"{res['aic']:.4f}"],
+            ["Tie Handling Method", str(res['ties']).capitalize()],
+            ["Iterations to Convergence", str(res['iterations'])],
+        ]
+
+        tabs = [
+            {"name": "Coefficients & Hazard Ratios", "grid_type": "red", "headers": coef_headers, "rows": coef_rows, "visible": True},
+            {"name": "Global tests", "grid_type": "red", "headers": global_headers, "rows": global_rows, "visible": True},
+        ]
+
+        raw_result_data = {
+            "covariates": res["covariates"],
+            "log_likelihood": res["log_likelihood"],
+            "lrt_stat": res["lrt_stat"],
+            "lrt_p": res["lrt_p"],
+            "aic": res["aic"],
+        }
+
+        res_sheet = self.document.create_result_sheet(
+            title="Cox Proportional Hazards",
+            analysis_type="Cox Regression",
+            source_sheet_id=active_sheet.sheet_id,
+            tabs=tabs,
+            summary_tables=[{"title": "Coefficients", "headers": coef_headers, "rows": coef_rows}],
+            raw_result_data=raw_result_data,
+            grid_type="red",
+        )
+        GLOBAL_REGISTRY.extract_from_result(res_sheet)
         self.navigator.populate(self.document)
         self.on_sheet_selected(res_sheet.sheet_id)
 

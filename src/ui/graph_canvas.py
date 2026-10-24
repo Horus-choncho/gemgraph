@@ -36,6 +36,7 @@ from src.core.sheet import BaseSheet, GraphSheet, GraphType, ResultSheet
 from src.core.hooking import GLOBAL_REGISTRY, HookedConstant
 from src.ui.mediator import WorkspaceMediator
 from src.ui.dialogs import FormatSeriesDialog
+from src.math.distributions import five_number_summary, gaussian_kde_profile
 
 
 class ScientificPlotCanvas(QWidget):
@@ -153,6 +154,8 @@ class ScientificPlotCanvas(QWidget):
             "Superimposed Bars & Points",
             GraphType.GROUPED_BARS_POINTS.value,
             GraphType.XY_SPIKES_CURVE.value,
+            GraphType.BOX_WHISKERS.value,
+            GraphType.VIOLIN.value,
             GraphType.DEPTH_GRAPH.value,
             GraphType.FLOATING_BARS.value,
         ])
@@ -458,6 +461,10 @@ class ScientificPlotCanvas(QWidget):
                     val_lower = val.lower().replace("_", " ").replace("-", " ")
                     if "depth" in val_lower or "isometric" in val_lower or "2.5d" in val_lower:
                         idx = self.type_combo.findText(GraphType.DEPTH_GRAPH.value)
+                    elif "box" in val_lower:
+                        idx = self.type_combo.findText(GraphType.BOX_WHISKERS.value)
+                    elif "violin" in val_lower:
+                        idx = self.type_combo.findText(GraphType.VIOLIN.value)
                     elif "bar" in val_lower and "point" not in val_lower:
                         idx = self.type_combo.findText(GraphType.COLUMN_BAR_ERROR.value)
                     elif "xy" in val_lower or "scatter" in val_lower:
@@ -510,6 +517,28 @@ class ScientificPlotCanvas(QWidget):
                 ctrl.blockSignals(False)
 
         self.refresh_plot()
+
+    def set_graph_type(self, graph_type: str) -> None:
+        idx = self.type_combo.findText(graph_type)
+        if idx >= 0:
+            self.type_combo.setCurrentIndex(idx)
+        else:
+            self.type_combo.setCurrentText(graph_type)
+        self.refresh_plot()
+
+    @property
+    def current_graph_type(self) -> str:
+        return self.type_combo.currentText()
+
+    def set_show_scatter(self, val: bool) -> None:
+        if hasattr(self, "btn_toggle_scatter"):
+            self.btn_toggle_scatter.setChecked(val)
+        self.show_bar_scatter_points = val
+        self.refresh_plot()
+
+    @property
+    def show_scatter_points(self) -> bool:
+        return self.show_bar_scatter_points
 
     def _is_bar_graph_type(self) -> bool:
         t = self.type_combo.currentText()
@@ -759,7 +788,13 @@ class ScientificPlotCanvas(QWidget):
             self.load_plot_config(plot_cfg, default_graph_type=def_gt)
         else:
             if graph_type:
-                idx = self.type_combo.findText(graph_type.value)
+                gt_val = graph_type.value if hasattr(graph_type, "value") else str(graph_type)
+                idx = self.type_combo.findText(gt_val)
+                if idx < 0:
+                    if "box" in gt_val.lower():
+                        idx = self.type_combo.findText(GraphType.BOX_WHISKERS.value)
+                    elif "violin" in gt_val.lower():
+                        idx = self.type_combo.findText(GraphType.VIOLIN.value)
                 if idx >= 0:
                     self.type_combo.setCurrentIndex(idx)
             self.refresh_plot()
@@ -793,6 +828,22 @@ class ScientificPlotCanvas(QWidget):
             self._render_depth_graph()
         elif selected_type in (GraphType.FLOATING_BARS.value, "Floating Bars (Min to Max)"):
             self._render_floating_bars()
+        elif selected_type in (
+            GraphType.BOX_WHISKERS.value,
+            GraphType.BOX_WHISKER.value,
+            "Box and Whiskers",
+            "Box & Whiskers",
+            "Box & Whisker",
+            "Box Plot",
+        ):
+            self._render_box_graph()
+        elif selected_type in (
+            GraphType.VIOLIN.value,
+            "Violin Plot",
+            "Violin",
+            "Violin Plots",
+        ):
+            self._render_violin_graph()
         elif (
             selected_type in (GraphType.GROUPED_BARS_POINTS.value, "Grouped Bars + Replicate Points")
             or (self.current_table.table_type == TableType.GROUPED and selected_type not in (GraphType.XY_SPIKES_CURVE.value, GraphType.XY_SCATTER_CURVE.value))
@@ -844,7 +895,123 @@ class ScientificPlotCanvas(QWidget):
             res_id = getattr(self.current_result, "sheet_id", "active_fit")
             if res_id not in self.removed_layer_ids:
                 raw = self.current_result.raw_result_data
-                if "x_dense" in raw and "y_dense" in raw:
+                analysis_type = getattr(self.current_result, "analysis_type", "")
+                is_grayscale = self.is_grayscale_mode
+
+                if "survival_groups" in raw or analysis_type == "Survival Analysis":
+                    s_items = []
+                    surv_groups = raw.get("survival_groups", [])
+                    if isinstance(surv_groups, dict):
+                        surv_groups = list(surv_groups.values())
+                    for g_idx, g_data in enumerate(surv_groups):
+                        t_vals = np.array(g_data.get("times", []), dtype=np.float64)
+                        s_vals = np.array(g_data.get("survival", []), dtype=np.float64)
+                        g_name = g_data.get("name", f"Group {g_idx + 1}")
+                        if len(t_vals) == 0:
+                            continue
+
+                        # Build step coordinates (staircase)
+                        step_x = [0.0]
+                        step_y = [1.0]
+                        for idx in range(1, len(t_vals)):
+                            step_x.append(t_vals[idx])
+                            step_y.append(step_y[-1])
+                            step_x.append(t_vals[idx])
+                            step_y.append(s_vals[idx])
+
+                        # Pen style
+                        if is_grayscale:
+                            col = QColor(20, 20, 20)
+                            styles = [
+                                Qt.PenStyle.SolidLine,
+                                Qt.PenStyle.DashLine,
+                                Qt.PenStyle.DotLine,
+                                Qt.PenStyle.DashDotLine,
+                            ]
+                            pen = pg.mkPen(col, width=2.5, style=styles[g_idx % len(styles)])
+                        else:
+                            col = self.COLOR_PALETTE[g_idx % len(self.COLOR_PALETTE)]
+                            pen = pg.mkPen(col, width=2.5)
+
+                        curve_item = self.plot_widget.plot(step_x, step_y, pen=pen, name=g_name)
+                        s_items.append(curve_item)
+
+                        # Shaded 95% CI bands if available
+                        ci_low = np.array(g_data.get("ci_lower", []), dtype=np.float64)
+                        ci_up = np.array(g_data.get("ci_upper", []), dtype=np.float64)
+                        if len(ci_low) == len(t_vals) and len(ci_up) == len(t_vals):
+                            step_ci_x = [0.0]
+                            step_low = [1.0]
+                            step_up = [1.0]
+                            for idx in range(1, len(t_vals)):
+                                step_ci_x.append(t_vals[idx])
+                                step_low.append(step_low[-1])
+                                step_up.append(step_up[-1])
+                                step_ci_x.append(t_vals[idx])
+                                step_low.append(ci_low[idx])
+                                step_up.append(ci_up[idx])
+
+                            c_low = pg.PlotCurveItem(step_ci_x, step_low, pen=pg.mkPen(None))
+                            c_up = pg.PlotCurveItem(step_ci_x, step_up, pen=pg.mkPen(None))
+                            fill_color = QColor(col)
+                            fill_color.setAlpha(40)
+                            fill_item = pg.FillBetweenItem(c_low, c_up, brush=pg.mkBrush(fill_color))
+                            self.plot_widget.addItem(fill_item)
+                            s_items.extend([c_low, c_up, fill_item])
+
+                        # Censor tick marks ("+")
+                        cens_t = np.array(g_data.get("censor_times", []), dtype=np.float64)
+                        cens_s = np.array(g_data.get("censor_survival", []), dtype=np.float64)
+                        if len(cens_t) > 0:
+                            cens_scatter = pg.ScatterPlotItem(
+                                x=cens_t,
+                                y=cens_s,
+                                symbol="+",
+                                size=10,
+                                pen=pg.mkPen(col, width=2.0),
+                            )
+                            self.plot_widget.addItem(cens_scatter)
+                            s_items.append(cens_scatter)
+
+                    # Display log-rank p-value text overlay
+                    if raw.get("log_rank_p") is not None:
+                        p_val = float(raw["log_rank_p"])
+                        txt = f"Log-rank P = {p_val:.4f}" if p_val >= 0.0001 else "Log-rank P < 0.0001"
+                        text_item = pg.TextItem(text=txt, color=(40, 40, 40), anchor=(1.0, 0.0))
+                        fnt = QFont("Arial", 10)
+                        fnt.setBold(True)
+                        text_item.setFont(fnt)
+                        vb = self.plot_widget.getViewBox()
+                        view_range = vb.viewRange()
+                        x_pos = view_range[0][1] * 0.95
+                        y_pos = view_range[1][1] * 0.95
+                        text_item.setPos(x_pos, y_pos)
+                        self.plot_widget.addItem(text_item)
+                        s_items.append(text_item)
+
+                    if s_items:
+                        self.analysis_layers[res_id] = {
+                            "name": getattr(self.current_result, "title", "Survival Analysis"),
+                            "plot_items": s_items,
+                        }
+
+                elif "curves" in raw:
+                    c_items = []
+                    for c_info in raw["curves"]:
+                        xd = np.array(c_info.get("x_dense", []))
+                        yd = np.array(c_info.get("y_dense", []))
+                        if len(xd) > 0 and len(yd) > 0:
+                            c_name = c_info.get("name", "Fitted Curve")
+                            c_pen = c_info.get("pen", pg.mkPen(color=QColor(20, 20, 20), width=2.5))
+                            p_item = self.plot_widget.plot(xd, yd, pen=c_pen, name=c_name)
+                            c_items.append(p_item)
+                    if c_items:
+                        self.analysis_layers[res_id] = {
+                            "name": getattr(self.current_result, "title", "Fitted Curves"),
+                            "plot_items": c_items,
+                        }
+
+                elif "x_dense" in raw and "y_dense" in raw:
                     x_dense = np.array(raw["x_dense"])
                     y_dense = np.array(raw["y_dense"])
                     fit_pen = pg.mkPen(color=QColor(20, 20, 20), width=2.5)
@@ -1703,6 +1870,532 @@ class ScientificPlotCanvas(QWidget):
                     brush=pg.mkBrush(base_color),
                 )
                 self.plot_widget.addItem(scatter)
+
+        self._render_analysis_overlays()
+
+    def _render_box_graph(self) -> None:
+        """
+        Renders Box and Whisker plots for Column and Grouped tables.
+        For Column: one box per column.
+        For Grouped: nested boxes per Factor 2 subgroup clustered under each Factor 1 row.
+        Shows Q1-Q3 box, bold median line, whiskers with caps, outliers, and optional jittered raw scatter.
+        """
+        table = self.current_table
+        if table is None:
+            return
+
+        is_grouped = table.table_type == TableType.GROUPED
+        is_grayscale = self.is_grayscale_mode
+
+        if is_grouped:
+            self.set_axis_titles(x_title="Conditions", y_title="Value")
+            num_groups = len(table.y_group_titles)
+            if num_groups == 0:
+                return
+
+            active_rows = []
+            for r in range(table.num_rows):
+                has_data = False
+                for g in range(num_groups):
+                    for s in range(table.num_replicates):
+                        if not table.is_excluded(r, "Y", g, s):
+                            val = table.y_data[g, r, s]
+                            if not np.isnan(val):
+                                has_data = True
+                                break
+                    if has_data:
+                        break
+                if has_data or (r < len(table.row_titles) and table.row_titles[r].strip()):
+                    active_rows.append(r)
+
+            if not active_rows:
+                active_rows = list(range(min(table.num_rows, 10)))
+
+            ticks = []
+            for idx, r in enumerate(active_rows):
+                title = table.row_titles[r] if r < len(table.row_titles) and table.row_titles[r].strip() else f"Row {r+1}"
+                ticks.append((idx, title))
+            self.plot_widget.getAxis("bottom").setTicks([ticks])
+
+            cluster_w = 0.8
+            sub_w = cluster_w / max(1, num_groups)
+
+            for g_idx, g_title in enumerate(table.y_group_titles):
+                has_custom_color = g_title in self.custom_series_colors
+                custom_color = self.custom_series_colors.get(g_title)
+                custom_opacity = self.custom_series_opacities.get(g_title, 1.0 if is_grayscale else 0.8)
+                sym_spec = self.GRAYSCALE_SYMBOLS[g_idx % len(self.GRAYSCALE_SYMBOLS)]
+
+                if is_grayscale and not has_custom_color:
+                    pattern_idx = g_idx % 5
+                    box_pen = pg.mkPen("k", width=1.5)
+                    if pattern_idx == 0:
+                        box_brush = QBrush(QColor("#000000"))
+                    elif pattern_idx == 1:
+                        box_brush = QBrush(QColor("#ffffff"))
+                    elif pattern_idx == 2:
+                        box_brush = QBrush(QColor("#808080"))
+                    elif pattern_idx == 3:
+                        box_brush = QBrush(QColor("#c0c0c0"))
+                    else:
+                        box_brush = QBrush(QColor("#000000"), Qt.BrushStyle.DiagCrossPattern)
+                    pt_symbol = sym_spec["symbol"]
+                    pt_pen = pg.mkPen("k", width=1.2)
+                    pt_brush = pg.mkBrush("w" if pattern_idx in (0, 2, 4) else "k")
+                    med_pen = pg.mkPen("w" if pattern_idx == 0 else "k", width=2.5)
+                    whisker_pen = pg.mkPen("k", width=1.5)
+                else:
+                    color = custom_color or self.COLOR_PALETTE[g_idx % len(self.COLOR_PALETTE)]
+                    alpha = int(round(custom_opacity * 255))
+                    box_pen = pg.mkPen(color.darker(140), width=1.5)
+                    box_brush = pg.mkBrush(color.red(), color.green(), color.blue(), alpha)
+                    pt_symbol = "o"
+                    pt_pen = pg.mkPen(color.darker(140), width=1.0)
+                    pt_brush = pg.mkBrush(color)
+                    med_pen = pg.mkPen(color.darker(180), width=2.5)
+                    whisker_pen = pg.mkPen(color.darker(140), width=1.5)
+
+                if self.plot_widget.plotItem.legend is not None:
+                    dummy = pg.PlotDataItem(pen=box_pen, brush=box_brush, symbol=pt_symbol, name=g_title)
+                    self.plot_widget.plotItem.legend.addItem(dummy, g_title)
+
+                for x_idx, r in enumerate(active_rows):
+                    x_pos = x_idx + (g_idx - (num_groups - 1) / 2.0) * sub_w
+                    valid_vals = []
+                    for s in range(table.num_replicates):
+                        if not table.is_excluded(r, "Y", g_idx, s):
+                            val = table.y_data[g_idx, r, s]
+                            if not np.isnan(val):
+                                valid_vals.append(float(val))
+
+                    if not valid_vals:
+                        continue
+
+                    summary = five_number_summary(valid_vals, whisker_rule="tukey")
+                    q1 = summary["q1"]
+                    q3 = summary["q3"]
+                    med = summary["median"]
+                    w_low = summary["whisker_low"]
+                    w_high = summary["whisker_high"]
+                    outliers = summary["outliers"]
+
+                    box_w = sub_w * 0.75
+                    h = max(1e-6, q3 - q1)
+
+                    box = pg.BarGraphItem(
+                        x=[x_pos],
+                        y0=[q1],
+                        height=[h],
+                        width=box_w,
+                        brush=box_brush,
+                        pen=box_pen,
+                    )
+                    self.plot_widget.addItem(box)
+
+                    med_line = pg.PlotCurveItem(
+                        x=[x_pos - box_w / 2.0, x_pos + box_w / 2.0],
+                        y=[med, med],
+                        pen=med_pen,
+                    )
+                    self.plot_widget.addItem(med_line)
+
+                    cap_w = box_w * 0.4
+                    if not np.isnan(w_high) and w_high >= q3:
+                        wh_line = pg.PlotCurveItem(x=[x_pos, x_pos], y=[q3, w_high], pen=whisker_pen)
+                        cap_high = pg.PlotCurveItem(x=[x_pos - cap_w / 2.0, x_pos + cap_w / 2.0], y=[w_high, w_high], pen=whisker_pen)
+                        self.plot_widget.addItem(wh_line)
+                        self.plot_widget.addItem(cap_high)
+
+                    if self.whisker_direction != "Upper (+) Only" and not np.isnan(w_low) and w_low <= q1:
+                        wl_line = pg.PlotCurveItem(x=[x_pos, x_pos], y=[q1, w_low], pen=whisker_pen)
+                        cap_low = pg.PlotCurveItem(x=[x_pos - cap_w / 2.0, x_pos + cap_w / 2.0], y=[w_low, w_low], pen=whisker_pen)
+                        self.plot_widget.addItem(wl_line)
+                        self.plot_widget.addItem(cap_low)
+
+                    if len(outliers) > 0:
+                        out_scatter = pg.ScatterPlotItem(
+                            x=np.full(len(outliers), x_pos),
+                            y=outliers,
+                            symbol="o",
+                            size=6,
+                            pen=whisker_pen,
+                            brush=pg.mkBrush("w" if is_grayscale else QColor(200, 40, 40)),
+                        )
+                        self.plot_widget.addItem(out_scatter)
+
+                    if self.show_bar_scatter_points:
+                        if len(valid_vals) > 1:
+                            rng = np.random.RandomState(42 + r * 13 + g_idx * 7)
+                            jitter = (rng.rand(len(valid_vals)) - 0.5) * (box_w * 0.4)
+                        else:
+                            jitter = np.zeros(len(valid_vals))
+                        scatter = pg.ScatterPlotItem(
+                            x=x_pos + jitter,
+                            y=valid_vals,
+                            pen=pt_pen,
+                            brush=pt_brush,
+                            symbol=pt_symbol,
+                            size=6,
+                        )
+                        self.plot_widget.addItem(scatter)
+
+        else:
+            # Column table
+            self.set_axis_titles(x_title="Groups", y_title="Value")
+            group_data = table.get_all_group_values() if hasattr(table, "get_all_group_values") else {}
+            names = list(group_data.keys())
+            if not names:
+                return
+
+            ticks = [(pos, name) for pos, name in enumerate(names)]
+            self.plot_widget.getAxis("bottom").setTicks([ticks])
+
+            for pos, name in enumerate(names):
+                raw_vals = group_data[name]
+                vals = []
+                for r_idx, val in enumerate(raw_vals):
+                    if not table.is_excluded(r_idx, "Y", pos, 0) and not np.isnan(val):
+                        vals.append(float(val))
+
+                if len(vals) == 0:
+                    continue
+
+                has_custom_color = name in self.custom_series_colors
+                custom_color = self.custom_series_colors.get(name)
+                custom_opacity = self.custom_series_opacities.get(name, 1.0 if is_grayscale else 0.8)
+                sym_spec = self.GRAYSCALE_SYMBOLS[pos % len(self.GRAYSCALE_SYMBOLS)]
+
+                if is_grayscale and not has_custom_color:
+                    pattern_idx = pos % 5
+                    box_pen = pg.mkPen("k", width=1.5)
+                    if pattern_idx == 0:
+                        box_brush = QBrush(QColor("#000000"))
+                    elif pattern_idx == 1:
+                        box_brush = QBrush(QColor("#ffffff"))
+                    elif pattern_idx == 2:
+                        box_brush = QBrush(QColor("#808080"))
+                    elif pattern_idx == 3:
+                        box_brush = QBrush(QColor("#c0c0c0"))
+                    else:
+                        box_brush = QBrush(QColor("#000000"), Qt.BrushStyle.DiagCrossPattern)
+                    pt_symbol = sym_spec["symbol"]
+                    pt_pen = pg.mkPen("k", width=1.2)
+                    pt_brush = pg.mkBrush("w" if pattern_idx in (0, 2, 4) else "k")
+                    med_pen = pg.mkPen("w" if pattern_idx == 0 else "k", width=2.5)
+                    whisker_pen = pg.mkPen("k", width=1.5)
+                else:
+                    color = custom_color or self.COLOR_PALETTE[pos % len(self.COLOR_PALETTE)]
+                    alpha = int(round(custom_opacity * 255))
+                    box_pen = pg.mkPen(color.darker(140), width=1.5)
+                    box_brush = pg.mkBrush(color.red(), color.green(), color.blue(), alpha)
+                    pt_symbol = "o"
+                    pt_pen = pg.mkPen(color.darker(140), width=1.0)
+                    pt_brush = pg.mkBrush(color)
+                    med_pen = pg.mkPen(color.darker(180), width=2.5)
+                    whisker_pen = pg.mkPen(color.darker(140), width=1.5)
+
+                summary = five_number_summary(vals, whisker_rule="tukey")
+                q1 = summary["q1"]
+                q3 = summary["q3"]
+                med = summary["median"]
+                w_low = summary["whisker_low"]
+                w_high = summary["whisker_high"]
+                outliers = summary["outliers"]
+
+                box_w = 0.55
+                h = max(1e-6, q3 - q1)
+
+                box = pg.BarGraphItem(
+                    x=[pos],
+                    y0=[q1],
+                    height=[h],
+                    width=box_w,
+                    brush=box_brush,
+                    pen=box_pen,
+                )
+                self.plot_widget.addItem(box)
+
+                med_line = pg.PlotCurveItem(
+                    x=[pos - box_w / 2.0, pos + box_w / 2.0],
+                    y=[med, med],
+                    pen=med_pen,
+                )
+                self.plot_widget.addItem(med_line)
+
+                cap_w = box_w * 0.4
+                if not np.isnan(w_high) and w_high >= q3:
+                    wh_line = pg.PlotCurveItem(x=[pos, pos], y=[q3, w_high], pen=whisker_pen)
+                    cap_high = pg.PlotCurveItem(x=[pos - cap_w / 2.0, pos + cap_w / 2.0], y=[w_high, w_high], pen=whisker_pen)
+                    self.plot_widget.addItem(wh_line)
+                    self.plot_widget.addItem(cap_high)
+
+                if self.whisker_direction != "Upper (+) Only" and not np.isnan(w_low) and w_low <= q1:
+                    wl_line = pg.PlotCurveItem(x=[pos, pos], y=[q1, w_low], pen=whisker_pen)
+                    cap_low = pg.PlotCurveItem(x=[pos - cap_w / 2.0, pos + cap_w / 2.0], y=[w_low, w_low], pen=whisker_pen)
+                    self.plot_widget.addItem(wl_line)
+                    self.plot_widget.addItem(cap_low)
+
+                if len(outliers) > 0:
+                    out_scatter = pg.ScatterPlotItem(
+                        x=np.full(len(outliers), pos),
+                        y=outliers,
+                        symbol="o",
+                        size=6,
+                        pen=whisker_pen,
+                        brush=pg.mkBrush("w" if is_grayscale else QColor(200, 40, 40)),
+                    )
+                    self.plot_widget.addItem(out_scatter)
+
+                if self.show_bar_scatter_points:
+                    if len(vals) > 1:
+                        rng = np.random.RandomState(42 + pos * 17)
+                        jitter = (rng.rand(len(vals)) - 0.5) * (box_w * 0.4)
+                    else:
+                        jitter = np.zeros(len(vals))
+                    scatter = pg.ScatterPlotItem(
+                        x=np.full(len(vals), pos) + jitter,
+                        y=vals,
+                        pen=pt_pen,
+                        brush=pt_brush,
+                        symbol=pt_symbol,
+                        size=6,
+                    )
+                    self.plot_widget.addItem(scatter)
+
+        self._render_analysis_overlays()
+
+    def _render_violin_graph(self) -> None:
+        """
+        Renders Violin plots (mirrored KDE distributions with inner mini-box)
+        for Column and Grouped tables.
+        """
+        table = self.current_table
+        if table is None:
+            return
+
+        is_grouped = table.table_type == TableType.GROUPED
+        is_grayscale = self.is_grayscale_mode
+
+        if is_grouped:
+            self.set_axis_titles(x_title="Conditions", y_title="Value (Violin KDE)")
+            num_groups = len(table.y_group_titles)
+            if num_groups == 0:
+                return
+
+            active_rows = []
+            for r in range(table.num_rows):
+                has_data = False
+                for g in range(num_groups):
+                    for s in range(table.num_replicates):
+                        if not table.is_excluded(r, "Y", g, s):
+                            val = table.y_data[g, r, s]
+                            if not np.isnan(val):
+                                has_data = True
+                                break
+                    if has_data:
+                        break
+                if has_data or (r < len(table.row_titles) and table.row_titles[r].strip()):
+                    active_rows.append(r)
+
+            if not active_rows:
+                active_rows = list(range(min(table.num_rows, 10)))
+
+            ticks = []
+            for idx, r in enumerate(active_rows):
+                title = table.row_titles[r] if r < len(table.row_titles) and table.row_titles[r].strip() else f"Row {r+1}"
+                ticks.append((idx, title))
+            self.plot_widget.getAxis("bottom").setTicks([ticks])
+
+            cluster_w = 0.8
+            sub_w = cluster_w / max(1, num_groups)
+
+            for g_idx, g_title in enumerate(table.y_group_titles):
+                has_custom_color = g_title in self.custom_series_colors
+                custom_color = self.custom_series_colors.get(g_title)
+                custom_opacity = self.custom_series_opacities.get(g_title, 1.0 if is_grayscale else 0.8)
+                sym_spec = self.GRAYSCALE_SYMBOLS[g_idx % len(self.GRAYSCALE_SYMBOLS)]
+
+                if is_grayscale and not has_custom_color:
+                    pattern_idx = g_idx % 5
+                    violin_pen = pg.mkPen("k", width=1.5)
+                    if pattern_idx == 0:
+                        violin_brush = QBrush(QColor("#404040"))
+                    elif pattern_idx == 1:
+                        violin_brush = QBrush(QColor("#ffffff"))
+                    elif pattern_idx == 2:
+                        violin_brush = QBrush(QColor("#808080"))
+                    elif pattern_idx == 3:
+                        violin_brush = QBrush(QColor("#c0c0c0"))
+                    else:
+                        violin_brush = QBrush(QColor("#000000"), Qt.BrushStyle.DiagCrossPattern)
+                    pt_symbol = sym_spec["symbol"]
+                    pt_pen = pg.mkPen("k", width=1.0)
+                    pt_brush = pg.mkBrush("w" if pattern_idx in (0, 2, 4) else "k")
+                else:
+                    color = custom_color or self.COLOR_PALETTE[g_idx % len(self.COLOR_PALETTE)]
+                    alpha = int(round(custom_opacity * 255))
+                    violin_pen = pg.mkPen(color.darker(140), width=1.5)
+                    violin_brush = pg.mkBrush(color.red(), color.green(), color.blue(), alpha)
+                    pt_symbol = "o"
+                    pt_pen = pg.mkPen(color.darker(140), width=1.0)
+                    pt_brush = pg.mkBrush(color)
+
+                if self.plot_widget.plotItem.legend is not None:
+                    dummy = pg.PlotDataItem(pen=violin_pen, brush=violin_brush, symbol=pt_symbol, name=g_title)
+                    self.plot_widget.plotItem.legend.addItem(dummy, g_title)
+
+                for x_idx, r in enumerate(active_rows):
+                    x_pos = x_idx + (g_idx - (num_groups - 1) / 2.0) * sub_w
+                    valid_vals = []
+                    for s in range(table.num_replicates):
+                        if not table.is_excluded(r, "Y", g_idx, s):
+                            val = table.y_data[g_idx, r, s]
+                            if not np.isnan(val):
+                                valid_vals.append(float(val))
+
+                    if not valid_vals:
+                        continue
+
+                    max_half_w = sub_w * 0.42
+                    kde_res = gaussian_kde_profile(valid_vals, n_points=128, clip=True)
+                    grid = kde_res["grid"]
+                    half_w = kde_res["half_width"]
+
+                    poly_x = np.concatenate([x_pos - half_w * max_half_w, (x_pos + half_w * max_half_w)[::-1]])
+                    poly_y = np.concatenate([grid, grid[::-1]])
+                    poly = QPolygonF([QPointF(float(px), float(py)) for px, py in zip(poly_x, poly_y)])
+                    poly_item = QGraphicsPolygonItem(poly)
+                    poly_item.setBrush(violin_brush)
+                    poly_item.setPen(violin_pen)
+                    self.plot_widget.addItem(poly_item)
+
+                    # Inner mini-box
+                    summary = five_number_summary(valid_vals, whisker_rule="tukey")
+                    q1 = summary["q1"]
+                    q3 = summary["q3"]
+                    med = summary["median"]
+
+                    mini_bar = pg.PlotCurveItem(x=[x_pos, x_pos], y=[q1, q3], pen=pg.mkPen(QColor(20, 20, 20), width=4.0))
+                    self.plot_widget.addItem(mini_bar)
+
+                    med_dot = pg.ScatterPlotItem(
+                        x=[x_pos], y=[med], symbol="o", size=6,
+                        pen=pg.mkPen(QColor(0, 0, 0), width=1.0),
+                        brush=pg.mkBrush("w"),
+                    )
+                    self.plot_widget.addItem(med_dot)
+
+                    if self.show_bar_scatter_points:
+                        if len(valid_vals) > 1:
+                            rng = np.random.RandomState(42 + r * 13 + g_idx * 7)
+                            jitter = (rng.rand(len(valid_vals)) - 0.5) * (max_half_w * 0.7)
+                        else:
+                            jitter = np.zeros(len(valid_vals))
+                        scatter = pg.ScatterPlotItem(
+                            x=x_pos + jitter,
+                            y=valid_vals,
+                            pen=pt_pen,
+                            brush=pt_brush,
+                            symbol=pt_symbol,
+                            size=5,
+                        )
+                        self.plot_widget.addItem(scatter)
+
+        else:
+            # Column table
+            self.set_axis_titles(x_title="Groups", y_title="Value (Violin KDE)")
+            group_data = table.get_all_group_values() if hasattr(table, "get_all_group_values") else {}
+            names = list(group_data.keys())
+            if not names:
+                return
+
+            ticks = [(pos, name) for pos, name in enumerate(names)]
+            self.plot_widget.getAxis("bottom").setTicks([ticks])
+
+            for pos, name in enumerate(names):
+                raw_vals = group_data[name]
+                vals = []
+                for r_idx, val in enumerate(raw_vals):
+                    if not table.is_excluded(r_idx, "Y", pos, 0) and not np.isnan(val):
+                        vals.append(float(val))
+
+                if len(vals) == 0:
+                    continue
+
+                has_custom_color = name in self.custom_series_colors
+                custom_color = self.custom_series_colors.get(name)
+                custom_opacity = self.custom_series_opacities.get(name, 1.0 if is_grayscale else 0.8)
+                sym_spec = self.GRAYSCALE_SYMBOLS[pos % len(self.GRAYSCALE_SYMBOLS)]
+
+                if is_grayscale and not has_custom_color:
+                    pattern_idx = pos % 5
+                    violin_pen = pg.mkPen("k", width=1.5)
+                    if pattern_idx == 0:
+                        violin_brush = QBrush(QColor("#404040"))
+                    elif pattern_idx == 1:
+                        violin_brush = QBrush(QColor("#ffffff"))
+                    elif pattern_idx == 2:
+                        violin_brush = QBrush(QColor("#808080"))
+                    elif pattern_idx == 3:
+                        violin_brush = QBrush(QColor("#c0c0c0"))
+                    else:
+                        violin_brush = QBrush(QColor("#000000"), Qt.BrushStyle.DiagCrossPattern)
+                    pt_symbol = sym_spec["symbol"]
+                    pt_pen = pg.mkPen("k", width=1.0)
+                    pt_brush = pg.mkBrush("w" if pattern_idx in (0, 2, 4) else "k")
+                else:
+                    color = custom_color or self.COLOR_PALETTE[pos % len(self.COLOR_PALETTE)]
+                    alpha = int(round(custom_opacity * 255))
+                    violin_pen = pg.mkPen(color.darker(140), width=1.5)
+                    violin_brush = pg.mkBrush(color.red(), color.green(), color.blue(), alpha)
+                    pt_symbol = "o"
+                    pt_pen = pg.mkPen(color.darker(140), width=1.0)
+                    pt_brush = pg.mkBrush(color)
+
+                max_half_w = 0.38
+                kde_res = gaussian_kde_profile(vals, n_points=128, clip=True)
+                grid = kde_res["grid"]
+                half_w = kde_res["half_width"]
+
+                poly_x = np.concatenate([pos - half_w * max_half_w, (pos + half_w * max_half_w)[::-1]])
+                poly_y = np.concatenate([grid, grid[::-1]])
+                poly = QPolygonF([QPointF(float(px), float(py)) for px, py in zip(poly_x, poly_y)])
+                poly_item = QGraphicsPolygonItem(poly)
+                poly_item.setBrush(violin_brush)
+                poly_item.setPen(violin_pen)
+                self.plot_widget.addItem(poly_item)
+
+                # Inner mini-box
+                summary = five_number_summary(vals, whisker_rule="tukey")
+                q1 = summary["q1"]
+                q3 = summary["q3"]
+                med = summary["median"]
+
+                mini_bar = pg.PlotCurveItem(x=[pos, pos], y=[q1, q3], pen=pg.mkPen(QColor(20, 20, 20), width=4.0))
+                self.plot_widget.addItem(mini_bar)
+
+                med_dot = pg.ScatterPlotItem(
+                    x=[pos], y=[med], symbol="o", size=6,
+                    pen=pg.mkPen(QColor(0, 0, 0), width=1.0),
+                    brush=pg.mkBrush("w"),
+                )
+                self.plot_widget.addItem(med_dot)
+
+                if self.show_bar_scatter_points:
+                    if len(vals) > 1:
+                        rng = np.random.RandomState(42 + pos * 17)
+                        jitter = (rng.rand(len(vals)) - 0.5) * (max_half_w * 0.7)
+                    else:
+                        jitter = np.zeros(len(vals))
+                    scatter = pg.ScatterPlotItem(
+                        x=np.full(len(vals), pos) + jitter,
+                        y=vals,
+                        pen=pt_pen,
+                        brush=pt_brush,
+                        symbol=pt_symbol,
+                        size=5,
+                    )
+                    self.plot_widget.addItem(scatter)
 
         self._render_analysis_overlays()
 

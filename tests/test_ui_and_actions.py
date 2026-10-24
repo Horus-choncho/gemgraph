@@ -670,7 +670,148 @@ class TestMainWindowAndActions(unittest.TestCase):
             if os.path.exists(temp_dir):
                 os.rmdir(temp_dir)
 
+    def test_dynamic_window_title_lifecycle(self) -> None:
+        """Verifies window title dynamically updates across new, open, save, load, and drop events."""
+        # 1. Initial fresh launch: "Untitled"
+        self.assertEqual(
+            self.window.windowTitle(),
+            "Untitled - GemGraph - v0.1.2-nightly - Clean Room Edition"
+        )
+
+        # 2. Open sample project (.bigo)
+        self.window.action_open_sample_project()
+        self.assertEqual(
+            self.window.windowTitle(),
+            "textbook_sample.bigo - GemGraph - v0.1.2-nightly - Clean Room Edition"
+        )
+
+        # 3. New project resets to "Untitled"
+        self.window.action_new_project()
+        self.assertEqual(
+            self.window.windowTitle(),
+            "Untitled - GemGraph - v0.1.2-nightly - Clean Room Edition"
+        )
+
+        # 4. Load Sample Datasets (in-memory) marks as "Untitled"
+        self.window.action_load_sample_datasets()
+        self.assertEqual(
+            self.window.windowTitle(),
+            "Untitled - GemGraph - v0.1.2-nightly - Clean Room Edition"
+        )
+
+        # 5. Saving updates title to file basename
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = os.path.join(tmpdir, "my_experiment.bigo")
+            with unittest.mock.patch("PyQt6.QtWidgets.QFileDialog.getSaveFileName", return_value=(save_path, "")):
+                self.window.action_save_project()
+                self.assertEqual(
+                    self.window.windowTitle(),
+                    "my_experiment.bigo - GemGraph - v0.1.2-nightly - Clean Room Edition"
+                )
+
+        # 6. Drag and drop file updates title
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
+            f.write(b"Time,Conc\n1,10\n2,20\n")
+            f_path = f.name
+        try:
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(f_path)])
+            drop_evt = QDropEvent(
+                QPointF(10, 10),
+                Qt.DropAction.CopyAction,
+                mime,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.window.dropEvent(drop_evt)
+            expected_name = os.path.basename(f_path)
+            self.assertEqual(
+                self.window.windowTitle(),
+                f"{expected_name} - GemGraph - v0.1.2-nightly - Clean Room Edition"
+            )
+        finally:
+            if os.path.exists(f_path):
+                os.remove(f_path)
+
+    def test_load_sample_datasets_creates_expanded_tables(self) -> None:
+        """Verifies Load Sample Datasets creates all 7 deterministic tables."""
+        self.window.action_load_sample_datasets()
+
+        data_sheets = self.window.document.get_sheets_by_type(SheetType.DATA)
+        self.assertEqual(len(data_sheets), 7)
+
+        titles = [s.title for s in data_sheets]
+        self.assertIn("Enzyme Kinetics (Michaelis-Menten)", titles)
+        self.assertIn("Dose-Response 4PL", titles)
+        self.assertIn("One-Way ANOVA", titles)
+        self.assertIn("Kaplan-Meier Survival", titles)
+        self.assertIn("Cox Survival Cohort", titles)
+        self.assertIn("Distribution Comparison (Violin/Box)", titles)
+        self.assertIn("PCA Multi-Variable Matrix", titles)
+
+        # Verify deterministic values
+        ek_sheet = [s for s in data_sheets if s.title == "Enzyme Kinetics (Michaelis-Menten)"][0]
+        self.assertEqual(ek_sheet.table.table_type, TableType.XY)
+        self.assertEqual(ek_sheet.table.num_rows, 10)
+        self.assertEqual(ek_sheet.table.get_cell_value(0, "X", 0, 0), 0.5)
+
+    def test_enzyme_kinetics_action_creates_result_sheet(self) -> None:
+        """Verifies action_run_enzyme_kinetics creates ResultSheet with all 4 expected tabs."""
+        self.window.action_load_sample_datasets()
+        ek_sheet = [s for s in self.window.document.get_sheets_by_type(SheetType.DATA) if "Enzyme" in s.title][0]
+        self.window.on_sheet_selected(ek_sheet.sheet_id)
+
+        from src.math.nonlinear import ConvergencePreset
+        settings = (
+            "Michaelis-Menten",
+            0,
+            True,
+            True,
+            "Lineweaver-Burk (1/X, 1/Y)",
+            ConvergencePreset.STANDARD,
+        )
+        with unittest.mock.patch("src.ui.dialogs.EnzymeKineticsDialog.exec", return_value=True), \
+             unittest.mock.patch("src.ui.dialogs.EnzymeKineticsDialog.get_settings", return_value=settings):
+            self.window.action_run_enzyme_kinetics()
+
+        active_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(active_sheet, ResultSheet)
+        self.assertEqual(active_sheet.analysis_type, "Enzyme Kinetics")
+
+        tab_names = [t["name"] for t in active_sheet.tabs]
+        self.assertIn("Table of results", tab_names)
+        self.assertIn("Curve", tab_names)
+        self.assertIn("Model comparison", tab_names)
+        self.assertIn("Diagnostic transform", tab_names)
+
+    def test_cox_regression_action_creates_result_sheet(self) -> None:
+        """Verifies action_run_cox_regression creates ResultSheet with expected tabs."""
+        self.window.action_load_sample_datasets()
+        cox_sheet = [s for s in self.window.document.get_sheets_by_type(SheetType.DATA) if "Cox" in s.title][0]
+        self.window.on_sheet_selected(cox_sheet.sheet_id)
+
+        # Time is col 0, Status is col 1, Covariates are cols 2, 3
+        selection = (0, 1, [2, 3])
+        with unittest.mock.patch("src.ui.dialogs.CoxRegressionDialog.exec", return_value=True), \
+             unittest.mock.patch("src.ui.dialogs.CoxRegressionDialog.get_selection", return_value=selection):
+            self.window.action_run_cox_regression()
+
+        active_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(active_sheet, ResultSheet)
+        self.assertEqual(active_sheet.analysis_type, "Cox Regression")
+        self.assertEqual(active_sheet.grid_type, "red")
+
+        tab_names = [t["name"] for t in active_sheet.tabs]
+        self.assertIn("Coefficients & Hazard Ratios", tab_names)
+        self.assertIn("Global tests", tab_names)
+        for t in active_sheet.tabs:
+            self.assertEqual(t.get("grid_type"), "red")
+
+        # Verify hooked constants extracted
+        self.assertIsNotNone(GLOBAL_REGISTRY.get(f"{active_sheet.sheet_id}_treatment_hr"))
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

@@ -321,6 +321,8 @@ class GraphType(enum.Enum):
     GROUPED_BARS_POINTS = "Grouped Bars + Replicate Points"
     XY_SPIKES_CURVE = "Columns/Spikes + Curve Fit"
     BOX_WHISKER = "Box & Whisker"
+    BOX_WHISKERS = "Box and Whiskers"
+    VIOLIN = "Violin Plot"
     SURVIVAL_CURVE = "Kaplan-Meier Survival"
     DEPTH_GRAPH = "Depth Graph"
     FLOATING_BARS = "Floating Bars (Min to Max)"
@@ -394,6 +396,10 @@ class GraphSheet(BaseSheet):
         raw_gt = data.get("graph_type", GraphType.XY_SCATTER_CURVE.value)
         if raw_gt in ("Depth Graph (2.5D Isometric)", "Depth Profile"):
             raw_gt = GraphType.DEPTH_GRAPH.value
+        elif raw_gt in ("Box & Whisker", "Box and Whiskers", "Box & Whiskers", "Box-and-Whiskers"):
+            raw_gt = GraphType.BOX_WHISKERS.value
+        elif raw_gt in ("Violin Plot", "Violin", "Violin Plots"):
+            raw_gt = GraphType.VIOLIN.value
         try:
             gt_val = GraphType(raw_gt)
         except ValueError:

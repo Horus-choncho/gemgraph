@@ -110,6 +110,7 @@ class AnalyzeDataDialog(QDialog):
         "Regression and Curves": [
             "Nonlinear Regression (Curve Fit)...",
             "Linear Regression...",
+            "Enzyme Kinetics...",
             "Multiple Regression...",
             "Logistic Regression...",
             "Interpolate from Standard Curve...",
@@ -126,6 +127,7 @@ class AnalyzeDataDialog(QDialog):
         ],
         "Survival Analysis": [
             "Kaplan-Meier Survival Analysis...",
+            "Cox Proportional Hazards...",
         ],
         "Simulation": [
             "Simulate XY Data...",
