@@ -117,6 +117,32 @@ class MainWindow(QMainWindow):
         self.navigator.populate(self.document)
         if self.document.active_sheet_id:
             self.on_sheet_selected(self.document.active_sheet_id)
+        self._bind_document_signals()
+        self._is_modified = False
+        self._update_window_title()
+
+    def _bind_document_signals(self) -> None:
+        """Hooks document sheet addition and removal to track document-level mutations."""
+        if not hasattr(self, "document") or self.document is None:
+            return
+        if getattr(self.document, "_gemgraph_signals_bound", False):
+            return
+        orig_add = self.document.add_sheet
+        orig_remove = self.document.remove_sheet
+
+        def wrapped_add(sheet: Any) -> None:
+            orig_add(sheet)
+            self.mark_as_modified()
+
+        def wrapped_remove(sheet_id: str) -> bool:
+            res = orig_remove(sheet_id)
+            if res:
+                self.mark_as_modified()
+            return res
+
+        self.document.add_sheet = wrapped_add  # type: ignore
+        self.document.remove_sheet = wrapped_remove  # type: ignore
+        self.document._gemgraph_signals_bound = True  # type: ignore
 
     @property
     def is_modified(self) -> bool:
@@ -133,7 +159,7 @@ class MainWindow(QMainWindow):
         self._update_window_title()
 
     def _update_window_title(self) -> None:
-        file_name = os.path.basename(self.current_file_path) if self.current_file_path else "Untitled"
+        file_name = os.path.basename(self.current_file_path.rstrip("/\\")) if self.current_file_path else "Untitled"
         indicator = "*" if getattr(self, "_is_modified", False) else ""
         self.setWindowTitle(f"{file_name}{indicator} - GemGraph - {APP_VERSION_LABEL} - Clean Room Edition")
 
@@ -170,6 +196,8 @@ class MainWindow(QMainWindow):
 
         # Workspace Mediator
         self.mediator = WorkspaceMediator.get_instance(self)
+        self.mediator.tableModified.connect(self.mark_as_modified)
+        self.mediator.dataChanged.connect(self.mark_as_modified)
 
         # Data Sheet View
         init_sheet = self.document.get_sheets_by_type(SheetType.DATA)[0]
@@ -187,6 +215,7 @@ class MainWindow(QMainWindow):
         self.result_widget.analyzeRequested.connect(self.action_analyze_dialog)
         self.result_widget.newGraphRequested.connect(self.action_add_graph)
         self.result_widget.freezeToggled.connect(lambda frozen: self.navigator.populate(self.document))
+        self.result_widget.freezeToggled.connect(self.mark_as_modified)
         self.center_stack.addWidget(self.result_widget)
 
         # Info Sheet View
@@ -753,7 +782,7 @@ class MainWindow(QMainWindow):
         new_title, ok = QInputDialog.getText(self, "Rename Sheet", "New title:", text=clean_title)
         if ok and new_title.strip() and self.document:
             sheet = self.document.get_sheet(sheet_id)
-            if sheet:
+            if sheet and sheet.title != new_title.strip():
                 sheet.title = new_title.strip()
                 # Update any layout placeholders referencing this sheet
                 for s in self.document.sheets:
@@ -764,6 +793,7 @@ class MainWindow(QMainWindow):
                 self.navigator.populate(self.document)
                 if hasattr(self, "layout_view") and self.layout_view is not None:
                     self.layout_view.refresh_all_snapshots()
+                self.mark_as_modified()
 
     def _delete_navigator_sheet(self, item: QTreeWidgetItem, sheet_id: str) -> None:
         reply = QMessageBox.question(
@@ -1051,6 +1081,7 @@ class MainWindow(QMainWindow):
             self.navigator.populate(self.document)
             self.navigator.select_sheet(active_sheet.sheet_id)
             self.on_sheet_selected(active_sheet.sheet_id)
+            self.mark_as_modified()
 
     def action_new_project(self) -> None:
         self.document = PrismDocument("Untitled Project")
@@ -1060,6 +1091,7 @@ class MainWindow(QMainWindow):
         self.navigator.populate(self.document)
         if self.document.active_sheet_id:
             self.on_sheet_selected(self.document.active_sheet_id)
+        self._bind_document_signals()
         self._is_modified = False
         self._update_window_title()
 
@@ -1074,6 +1106,7 @@ class MainWindow(QMainWindow):
             first_id = self.document.sheet_order[0]
             self.navigator.select_sheet(first_id)
             self.on_sheet_selected(first_id)
+        self._bind_document_signals()
         self._is_modified = False
         self._update_window_title()
         self.status.showMessage("Loaded Textbook Sample Datasets.")
@@ -1184,6 +1217,7 @@ class MainWindow(QMainWindow):
                 self.center_stack.setCurrentWidget(self.spreadsheet_view)
 
         self.current_file_path = filepath
+        self._bind_document_signals()
         self._is_modified = False
         self._update_window_title()
         self.status.showMessage(f"Opened: {filepath}")

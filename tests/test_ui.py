@@ -135,5 +135,119 @@ class TestUIUnsavedChangesIndicator(unittest.TestCase):
         )
 
 
+    def test_cancel_save_preserves_indicator(self) -> None:
+        """Verifies canceling the file dialog when modified preserves _is_modified and '*' in window title."""
+        self.window.mark_as_modified()
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+        with unittest.mock.patch("PyQt6.QtWidgets.QFileDialog.getSaveFileName", return_value=("", "")):
+            self.window.action_save_project_as()
+
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+    def test_failed_save_preserves_indicator(self) -> None:
+        """Verifies that an exception during save leaves _is_modified as True and preserves '*' in window title."""
+        self.window.current_file_path = "/tmp/failing_save_test.bigo"
+        self.window.mark_as_modified()
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+        with unittest.mock.patch("src.io.prism_io.PrismIO.save", side_effect=IOError("Simulated write failure")), \
+             unittest.mock.patch("PyQt6.QtWidgets.QMessageBox.critical"):
+            self.window.action_save_project()
+
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+    def test_document_sheet_mutations_trigger_indicator(self) -> None:
+        """Verifies sheet addition, sheet deletion, sheet renaming, and freeze toggling mark project as modified."""
+        from src.core.table import TableType
+        from PyQt6.QtWidgets import QTreeWidgetItem
+
+        # 1. Adding a table marks modified
+        self.assertFalse(self.window._is_modified)
+        self.window.action_add_table(TableType.COLUMN)
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+        # Reset
+        self.window.action_new_project()
+        self.assertFalse(self.window._is_modified)
+
+        # 2. Deleting a sheet marks modified
+        sheet_to_delete = self.window.document.sheet_order[-1]
+        self.window.on_sheet_deleted(sheet_to_delete)
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+        # Reset
+        self.window.action_new_project()
+        self.assertFalse(self.window._is_modified)
+
+        # 3. Adding an info sheet marks modified
+        self.window.action_add_info()
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+        # Reset
+        self.window.action_new_project()
+        self.assertFalse(self.window._is_modified)
+
+        # 4. Adding a graph sheet marks modified
+        self.window.action_add_graph()
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+        # Reset
+        self.window.action_new_project()
+        self.assertFalse(self.window._is_modified)
+
+        # 5. Running simulation / analysis marks modified
+        self.window.action_run_simulate_xy()
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+        # Reset
+        self.window.action_new_project()
+        self.assertFalse(self.window._is_modified)
+
+        # 6. Renaming a sheet marks modified
+        item = QTreeWidgetItem(["Data 1"])
+        sid = self.window.document.sheet_order[0]
+        with unittest.mock.patch("PyQt6.QtWidgets.QInputDialog.getText", return_value=("Renamed Data", True)):
+            self.window._rename_navigator_sheet(item, sid)
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+        # Reset
+        self.window.action_new_project()
+        self.assertFalse(self.window._is_modified)
+
+        # 7. Toggling graph freeze marks modified
+        self.window.action_add_graph()
+        self.window._is_modified = False
+        self.window._on_freeze_toggled(True)
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+        # Reset
+        self.window.action_new_project()
+        self.assertFalse(self.window._is_modified)
+
+        # 8. Mediator tableModified and dataChanged mark modified
+        self.window.mediator.tableModified.emit()
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+        self.window.action_new_project()
+        self.assertFalse(self.window._is_modified)
+
+        self.window.mediator.dataChanged.emit()
+        self.assertTrue(self.window._is_modified)
+        self.assertIn("*", self.window.windowTitle())
+
+
 if __name__ == "__main__":
     unittest.main()

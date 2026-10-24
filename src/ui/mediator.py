@@ -26,16 +26,20 @@ class WorkspaceMediator(QObject):
     _instance: Optional[WorkspaceMediator] = None
 
     def __init__(self, main_window: Optional[Any] = None, parent: Optional[QObject] = None) -> None:
-        super().__init__(parent or (main_window if isinstance(main_window, QObject) else None))
+        super().__init__(parent)
         self.main_window = main_window
         WorkspaceMediator._instance = self
 
     @classmethod
     def get_instance(cls, main_window: Optional[Any] = None) -> WorkspaceMediator:
-        if cls._instance is None:
+        from PyQt6 import sip
+        if cls._instance is None or sip.isdeleted(cls._instance):
             cls._instance = cls(main_window)
         elif main_window is not None:
-            cls._instance.main_window = main_window
+            try:
+                cls._instance.main_window = main_window
+            except RuntimeError:
+                cls._instance = cls(main_window)
         return cls._instance
 
     def notify_data_changed(self, table: Optional[Any] = None) -> None:
