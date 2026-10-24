@@ -411,15 +411,16 @@ class TestFrozenGraphIsolationAndAxisSpacing(unittest.TestCase):
         """Verifies that set_axis_titles and bottom axis style inject export margins to prevent tick overlap."""
         canvas = ScientificPlotCanvas()
 
-        # Bottom axis must have outward ticks and tickTextOffset=15
         bottom_axis = canvas.plot_widget.getAxis("bottom")
-        offset = bottom_axis.style.get("tickTextOffset")
-        self.assertTrue(offset == 15 or (isinstance(offset, (list, tuple)) and offset[-1] == 15))
-
-        # Calling set_axis_titles injects newline margin and padding
         canvas.set_axis_titles(x_title="Concentration (uM)", y_title="Fluorescence")
-        x_label = bottom_axis.labelText
-        self.assertTrue(x_label.startswith("\nConcentration (uM)"))
+        self.assertGreaterEqual(max(bottom_axis.height(), bottom_axis.fixedHeight or 0), 60)
+        self.assertEqual(bottom_axis.labelStyle.get("margin-top"), "15px")
+        self.assertFalse(bottom_axis.labelText.startswith("\n"))
+
+        # Idempotent: repeated calls must not compound height
+        h = bottom_axis.fixedHeight
+        canvas.set_axis_titles(x_title="Concentration (uM)")
+        self.assertEqual(bottom_axis.fixedHeight, h)
 
         y_label = canvas.plot_widget.getAxis("left").labelText
         self.assertEqual(y_label, "Fluorescence")

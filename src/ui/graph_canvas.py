@@ -336,19 +336,24 @@ class ScientificPlotCanvas(QWidget):
             ax = self.plot_widget.getAxis(axis_name)
             ax.setPen(axis_pen)
             ax.setTextPen("k")
-            if axis_name == "bottom":
-                ax.setStyle(tickFont=font, tickLength=-6, tickTextOffset=15)
-            else:
-                ax.setStyle(tickFont=font, tickLength=-6)
+            ax.setStyle(tickFont=font, tickLength=-6)
 
+        self._ensure_bottom_axis_height()
         self.plot_widget.addLegend(offset=(30, 30))
 
+    BOTTOM_AXIS_MIN_HEIGHT = 60
+
+    def _ensure_bottom_axis_height(self) -> None:
+        """Idempotently guarantees the bottom axis is tall enough for ticks plus title."""
+        ax = self.plot_widget.getAxis("bottom")
+        if ax.height() < self.BOTTOM_AXIS_MIN_HEIGHT and (ax.fixedHeight or 0) < self.BOTTOM_AXIS_MIN_HEIGHT:
+            ax.setHeight(self.BOTTOM_AXIS_MIN_HEIGHT)
+
     def set_axis_titles(self, x_title: Optional[str] = None, y_title: Optional[str] = None) -> None:
-        """Sets X and Y axis titles with vertical spacing margin for high-DPI export legibility."""
+        """Sets X and Y axis titles with physical pixel margins to prevent tick/label collisions."""
         if x_title is not None:
-            # Prepend newline and set CSS padding-top to avoid tick label overlap
-            formatted_x = f"\n{x_title}" if x_title and not x_title.startswith("\n") else x_title
-            self.plot_widget.setLabel("bottom", formatted_x, color="black", **{"padding-top": "10px"})
+            self.plot_widget.setLabel("bottom", x_title, color="black", **{"margin-top": "15px"})
+            self._ensure_bottom_axis_height()
         if y_title is not None:
             self.plot_widget.setLabel("left", y_title, color="black")
 
