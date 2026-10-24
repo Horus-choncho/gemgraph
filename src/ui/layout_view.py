@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -350,6 +351,15 @@ class LayoutView(QWidget):
         self.btn_export.clicked.connect(self._export_layout_dialog)
         self.toolbar.addWidget(self.btn_export)
 
+        # Far-right spacer and live zoom percentage indicator
+        spacer = QWidget(self)
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.toolbar.addWidget(spacer)
+
+        self.lbl_zoom = QLabel(" 100% ", self)
+        self.lbl_zoom.setStyleSheet("color: #666; font-weight: bold; padding: 2px 6px;")
+        self.toolbar.addWidget(self.lbl_zoom)
+
         main_layout.addWidget(self.toolbar)
 
         # Layout Presentation Canvas
@@ -357,6 +367,7 @@ class LayoutView(QWidget):
         self.canvas.layout_view = self
         self.canvas.placeholderAssigned.connect(lambda slot: self.layoutModified.emit())
         self.canvas.layoutModifiedSignal.connect(self.layoutModified.emit)
+        self.canvas.zoomLevelChanged.connect(lambda zoom: self.lbl_zoom.setText(f" {zoom}% "))
         main_layout.addWidget(self.canvas)
 
     def undo(self) -> None:

@@ -712,17 +712,18 @@ class LayoutTextItem(QGraphicsTextItem):
             self.setPlainText("Text Annotation")
 
         # Synchronize document character formatting to ensure font attributes take precedence over stale inline HTML styles
-        cursor = self.textCursor()
-        cursor.select(QTextCursor.SelectionType.Document)
-        fmt = QTextCharFormat()
-        fmt.setFontFamily(font_family)
-        fmt.setFontPointSize(float(font_size))
-        fmt.setFontWeight(QFont.Weight.Bold if bold else QFont.Weight.Normal)
-        fmt.setFontItalic(italic)
-        fmt.setForeground(color)
-        cursor.mergeCharFormat(fmt)
-        cursor.clearSelection()
-        self.setTextCursor(cursor)
+        if not html:
+            cursor = self.textCursor()
+            cursor.select(QTextCursor.SelectionType.Document)
+            fmt = QTextCharFormat()
+            fmt.setFontFamily(font_family)
+            fmt.setFontPointSize(float(font_size))
+            fmt.setFontWeight(QFont.Weight.Bold if bold else QFont.Weight.Normal)
+            fmt.setFontItalic(italic)
+            fmt.setForeground(color)
+            cursor.mergeCharFormat(fmt)
+            cursor.clearSelection()
+            self.setTextCursor(cursor)
 
     def _sync_geometry_from_annotation(self) -> None:
         self._syncing_geometry = True
@@ -802,6 +803,12 @@ class LayoutTextItem(QGraphicsTextItem):
         if self.textInteractionFlags() == Qt.TextInteractionFlag.NoTextInteraction:
             if hasattr(event, "button") and event.button() == Qt.MouseButton.LeftButton:
                 self._drag_start_pos = (float(self.annotation.get("x", 0.1)), float(self.annotation.get("y", 0.1)))
+        elif hasattr(event, "button") and event.button() == Qt.MouseButton.RightButton:
+            # Ensure right-click does NOT clear the active text selection
+            if self.textCursor().hasSelection():
+                if hasattr(event, "accept"):
+                    event.accept()
+                return
         try:
             super().mousePressEvent(event)
         except (TypeError, RuntimeError):
@@ -993,147 +1000,356 @@ class LayoutTextItem(QGraphicsTextItem):
             self.canvas.layoutModifiedSignal.emit()
 
     def set_font_size(self, size: int) -> None:
-        old_size = self.annotation.get("font_size", 13)
-        old_html = self.toHtml()
-        if old_size == size:
-            return
-        self.annotation["font_size"] = size
-        f = self.font()
-        f.setPointSize(size)
-        self.setFont(f)
-        self.document().setDefaultFont(f)
         cursor = self.textCursor()
-        cursor.select(QTextCursor.SelectionType.Document)
-        fmt = QTextCharFormat()
-        fmt.setFontPointSize(float(size))
-        cursor.mergeCharFormat(fmt)
-        cursor.clearSelection()
-        self.setTextCursor(cursor)
-        new_html = self.toHtml()
-        self.annotation["html"] = new_html
+        if not cursor.hasSelection() and getattr(self, "_context_menu_selection", None):
+            start, end = self._context_menu_selection
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            self.setTextCursor(cursor)
 
-        layout_view = getattr(self.canvas, "layout_view", None)
-        if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
-            ann = self.annotation
-            old_d = {"font_size": old_size, "html": old_html}
-            new_d = {"font_size": size, "html": new_html}
-            QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+        old_size = self.annotation.get("font_size", 14)
+        old_html = self.toHtml()
+
+        if cursor.hasSelection():
+            fmt = QTextCharFormat()
+            fmt.setFontPointSize(float(size))
+            cursor.mergeCharFormat(fmt)
+            self.setTextCursor(cursor)
+            new_html = self.toHtml()
+            self.annotation["html"] = new_html
+
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                ann = self.annotation
+                old_d = {"html": old_html}
+                new_d = {"html": new_html}
+                QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+            else:
+                self.update()
+        elif self.textInteractionFlags() != Qt.TextInteractionFlag.NoTextInteraction:
+            # Editing mode with no selection: apply to cursor position for newly typed text
+            fmt = QTextCharFormat()
+            fmt.setFontPointSize(float(size))
+            cursor.mergeCharFormat(fmt)
+            self.setTextCursor(cursor)
+            new_html = self.toHtml()
+            self.annotation["html"] = new_html
+
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                ann = self.annotation
+                old_d = {"html": old_html}
+                new_d = {"html": new_html}
+                QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+            else:
+                self.update()
         else:
-            self.update()
+            # Fallback to item-wide font in idle mode
+            fmt = QTextCharFormat()
+            fmt.setFontPointSize(float(size))
+            doc_cursor = self.textCursor()
+            doc_cursor.select(QTextCursor.SelectionType.Document)
+            doc_cursor.mergeCharFormat(fmt)
+            doc_cursor.clearSelection()
+            self.setTextCursor(doc_cursor)
+
+            self.annotation["font_size"] = size
+            f = self.font()
+            f.setPointSize(size)
+            self.setFont(f)
+            self.document().setDefaultFont(f)
+            new_html = self.toHtml()
+            self.annotation["html"] = new_html
+
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                ann = self.annotation
+                old_d = {"font_size": old_size, "html": old_html}
+                new_d = {"font_size": size, "html": new_html}
+                QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+            else:
+                self.update()
 
     def set_font_bold(self, bold: Optional[bool] = None) -> None:
-        if bold is None:
-            bold = not bool(self.annotation.get("bold", False))
-        old_bold = self.annotation.get("bold", False)
-        old_html = self.toHtml()
-        if old_bold == bold:
-            return
-        self.annotation["bold"] = bold
-        f = self.font()
-        f.setBold(bold)
-        self.setFont(f)
-        self.document().setDefaultFont(f)
         cursor = self.textCursor()
-        cursor.select(QTextCursor.SelectionType.Document)
-        fmt = QTextCharFormat()
-        fmt.setFontWeight(QFont.Weight.Bold if bold else QFont.Weight.Normal)
-        cursor.mergeCharFormat(fmt)
-        cursor.clearSelection()
-        self.setTextCursor(cursor)
-        new_html = self.toHtml()
-        self.annotation["html"] = new_html
+        if not cursor.hasSelection() and getattr(self, "_context_menu_selection", None):
+            start, end = self._context_menu_selection
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            self.setTextCursor(cursor)
 
-        layout_view = getattr(self.canvas, "layout_view", None)
-        if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
-            ann = self.annotation
-            old_d = {"bold": old_bold, "html": old_html}
-            new_d = {"bold": bold, "html": new_html}
-            QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+        old_bold = bool(self.annotation.get("bold", False))
+        old_html = self.toHtml()
+
+        if cursor.hasSelection():
+            if bold is None:
+                cf = cursor.charFormat()
+                bold = not bool(cf.fontWeight() == QFont.Weight.Bold or cf.font().bold())
+            fmt = QTextCharFormat()
+            fmt.setFontWeight(QFont.Weight.Bold if bold else QFont.Weight.Normal)
+            cursor.mergeCharFormat(fmt)
+            self.setTextCursor(cursor)
+            new_html = self.toHtml()
+            self.annotation["html"] = new_html
+
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                ann = self.annotation
+                old_d = {"html": old_html}
+                new_d = {"html": new_html}
+                QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+            else:
+                self.update()
+        elif self.textInteractionFlags() != Qt.TextInteractionFlag.NoTextInteraction:
+            if bold is None:
+                cf = cursor.charFormat()
+                bold = not bool(cf.fontWeight() == QFont.Weight.Bold or cf.font().bold())
+            fmt = QTextCharFormat()
+            fmt.setFontWeight(QFont.Weight.Bold if bold else QFont.Weight.Normal)
+            cursor.mergeCharFormat(fmt)
+            self.setTextCursor(cursor)
+            new_html = self.toHtml()
+            self.annotation["html"] = new_html
+
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                ann = self.annotation
+                old_d = {"html": old_html}
+                new_d = {"html": new_html}
+                QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+            else:
+                self.update()
         else:
-            self.update()
+            if bold is None:
+                bold = not old_bold
+            fmt = QTextCharFormat()
+            fmt.setFontWeight(QFont.Weight.Bold if bold else QFont.Weight.Normal)
+            doc_cursor = self.textCursor()
+            doc_cursor.select(QTextCursor.SelectionType.Document)
+            doc_cursor.mergeCharFormat(fmt)
+            doc_cursor.clearSelection()
+            self.setTextCursor(doc_cursor)
+
+            self.annotation["bold"] = bold
+            f = self.font()
+            f.setBold(bold)
+            self.setFont(f)
+            self.document().setDefaultFont(f)
+            new_html = self.toHtml()
+            self.annotation["html"] = new_html
+
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                ann = self.annotation
+                old_d = {"bold": old_bold, "html": old_html}
+                new_d = {"bold": bold, "html": new_html}
+                QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+            else:
+                self.update()
 
     def set_font_italic(self, italic: Optional[bool] = None) -> None:
-        if italic is None:
-            italic = not bool(self.annotation.get("italic", False))
-        old_italic = self.annotation.get("italic", False)
-        old_html = self.toHtml()
-        if old_italic == italic:
-            return
-        self.annotation["italic"] = italic
-        f = self.font()
-        f.setItalic(italic)
-        self.setFont(f)
-        self.document().setDefaultFont(f)
         cursor = self.textCursor()
-        cursor.select(QTextCursor.SelectionType.Document)
-        fmt = QTextCharFormat()
-        fmt.setFontItalic(italic)
-        cursor.mergeCharFormat(fmt)
-        cursor.clearSelection()
-        self.setTextCursor(cursor)
-        new_html = self.toHtml()
-        self.annotation["html"] = new_html
+        if not cursor.hasSelection() and getattr(self, "_context_menu_selection", None):
+            start, end = self._context_menu_selection
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            self.setTextCursor(cursor)
 
-        layout_view = getattr(self.canvas, "layout_view", None)
-        if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
-            ann = self.annotation
-            old_d = {"italic": old_italic, "html": old_html}
-            new_d = {"italic": italic, "html": new_html}
-            QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+        old_italic = bool(self.annotation.get("italic", False))
+        old_html = self.toHtml()
+
+        if cursor.hasSelection():
+            if italic is None:
+                cf = cursor.charFormat()
+                italic = not bool(cf.fontItalic() or cf.font().italic())
+            fmt = QTextCharFormat()
+            fmt.setFontItalic(italic)
+            cursor.mergeCharFormat(fmt)
+            self.setTextCursor(cursor)
+            new_html = self.toHtml()
+            self.annotation["html"] = new_html
+
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                ann = self.annotation
+                old_d = {"html": old_html}
+                new_d = {"html": new_html}
+                QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+            else:
+                self.update()
+        elif self.textInteractionFlags() != Qt.TextInteractionFlag.NoTextInteraction:
+            if italic is None:
+                cf = cursor.charFormat()
+                italic = not bool(cf.fontItalic() or cf.font().italic())
+            fmt = QTextCharFormat()
+            fmt.setFontItalic(italic)
+            cursor.mergeCharFormat(fmt)
+            self.setTextCursor(cursor)
+            new_html = self.toHtml()
+            self.annotation["html"] = new_html
+
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                ann = self.annotation
+                old_d = {"html": old_html}
+                new_d = {"html": new_html}
+                QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+            else:
+                self.update()
         else:
-            self.update()
+            if italic is None:
+                italic = not old_italic
+            fmt = QTextCharFormat()
+            fmt.setFontItalic(italic)
+            doc_cursor = self.textCursor()
+            doc_cursor.select(QTextCursor.SelectionType.Document)
+            doc_cursor.mergeCharFormat(fmt)
+            doc_cursor.clearSelection()
+            self.setTextCursor(doc_cursor)
+
+            self.annotation["italic"] = italic
+            f = self.font()
+            f.setItalic(italic)
+            self.setFont(f)
+            self.document().setDefaultFont(f)
+            new_html = self.toHtml()
+            self.annotation["html"] = new_html
+
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                ann = self.annotation
+                old_d = {"italic": old_italic, "html": old_html}
+                new_d = {"italic": italic, "html": new_html}
+                QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+            else:
+                self.update()
 
     def set_font_family(self, family: str) -> None:
+        cursor = self.textCursor()
+        if not cursor.hasSelection() and getattr(self, "_context_menu_selection", None):
+            start, end = self._context_menu_selection
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            self.setTextCursor(cursor)
+
         old_family = self.annotation.get("font_family", "Helvetica")
         old_html = self.toHtml()
-        if old_family == family:
-            return
-        self.annotation["font_family"] = family
-        f = self.font()
-        f.setFamily(family)
-        self.setFont(f)
-        self.document().setDefaultFont(f)
-        cursor = self.textCursor()
-        cursor.select(QTextCursor.SelectionType.Document)
-        fmt = QTextCharFormat()
-        fmt.setFontFamily(family)
-        cursor.mergeCharFormat(fmt)
-        cursor.clearSelection()
-        self.setTextCursor(cursor)
-        new_html = self.toHtml()
-        self.annotation["html"] = new_html
 
-        layout_view = getattr(self.canvas, "layout_view", None)
-        if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
-            ann = self.annotation
-            old_d = {"font_family": old_family, "html": old_html}
-            new_d = {"font_family": family, "html": new_html}
-            QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+        if cursor.hasSelection():
+            fmt = QTextCharFormat()
+            fmt.setFontFamily(family)
+            cursor.mergeCharFormat(fmt)
+            self.setTextCursor(cursor)
+            new_html = self.toHtml()
+            self.annotation["html"] = new_html
+
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                ann = self.annotation
+                old_d = {"html": old_html}
+                new_d = {"html": new_html}
+                QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+            else:
+                self.update()
+        elif self.textInteractionFlags() != Qt.TextInteractionFlag.NoTextInteraction:
+            fmt = QTextCharFormat()
+            fmt.setFontFamily(family)
+            cursor.mergeCharFormat(fmt)
+            self.setTextCursor(cursor)
+            new_html = self.toHtml()
+            self.annotation["html"] = new_html
+
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                ann = self.annotation
+                old_d = {"html": old_html}
+                new_d = {"html": new_html}
+                QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+            else:
+                self.update()
         else:
-            self.update()
+            fmt = QTextCharFormat()
+            fmt.setFontFamily(family)
+            doc_cursor = self.textCursor()
+            doc_cursor.select(QTextCursor.SelectionType.Document)
+            doc_cursor.mergeCharFormat(fmt)
+            doc_cursor.clearSelection()
+            self.setTextCursor(doc_cursor)
+
+            self.annotation["font_family"] = family
+            f = self.font()
+            f.setFamily(family)
+            self.setFont(f)
+            self.document().setDefaultFont(f)
+            new_html = self.toHtml()
+            self.annotation["html"] = new_html
+
+            layout_view = getattr(self.canvas, "layout_view", None)
+            if layout_view is not None and hasattr(layout_view, "push_edit_text_command"):
+                ann = self.annotation
+                old_d = {"font_family": old_family, "html": old_html}
+                new_d = {"font_family": family, "html": new_html}
+                QTimer.singleShot(0, lambda: layout_view.push_edit_text_command(ann, old_d, new_d))
+            else:
+                self.update()
 
     def create_context_menu(self) -> QMenu:
         """Constructs right-click context menu for font formatting and text box deletion."""
         menu = QMenu()
+        cursor = self.textCursor()
+        if not cursor.hasSelection() and getattr(self, "_context_menu_selection", None):
+            start, end = self._context_menu_selection
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        has_sel = cursor.hasSelection()
 
-        # Font Size sub-menu
+        # Dedicated Font Family sub-menu: Sans Serif, Serif, Monospace
+        family_menu = menu.addMenu("Font Family")
+        if has_sel:
+            cf = cursor.charFormat()
+            char_fam = cf.fontFamily() if cf.fontFamily() else cf.font().family()
+            current_family = char_fam if char_fam else self.annotation.get("font_family", "Sans Serif")
+        else:
+            current_family = self.annotation.get("font_family", "Sans Serif")
+
+        for fam in ["Sans Serif", "Serif", "Monospace"]:
+            act = family_menu.addAction(fam)
+            act.setCheckable(True)
+            act.setChecked(current_family.lower() == fam.lower())
+            act.triggered.connect(lambda checked, f=fam: self.set_font_family(f))
+
+        # Font Size sub-menu: 6pt, 8pt, 10pt, 12pt, 14pt, 16pt
         size_menu = menu.addMenu("Font Size")
-        current_size = int(self.annotation.get("font_size", 14))
-        for size in [10, 12, 14, 16]:
+        if has_sel:
+            cf = cursor.charFormat()
+            char_size = int(cf.fontPointSize()) if cf.fontPointSize() > 0 else int(cf.font().pointSize())
+            current_size = char_size if char_size > 0 else int(self.annotation.get("font_size", 14))
+        else:
+            current_size = int(self.annotation.get("font_size", 14))
+
+        for size in [6, 8, 10, 12, 14, 16]:
             act = size_menu.addAction(f"{size}pt")
             act.setCheckable(True)
             act.setChecked(current_size == size)
             act.triggered.connect(lambda checked, s=size: self.set_font_size(s))
 
         # Bold & Italic toggle actions
+        if has_sel:
+            cf = cursor.charFormat()
+            is_bold = bool(cf.fontWeight() == QFont.Weight.Bold or cf.font().bold())
+            is_italic = bool(cf.fontItalic() or cf.font().italic())
+        else:
+            is_bold = bool(self.annotation.get("bold", False))
+            is_italic = bool(self.annotation.get("italic", False))
+
         bold_act = menu.addAction("Bold")
         bold_act.setCheckable(True)
-        bold_act.setChecked(bool(self.annotation.get("bold", False)))
+        bold_act.setChecked(is_bold)
         bold_act.triggered.connect(lambda checked: self.set_font_bold(checked))
 
         italic_act = menu.addAction("Italic")
         italic_act.setCheckable(True)
-        italic_act.setChecked(bool(self.annotation.get("italic", False)))
+        italic_act.setChecked(is_italic)
         italic_act.triggered.connect(lambda checked: self.set_font_italic(checked))
 
         menu.addSeparator()
@@ -1157,12 +1373,29 @@ class LayoutTextItem(QGraphicsTextItem):
             self.canvas.layoutModifiedSignal.emit()
 
     def contextMenuEvent(self, event) -> None:
-        menu = self.create_context_menu()
-        screen_pos = event.screenPos() if hasattr(event, "screenPos") else None
-        if screen_pos is not None:
-            menu.exec(screen_pos)
+        # Ensure right-click action does NOT clear the active text selection before menu opens
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            self._context_menu_selection = (cursor.selectionStart(), cursor.selectionEnd())
         else:
-            menu.exec(QCursor.pos())
+            self._context_menu_selection = None
+
+        try:
+            menu = self.create_context_menu()
+            screen_pos = event.screenPos() if hasattr(event, "screenPos") else None
+            if screen_pos is not None:
+                menu.exec(screen_pos)
+            else:
+                menu.exec(QCursor.pos())
+        finally:
+            saved = getattr(self, "_context_menu_selection", None)
+            self._context_menu_selection = None
+            if saved:
+                c = self.textCursor()
+                c.setPosition(saved[0])
+                c.setPosition(saved[1], QTextCursor.MoveMode.KeepAnchor)
+                self.setTextCursor(c)
+
         if hasattr(event, "accept"):
             event.accept()
 
@@ -1205,6 +1438,7 @@ class LayoutCanvas(QGraphicsView):
     placeholderAssigned = pyqtSignal(int)
     layoutModifiedSignal = pyqtSignal()
     selectionChangedSignal = pyqtSignal()
+    zoomLevelChanged = pyqtSignal(int)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -1349,6 +1583,8 @@ class LayoutCanvas(QGraphicsView):
             page_rect = QRectF(0, 0, page_w, page_h)
             self.resetTransform()
             self.fitInView(page_rect, Qt.AspectRatioMode.KeepAspectRatio)
+        current_zoom = int(self.transform().m11() * 100)
+        self.zoomLevelChanged.emit(current_zoom)
 
     def contextMenuEvent(self, event) -> None:
         """Displays layout canvas right-click context menu, deferring to graphics items first."""
@@ -1496,6 +1732,8 @@ class LayoutCanvas(QGraphicsView):
             self.scale(zoom_in_factor, zoom_in_factor)
         else:
             self.scale(zoom_out_factor, zoom_out_factor)
+        current_zoom = int(self.transform().m11() * 100)
+        self.zoomLevelChanged.emit(current_zoom)
         event.accept()
 
     def mousePressEvent(self, event) -> None:

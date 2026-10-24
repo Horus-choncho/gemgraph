@@ -15,8 +15,8 @@ from unittest.mock import MagicMock, patch
 import zipfile
 
 import numpy as np
-from PyQt6.QtCore import QPointF, QRectF, Qt, QEvent
-from PyQt6.QtGui import QColor, QImage, QMouseEvent, QKeyEvent, QFocusEvent, QPainter
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QEvent
+from PyQt6.QtGui import QColor, QFont, QImage, QMouseEvent, QKeyEvent, QFocusEvent, QPainter, QTextCursor, QWheelEvent
 from PyQt6.QtWidgets import QApplication, QGraphicsItem, QWidget
 
 from src.core.document import PrismDocument
@@ -1797,6 +1797,277 @@ class TestPageLayoutsAndDepthGraphs(unittest.TestCase):
             with open(svg_file, "r", encoding="utf-8") as f:
                 content = f.read()
             self.assertIn("Styled Legend Box", content)
+
+
+    def test_cursor_rich_text_formatting_preserves_global_fonts(self) -> None:
+        """Verifies formatting methods apply QTextCharFormat to selections without corrupting global fonts."""
+        layout = self.doc.create_layout("Selection Formatting Test")
+        ann = {
+            "id": "ann-sel-1",
+            "type": "text",
+            "text": "Hello World",
+            "font_size": 14,
+            "font_family": "Sans Serif",
+            "bold": False,
+            "italic": False,
+        }
+        layout.annotations = [ann]
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        text_item = view.canvas.text_items[0]
+
+        # Ensure initial global font state
+        self.assertFalse(text_item.font().bold())
+        self.assertFalse(text_item.font().italic())
+        self.assertEqual(text_item.font().pointSize(), 14)
+
+        # 1. Select "Hello" (positions 0 to 5)
+        text_item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        cursor = text_item.textCursor()
+        cursor.setPosition(0)
+        cursor.setPosition(5, QTextCursor.MoveMode.KeepAnchor)
+        text_item.setTextCursor(cursor)
+        self.assertTrue(text_item.textCursor().hasSelection())
+        self.assertEqual(text_item.textCursor().selectedText(), "Hello")
+
+        # 2. Apply bold to the selection
+        text_item.set_font_bold(True)
+
+        # Global font MUST NOT be corrupted
+        self.assertFalse(text_item.font().bold(), "Global font.bold() was corrupted by selection formatting")
+        self.assertFalse(text_item.document().defaultFont().bold(), "Document default font was corrupted")
+
+        # Characters 0..5 must be bold, 6..11 must be normal
+        c1 = QTextCursor(text_item.document())
+        c1.setPosition(0)
+        c1.setPosition(5, QTextCursor.MoveMode.KeepAnchor)
+        self.assertEqual(c1.charFormat().fontWeight(), QFont.Weight.Bold)
+
+        c2 = QTextCursor(text_item.document())
+        c2.setPosition(6)
+        c2.setPosition(11, QTextCursor.MoveMode.KeepAnchor)
+        self.assertEqual(c2.charFormat().fontWeight(), QFont.Weight.Normal)
+
+        # 3. Apply italic, size 8, and Monospace to "Hello"
+        text_item.setTextCursor(c1)
+        text_item.set_font_italic(True)
+        text_item.set_font_size(8)
+        text_item.set_font_family("Monospace")
+
+        # Global font properties remain unaffected
+        self.assertFalse(text_item.font().italic())
+        self.assertEqual(text_item.font().pointSize(), 14)
+
+        # Selection formatting applied
+        c1_check = QTextCursor(text_item.document())
+        c1_check.setPosition(0)
+        c1_check.setPosition(5, QTextCursor.MoveMode.KeepAnchor)
+        self.assertTrue(c1_check.charFormat().fontItalic())
+        self.assertEqual(c1_check.charFormat().fontPointSize(), 8.0)
+        self.assertEqual(c1_check.charFormat().fontFamily(), "Monospace")
+
+        # Unselected text remains unchanged
+        c2_check = QTextCursor(text_item.document())
+        c2_check.setPosition(6)
+        c2_check.setPosition(11, QTextCursor.MoveMode.KeepAnchor)
+        self.assertFalse(c2_check.charFormat().fontItalic())
+
+        # HTML string synchronized
+        self.assertIn("html", text_item.annotation)
+        self.assertIn("font-weight:700", text_item.annotation["html"])
+        view.close()
+
+    def test_context_menu_typography_and_selection_retention(self) -> None:
+        """Verifies expanded typography menu items (6pt, 8pt, Font Family submenu) and selection preservation on right-click."""
+        layout = self.doc.create_layout("Typography Menu Test")
+        ann = {"id": "ann-typo-1", "type": "text", "text": "Formatting Selection Test", "font_size": 14}
+        layout.annotations = [ann]
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        text_item = view.canvas.text_items[0]
+
+        # Select text
+        text_item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        cursor = text_item.textCursor()
+        cursor.setPosition(0)
+        cursor.setPosition(10, QTextCursor.MoveMode.KeepAnchor)
+        text_item.setTextCursor(cursor)
+        self.assertTrue(text_item.textCursor().hasSelection())
+
+        # Create context menu
+        menu = text_item.create_context_menu()
+        submenus = {act.text(): act.menu() for act in menu.actions() if act.menu() is not None}
+
+        # Check Font Family submenu
+        self.assertIn("Font Family", submenus)
+        fam_actions = [a.text() for a in submenus["Font Family"].actions()]
+        self.assertIn("Sans Serif", fam_actions)
+        self.assertIn("Serif", fam_actions)
+        self.assertIn("Monospace", fam_actions)
+
+        # Check Font Size submenu contains 6pt and 8pt
+        self.assertIn("Font Size", submenus)
+        size_actions = [a.text() for a in submenus["Font Size"].actions()]
+        self.assertIn("6pt", size_actions)
+        self.assertIn("8pt", size_actions)
+        self.assertIn("10pt", size_actions)
+        self.assertIn("12pt", size_actions)
+        self.assertIn("14pt", size_actions)
+        self.assertIn("16pt", size_actions)
+
+        # Simulate context menu event and ensure selection is retained
+        class DummyContextEvent:
+            def screenPos(self):
+                return None
+            def accept(self):
+                pass
+
+        with patch.object(menu, "exec", return_value=None):
+            with patch.object(text_item, "create_context_menu", return_value=menu):
+                text_item.contextMenuEvent(DummyContextEvent())
+
+        self.assertTrue(text_item.textCursor().hasSelection())
+        self.assertEqual(text_item.textCursor().selectedText(), "Formatting")
+        view.close()
+
+    def test_zoom_level_changed_signal_emits_integer_on_fit_page_and_updates_label(self) -> None:
+        """Verifies zoomLevelChanged emits an integer upon fit_page_to_window and updates lbl_zoom."""
+        view = LayoutView()
+        layout = self.doc.create_layout("Zoom Test Layout")
+        view.load_layout(layout, self.doc)
+
+        emitted_zooms: List[int] = []
+        view.canvas.zoomLevelChanged.connect(emitted_zooms.append)
+
+        # Trigger fit_page_to_window
+        view.canvas.fit_page_to_window()
+
+        self.assertGreater(len(emitted_zooms), 0)
+        self.assertIsInstance(emitted_zooms[-1], int)
+        self.assertGreater(emitted_zooms[-1], 0)
+
+        # Verify indicator label reflects the percentage
+        expected_label = f" {emitted_zooms[-1]}% "
+        self.assertEqual(view.lbl_zoom.text(), expected_label)
+
+        # Also verify wheelEvent emits integer zoom
+        wheel_ev = QWheelEvent(
+            QPointF(100, 100),
+            QPointF(100, 100),
+            QPoint(0, 0),
+            QPoint(0, 120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        view.canvas.wheelEvent(wheel_ev)
+        self.assertIsInstance(emitted_zooms[-1], int)
+        self.assertEqual(view.lbl_zoom.text(), f" {emitted_zooms[-1]}% ")
+
+        view.close()
+
+    def test_cursor_formatting_with_no_selection_preserves_global_fonts_and_formats_new_text(self) -> None:
+        """Verifies applying formatting in editing mode with NO active selection sets cursor format without corrupting global font."""
+        layout = self.doc.create_layout("Cursor No Selection Test")
+        ann = {
+            "id": "ann-no-sel-1",
+            "type": "text",
+            "text": "Hello World",
+            "font_size": 14,
+            "font_family": "Sans Serif",
+            "bold": False,
+            "italic": False,
+        }
+        layout.annotations = [ann]
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        text_item = view.canvas.text_items[0]
+
+        # Enter editing mode
+        text_item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        cursor = text_item.textCursor()
+        cursor.setPosition(5)  # between "Hello" and " World"
+        text_item.setTextCursor(cursor)
+        self.assertFalse(text_item.textCursor().hasSelection())
+
+        # Apply bold to current cursor position
+        text_item.set_font_bold(True)
+
+        # Global font, document default font, and item-wide annotation bold MUST NOT be modified
+        self.assertFalse(text_item.font().bold(), "Global font.bold() was corrupted when formatting cursor position")
+        self.assertFalse(text_item.document().defaultFont().bold(), "Document default font was corrupted")
+        self.assertFalse(text_item.annotation.get("bold", False), "Annotation bold was corrupted")
+
+        # Insert new text at cursor position
+        text_item.textCursor().insertText(" BOLD")
+        self.assertEqual(text_item.toPlainText(), "Hello BOLD World")
+
+        # Existing text must remain normal weight; inserted text must be bold
+        c_pre = QTextCursor(text_item.document())
+        c_pre.setPosition(0)
+        c_pre.setPosition(5, QTextCursor.MoveMode.KeepAnchor)
+        self.assertEqual(c_pre.charFormat().fontWeight(), QFont.Weight.Normal)
+
+        c_new = QTextCursor(text_item.document())
+        c_new.setPosition(5)
+        c_new.setPosition(10, QTextCursor.MoveMode.KeepAnchor)
+        self.assertEqual(c_new.charFormat().fontWeight(), QFont.Weight.Bold)
+
+        c_post = QTextCursor(text_item.document())
+        c_post.setPosition(10)
+        c_post.setPosition(16, QTextCursor.MoveMode.KeepAnchor)
+        self.assertEqual(c_post.charFormat().fontWeight(), QFont.Weight.Normal)
+
+        view.close()
+
+    def test_context_menu_selection_does_not_leak_stale_selection(self) -> None:
+        """Verifies that closing context menu does not leak stale selection into subsequent formatting calls."""
+        layout = self.doc.create_layout("Stale Selection Test")
+        ann = {"id": "ann-stale-1", "type": "text", "text": "Hello World", "font_size": 14}
+        layout.annotations = [ann]
+        view = LayoutView()
+        view.load_layout(layout, self.doc)
+        text_item = view.canvas.text_items[0]
+
+        text_item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        c = text_item.textCursor()
+        c.setPosition(0)
+        c.setPosition(5, QTextCursor.MoveMode.KeepAnchor)
+        text_item.setTextCursor(c)
+
+        class DummyContextEvent:
+            def screenPos(self):
+                return None
+            def accept(self):
+                pass
+
+        menu = text_item.create_context_menu()
+        with patch.object(menu, "exec", return_value=None):
+            with patch.object(text_item, "create_context_menu", return_value=menu):
+                text_item.contextMenuEvent(DummyContextEvent())
+
+        # Now simulate user clicking at position 8 with no selection
+        c_new = text_item.textCursor()
+        c_new.setPosition(8)
+        text_item.setTextCursor(c_new)
+        self.assertFalse(text_item.textCursor().hasSelection())
+
+        # Change font size - must NOT re-apply to 0..5
+        text_item.set_font_size(6)
+
+        c_hello = QTextCursor(text_item.document())
+        c_hello.setPosition(0)
+        c_hello.setPosition(5, QTextCursor.MoveMode.KeepAnchor)
+        self.assertEqual(c_hello.charFormat().fontPointSize(), 14.0)  # stays at original 14pt, not overwritten with 6
+
+        # Now test fallback in idle mode
+        text_item.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        text_item.set_font_size(16)
+        self.assertEqual(text_item.font().pointSize(), 16)
+        self.assertEqual(text_item.annotation["font_size"], 16)
+
+        view.close()
 
 
 if __name__ == "__main__":
