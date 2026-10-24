@@ -97,6 +97,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.current_file_path: Optional[str] = None
+        self._is_modified: bool = False
         self._update_window_title()
         self.resize(1300, 800)
         self.setAcceptDrops(True)
@@ -117,9 +118,24 @@ class MainWindow(QMainWindow):
         if self.document.active_sheet_id:
             self.on_sheet_selected(self.document.active_sheet_id)
 
+    @property
+    def is_modified(self) -> bool:
+        return self._is_modified
+
+    @is_modified.setter
+    def is_modified(self, value: bool) -> None:
+        self._is_modified = bool(value)
+        self._update_window_title()
+
+    def mark_as_modified(self, *args: Any, **kwargs: Any) -> None:
+        """Marks the workspace as modified with unsaved changes and updates the window title."""
+        self._is_modified = True
+        self._update_window_title()
+
     def _update_window_title(self) -> None:
         file_name = os.path.basename(self.current_file_path) if self.current_file_path else "Untitled"
-        self.setWindowTitle(f"{file_name} - GemGraph - {APP_VERSION_LABEL} - Clean Room Edition")
+        indicator = "*" if getattr(self, "_is_modified", False) else ""
+        self.setWindowTitle(f"{file_name}{indicator} - GemGraph - {APP_VERSION_LABEL} - Clean Room Edition")
 
     def _on_workspace_modified(self) -> None:
         if hasattr(self, "layout_view") and self.layout_view is not None:
@@ -161,7 +177,9 @@ class MainWindow(QMainWindow):
         self.spreadsheet_view = ScientificSpreadsheetView(self.spreadsheet_model)
         self.table_view = self.spreadsheet_view
         self.spreadsheet_model.dataChangedSignal.connect(self._on_table_data_modified)
+        self.spreadsheet_model.dataChanged.connect(self.mark_as_modified)
         self.spreadsheet_view.cellExclusionToggled.connect(self._on_table_data_modified)
+        self.spreadsheet_view.cellExclusionToggled.connect(self.mark_as_modified)
         self.center_stack.addWidget(self.spreadsheet_view)
 
         # Result Sheet View (Multi-Tab and Green/Red Grid Semantics)
@@ -174,11 +192,13 @@ class MainWindow(QMainWindow):
         # Info Sheet View
         self.info_widget = InfoSheetView()
         self.info_widget.infoModified.connect(self._on_table_data_modified)
+        self.info_widget.infoModified.connect(self.mark_as_modified)
         self.center_stack.addWidget(self.info_widget)
 
         # Page Layout Presentation View
         from src.ui.layout_view import LayoutView
         self.layout_view = LayoutView(self)
+        self.layout_view.layoutModified.connect(self.mark_as_modified)
         self.center_stack.addWidget(self.layout_view)
 
         # Right Pane: Interactive Plot Canvas
@@ -186,6 +206,7 @@ class MainWindow(QMainWindow):
         self.graph_canvas.pinGraphRequested.connect(self.action_pin_graph)
         self.graph_canvas.freezeToggled.connect(self._on_freeze_toggled)
         self.graph_canvas.graphModified.connect(self.layout_view.refresh_all_snapshots)
+        self.graph_canvas.graphModified.connect(self.mark_as_modified)
 
         # Shell Splitters & Layout Stability
         self.init_interface_shell()
@@ -268,6 +289,11 @@ class MainWindow(QMainWindow):
         save_act.setShortcut(QKeySequence.StandardKey.Save)
         save_act.triggered.connect(self.action_save_project)
         file_menu.addAction(save_act)
+
+        save_as_act = QAction("Save Project &As...", self)
+        save_as_act.setShortcut(QKeySequence.StandardKey.SaveAs)
+        save_as_act.triggered.connect(self.action_save_project_as)
+        file_menu.addAction(save_as_act)
 
         file_menu.addSeparator()
 
@@ -750,6 +776,7 @@ class MainWindow(QMainWindow):
             self.on_sheet_deleted(sheet_id)
 
     def _on_table_data_modified(self) -> None:
+        self.mark_as_modified()
         # Re-render graph canvas when table values change and propagate downstream
         active_sheet = self.document.get_sheet(self.document.active_sheet_id or "")
         if isinstance(active_sheet, DataSheet):
@@ -1029,11 +1056,12 @@ class MainWindow(QMainWindow):
         self.document = PrismDocument("Untitled Project")
         self.undo_stack.clear()
         self.current_file_path = None
-        self._update_window_title()
         self._create_blank_project()
         self.navigator.populate(self.document)
         if self.document.active_sheet_id:
             self.on_sheet_selected(self.document.active_sheet_id)
+        self._is_modified = False
+        self._update_window_title()
 
     def action_load_sample_data(self) -> None:
         """Loads textbook sample document in-memory via build_textbook_sample_document()."""
@@ -1041,12 +1069,13 @@ class MainWindow(QMainWindow):
         self.document = build_textbook_sample_document()
         self.undo_stack.clear()
         self.current_file_path = None
-        self._update_window_title()
         self.navigator.populate(self.document)
         if len(self.document.sheet_order) > 0:
             first_id = self.document.sheet_order[0]
             self.navigator.select_sheet(first_id)
             self.on_sheet_selected(first_id)
+        self._is_modified = False
+        self._update_window_title()
         self.status.showMessage("Loaded Textbook Sample Datasets.")
 
     action_load_sample_datasets = action_load_sample_data
@@ -1155,6 +1184,7 @@ class MainWindow(QMainWindow):
                 self.center_stack.setCurrentWidget(self.spreadsheet_view)
 
         self.current_file_path = filepath
+        self._is_modified = False
         self._update_window_title()
         self.status.showMessage(f"Opened: {filepath}")
 
@@ -1181,6 +1211,19 @@ class MainWindow(QMainWindow):
                     QMessageBox.critical(self, "Error Loading Project", str(e))
 
     def action_save_project(self) -> None:
+        if self.current_file_path:
+            try:
+                PrismIO.save(self.document, self.current_file_path)
+                self._is_modified = False
+                self._update_window_title()
+                self.status.showMessage(f"Saved: {self.current_file_path}")
+                return
+            except Exception as e:
+                QMessageBox.critical(self, "Error Saving Project", str(e))
+                return
+        self.action_save_project_as()
+
+    def action_save_project_as(self) -> None:
         initial_dir = self.get_smart_initial_dir()
         default_path = self.current_file_path or os.path.join(initial_dir, f"{self.document.title}.bigo")
         file_path, _ = QFileDialog.getSaveFileName(
@@ -1193,6 +1236,7 @@ class MainWindow(QMainWindow):
             try:
                 PrismIO.save(self.document, file_path)
                 self.current_file_path = file_path
+                self._is_modified = False
                 self._update_window_title()
                 self.status.showMessage(f"Saved: {file_path}")
             except Exception as e:
