@@ -104,41 +104,47 @@ class AnovaEngine:
         Executes Ordinary Two-Way ANOVA.
         data_matrix shape: (num_rows, num_cols, num_replicates)
         """
-        r_dim, c_dim, rep_dim = data_matrix.shape
+        mat = np.asarray(data_matrix, dtype=np.float64)
+        r_dim, c_dim, rep_dim = mat.shape
         if r_dim < 2 or c_dim < 2 or rep_dim < 1:
             raise ValueError("Two-Way ANOVA requires at least 2 rows, 2 columns, and 1 replicate.")
 
+        mat = np.where(np.isfinite(mat), mat, np.nan)
         row_names = row_labels or [f"Row {i+1}" for i in range(r_dim)]
         col_names = col_labels or [f"Col {j+1}" for j in range(c_dim)]
 
-        total_n = r_dim * c_dim * rep_dim
-        grand_mean = float(np.nanmean(data_matrix))
+        finite_mask = np.isfinite(mat)
+        total_n = int(np.sum(finite_mask))
+        if total_n == 0:
+            raise ValueError("Two-Way ANOVA requires finite numeric observations.")
+        cell_counts = np.sum(finite_mask, axis=2)
+        if np.any(cell_counts == 0):
+            raise ValueError("Two-Way ANOVA requires at least one valid observation in every cell.")
 
-        row_means = np.nanmean(data_matrix, axis=(1, 2))
-        col_means = np.nanmean(data_matrix, axis=(0, 2))
-        cell_means = np.nanmean(data_matrix, axis=2)
+        grand_mean = float(np.nanmean(mat))
+        cell_means = np.nanmean(mat, axis=2)
 
-        # Sum of squares
-        ss_row = float(c_dim * rep_dim * np.sum((row_means - grand_mean) ** 2))
-        ss_col = float(r_dim * rep_dim * np.sum((col_means - grand_mean) ** 2))
+        # Unweighted marginal cell means and Type III / harmonic sums of squares
+        # (reduces identically to standard balanced formulas when cell_counts are equal)
+        u_grand = float(np.mean(cell_means))
+        u_row_means = np.mean(cell_means, axis=1)
+        u_col_means = np.mean(cell_means, axis=0)
 
-        # Interaction SS
-        ss_interaction = 0.0
-        for i in range(r_dim):
-            for j in range(c_dim):
-                interaction_term = cell_means[i, j] - row_means[i] - col_means[j] + grand_mean
-                ss_interaction += rep_dim * (interaction_term ** 2)
+        inv_counts = 1.0 / cell_counts
+        w_row = (c_dim ** 2) / np.sum(inv_counts, axis=1)
+        mu_row = float(np.sum(w_row * u_row_means) / np.sum(w_row))
+        ss_row = float(np.sum(w_row * (u_row_means - mu_row) ** 2))
 
-        # Residual SS
-        ss_residual = 0.0
-        for i in range(r_dim):
-            for j in range(c_dim):
-                for k in range(rep_dim):
-                    val = data_matrix[i, j, k]
-                    if np.isfinite(val):
-                        ss_residual += (val - cell_means[i, j]) ** 2
+        w_col = (r_dim ** 2) / np.sum(inv_counts, axis=0)
+        mu_col = float(np.sum(w_col * u_col_means) / np.sum(w_col))
+        ss_col = float(np.sum(w_col * (u_col_means - mu_col) ** 2))
 
-        ss_total = ss_row + ss_col + ss_interaction + ss_residual
+        n_harm = float((r_dim * c_dim) / np.sum(inv_counts))
+        interaction_terms = cell_means - u_row_means[:, None] - u_col_means[None, :] + u_grand
+        ss_interaction = float(n_harm * np.sum(interaction_terms ** 2))
+        ss_residual = float(np.nansum((mat - cell_means[:, :, None]) ** 2))
+
+        ss_total = float(np.nansum((mat - grand_mean) ** 2))
 
         df_row = r_dim - 1
         df_col = c_dim - 1
@@ -164,7 +170,7 @@ class AnovaEngine:
             ]
         else:
             df_interaction = df_row * df_col
-            df_residual = r_dim * c_dim * (rep_dim - 1)
+            df_residual = max(0, total_n - int(np.sum(cell_counts > 0)))
             ms_interaction = ss_interaction / df_interaction if df_interaction > 0 else np.nan
             ms_residual = ss_residual / df_residual if df_residual > 0 else np.nan
 
@@ -188,12 +194,18 @@ class AnovaEngine:
                 {"source": "Total", "ss": ss_total, "df": df_total, "ms": None, "f": None, "p_value": None},
             ]
 
+        r_sq = (
+            float(1.0 - (ss_residual / ss_total))
+            if (rep_dim > 1 and ss_total > 0)
+            else (float((ss_row + ss_col + ss_interaction) / ss_total) if ss_total > 0 else 0.0)
+        )
+
         return {
             "type": "Two-Way ANOVA",
             "anova_table": anova_table,
             "row_names": row_names,
             "col_names": col_names,
-            "r_squared": float((ss_row + ss_col + ss_interaction) / ss_total) if ss_total > 0 else 0.0,
+            "r_squared": r_sq,
             "ms_residual": ms_residual,
             "df_residual": df_residual,
         }
@@ -221,7 +233,7 @@ class AnovaEngine:
         ss_subj = float(n_treat * np.sum((subj_means - grand_mean) ** 2))
         ss_treat = float(n_subj * np.sum((treat_means - grand_mean) ** 2))
         ss_total = float(np.sum((clean_mat - grand_mean) ** 2))
-        ss_error = ss_total - ss_subj - ss_treat
+        ss_error = float(np.sum((clean_mat - subj_means[:, None] - treat_means[None, :] + grand_mean) ** 2))
 
         df_subj = n_subj - 1
         df_treat = n_treat - 1
@@ -250,7 +262,11 @@ class AnovaEngine:
         )
         epsilon = float(np.clip(num / den, 1.0 / (k - 1), 1.0)) if den > 0 else 1.0
 
-        p_treat_corrected = float(1.0 - stats.f.cdf(f_treat, df_treat * epsilon, df_error * epsilon))
+        p_treat_corrected = (
+            float(1.0 - stats.f.cdf(f_treat, df_treat * epsilon, df_error * epsilon))
+            if not np.isnan(f_treat)
+            else np.nan
+        )
 
         anova_table = [
             {"source": "Treatments (Between groups)", "ss": ss_treat, "df": df_treat, "ms": ms_treat, "f": f_treat, "p_value": p_treat},
@@ -301,6 +317,8 @@ class AnovaEngine:
         comparisons: List[Dict[str, Any]] = []
 
         try:
+            if not (ms_within > 0 and df_within > 0):
+                raise ValueError("Zero within-group variance")
             treat_samples = [cleaned_groups[j] for j in treat_indices]
             dunnett_out = stats.dunnett(*treat_samples, control=ctrl_group)
             ci_out = dunnett_out.confidence_interval(confidence_level=1.0 - alpha)
@@ -337,11 +355,16 @@ class AnovaEngine:
                 nj = len(cleaned_groups[j])
                 mean_j = float(np.mean(cleaned_groups[j]))
                 diff = mean_j - mean0
-                se_diff = np.sqrt(ms_within * (1.0 / nj + 1.0 / n0))
-                q_stat = diff / se_diff
-                p_raw = 2.0 * (1.0 - stats.t.cdf(abs(q_stat), df=df_within))
-                p_val = float(min(1.0, p_raw * num_treatments))
-                ci_half = stats.t.ppf(1.0 - (alpha / (2.0 * num_treatments)), df=df_within) * se_diff
+                se_diff = np.sqrt(ms_within * (1.0 / nj + 1.0 / n0)) if ms_within >= 0 else np.nan
+                if se_diff > 0 and df_within > 0:
+                    q_stat = diff / se_diff
+                    p_raw = 2.0 * (1.0 - stats.t.cdf(abs(q_stat), df=df_within))
+                    p_val = float(min(1.0, p_raw * num_treatments))
+                    ci_half = stats.t.ppf(1.0 - (alpha / (2.0 * num_treatments)), df=df_within) * se_diff
+                else:
+                    q_stat = np.nan
+                    p_val = np.nan
+                    ci_half = np.nan
 
                 comparisons.append({
                     "comparison": f"{names[j]} vs. {ctrl_name}",
@@ -349,9 +372,9 @@ class AnovaEngine:
                     "se_diff": float(se_diff),
                     "q_stat": float(q_stat),
                     "p_value": p_val,
-                    "significant": bool(p_val < alpha),
-                    "ci_lower": float(diff - ci_half),
-                    "ci_upper": float(diff + ci_half),
+                    "significant": bool(p_val < alpha) if not np.isnan(p_val) else False,
+                    "ci_lower": float(diff - ci_half) if not np.isnan(ci_half) else np.nan,
+                    "ci_upper": float(diff + ci_half) if not np.isnan(ci_half) else np.nan,
                 })
 
         return comparisons
@@ -386,29 +409,30 @@ class AnovaEngine:
 
                 # Standard error for studentized range q
                 # q = (mean1 - mean2) / sqrt( (ms_within / 2) * (1/n1 + 1/n2) )
-                se_q = np.sqrt(0.5 * ms_within * (1.0 / n1 + 1.0 / n2))
-                q_stat = abs(diff) / se_q
-
-                # p-value using studentized range distribution
-                try:
-                    p_val = float(stats.studentized_range.sf(q_stat, k, df_within))
-                except Exception:
-                    # Fallback student-t with Bonferroni correction
-                    n_comp = (k * (k - 1)) / 2
-                    p_t = 2.0 * (1.0 - stats.t.cdf(abs(diff) / np.sqrt(ms_within * (1/n1 + 1/n2)), df=df_within))
-                    p_val = float(min(1.0, p_t * n_comp))
-
-                q_crit = stats.studentized_range.ppf(1.0 - alpha, k, df_within)
-                ci_half = (q_crit / np.sqrt(2)) * np.sqrt(ms_within * (1.0 / n1 + 1.0 / n2))
+                se_q = np.sqrt(0.5 * ms_within * (1.0 / n1 + 1.0 / n2)) if ms_within >= 0 else np.nan
+                if se_q > 0 and df_within > 0:
+                    q_stat = abs(diff) / se_q
+                    try:
+                        p_val = float(stats.studentized_range.sf(q_stat, k, df_within))
+                    except Exception:
+                        n_comp = (k * (k - 1)) / 2
+                        p_t = 2.0 * (1.0 - stats.t.cdf(abs(diff) / np.sqrt(ms_within * (1/n1 + 1/n2)), df=df_within))
+                        p_val = float(min(1.0, p_t * n_comp))
+                    q_crit = stats.studentized_range.ppf(1.0 - alpha, k, df_within)
+                    ci_half = (q_crit / np.sqrt(2)) * np.sqrt(ms_within * (1.0 / n1 + 1.0 / n2))
+                else:
+                    q_stat = np.nan
+                    p_val = np.nan
+                    ci_half = np.nan
 
                 comparisons.append({
                     "comparison": f"{names[i]} vs. {names[j]}",
                     "mean_diff": float(diff),
                     "q_stat": float(q_stat),
                     "p_value": p_val,
-                    "significant": p_val < alpha,
-                    "ci_lower": float(diff - ci_half),
-                    "ci_upper": float(diff + ci_half),
+                    "significant": bool(p_val < alpha) if not np.isnan(p_val) else False,
+                    "ci_lower": float(diff - ci_half) if not np.isnan(ci_half) else np.nan,
+                    "ci_upper": float(diff + ci_half) if not np.isnan(ci_half) else np.nan,
                 })
 
         return comparisons

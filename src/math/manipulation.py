@@ -169,7 +169,7 @@ def remove_baseline(
     elif method == BaselineMethod.LINEAR_REGRESSION:
         if x is not None:
             xy_valid = (~np.isnan(x)) & (~np.isnan(y))
-            if np.sum(xy_valid) >= 2:
+            if np.sum(xy_valid) >= 2 and np.ptp(x[xy_valid]) > 0:
                 slope, intercept, _, _, _ = scipy.stats.linregress(x[xy_valid], y[xy_valid])
                 baseline = slope * x + intercept
             else:
@@ -183,7 +183,10 @@ def remove_baseline(
         out[valid] = y[valid] - baseline[valid]
     elif operation == BaselineOperation.DIVIDE:
         denom = baseline[valid]
-        out[valid] = np.where(denom != 0, y[valid] / denom, np.nan)
+        res = np.full(len(denom), np.nan, dtype=np.float64)
+        nz = denom != 0
+        res[nz] = y[valid][nz] / denom[nz]
+        out[valid] = res
 
     return out
 
@@ -272,14 +275,14 @@ def prune_rows(
 
 def wilson_score_interval(k: int, n: int, confidence: float = 0.95) -> Tuple[float, float]:
     """Computes Wilson/Brown score confidence interval for binomial proportion."""
-    if n == 0:
+    if n <= 0 or k < 0 or k > n:
         return 0.0, 0.0
     p = k / n
     alpha = 1.0 - confidence
     z = scipy.stats.norm.ppf(1.0 - alpha / 2.0)
     denom = 1.0 + (z**2) / n
     center = (p + (z**2) / (2.0 * n)) / denom
-    half = (z * np.sqrt((p * (1.0 - p) + (z**2) / (4.0 * n)) / n)) / denom
+    half = (z * np.sqrt(max(0.0, (p * (1.0 - p) + (z**2) / (4.0 * n)) / n))) / denom
     lower = max(0.0, float(center - half))
     upper = min(1.0, float(center + half))
     return lower, upper
@@ -287,7 +290,7 @@ def wilson_score_interval(k: int, n: int, confidence: float = 0.95) -> Tuple[flo
 
 def clopper_pearson_interval(k: int, n: int, confidence: float = 0.95) -> Tuple[float, float]:
     """Computes exact Clopper-Pearson confidence interval for binomial proportion."""
-    if n == 0:
+    if n <= 0 or k < 0 or k > n:
         return 0.0, 0.0
     alpha = 1.0 - confidence
     lower = 0.0 if k == 0 else float(scipy.stats.beta.ppf(alpha / 2.0, k, n - k + 1))
@@ -326,7 +329,7 @@ def fraction_of_total(
                     for r in np.where(valid)[0]:
                         k = int(round(col[r]))
                         n = int(round(tot))
-                        if k >= 0 and n > 0:
+                        if 0 <= k <= n and n > 0:
                             w_lo, w_hi = wilson_score_interval(k, n)
                             c_lo, c_hi = clopper_pearson_interval(k, n)
                             ci_wilson[g, r, s] = [w_lo * scale.value, w_hi * scale.value]
@@ -343,7 +346,7 @@ def fraction_of_total(
                     for g in np.where(valid)[0]:
                         k = int(round(row_vals[g]))
                         n = int(round(tot))
-                        if k >= 0 and n > 0:
+                        if 0 <= k <= n and n > 0:
                             w_lo, w_hi = wilson_score_interval(k, n)
                             c_lo, c_hi = clopper_pearson_interval(k, n)
                             ci_wilson[g, r, s] = [w_lo * scale.value, w_hi * scale.value]
@@ -358,7 +361,7 @@ def fraction_of_total(
             n = int(round(tot))
             for g, r, s in indices:
                 k = int(round(data[g, r, s]))
-                if k >= 0 and n > 0:
+                if 0 <= k <= n and n > 0:
                     w_lo, w_hi = wilson_score_interval(k, n)
                     c_lo, c_hi = clopper_pearson_interval(k, n)
                     ci_wilson[g, r, s] = [w_lo * scale.value, w_hi * scale.value]

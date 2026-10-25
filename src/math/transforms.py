@@ -16,7 +16,7 @@ def arithmetic_transform(y: np.ndarray, op: str, k: float = 1.0) -> np.ndarray:
     Performs standard arithmetic transformation on Y values.
     Preserves NaNs.
     """
-    out = np.copy(y).astype(np.float64)
+    out = np.array(y, dtype=np.float64, copy=True)
     valid = ~np.isnan(out)
 
     if op == "Y*K":
@@ -33,21 +33,49 @@ def arithmetic_transform(y: np.ndarray, op: str, k: float = 1.0) -> np.ndarray:
     elif op == "Y^2":
         out[valid] = np.power(out[valid], 2)
     elif op == "Y^K":
-        out[valid] = np.where(out[valid] >= 0, np.power(out[valid], k), np.nan)
+        v = out[valid]
+        res = np.full(len(v), np.nan, dtype=np.float64)
+        is_int_k = np.isfinite(k) and float(k).is_integer()
+        if is_int_k:
+            dom = (v != 0) if k < 0 else np.ones(len(v), dtype=bool)
+        else:
+            dom = (v > 0) if k < 0 else (v >= 0)
+        res[dom] = np.power(v[dom], float(k))
+        out[valid] = res
     elif op == "log10":
-        out[valid] = np.where(out[valid] > 0, np.log10(out[valid]), np.nan)
+        v = out[valid]
+        res = np.full(len(v), np.nan, dtype=np.float64)
+        dom = v > 0
+        res[dom] = np.log10(v[dom])
+        out[valid] = res
     elif op == "-log10":
-        out[valid] = np.where(out[valid] > 0, -np.log10(out[valid]), np.nan)
+        v = out[valid]
+        res = np.full(len(v), np.nan, dtype=np.float64)
+        dom = v > 0
+        res[dom] = -np.log10(v[dom])
+        out[valid] = res
     elif op == "ln":
-        out[valid] = np.where(out[valid] > 0, np.log(out[valid]), np.nan)
+        v = out[valid]
+        res = np.full(len(v), np.nan, dtype=np.float64)
+        dom = v > 0
+        res[dom] = np.log(v[dom])
+        out[valid] = res
     elif op == "10^Y":
         out[valid] = np.power(10.0, out[valid])
     elif op == "exp":
         out[valid] = np.exp(out[valid])
     elif op == "1/Y":
-        out[valid] = np.where(out[valid] != 0, 1.0 / out[valid], np.nan)
+        v = out[valid]
+        res = np.full(len(v), np.nan, dtype=np.float64)
+        dom = v != 0
+        res[dom] = 1.0 / v[dom]
+        out[valid] = res
     elif op == "sqrt":
-        out[valid] = np.where(out[valid] >= 0, np.sqrt(out[valid]), np.nan)
+        v = out[valid]
+        res = np.full(len(v), np.nan, dtype=np.float64)
+        dom = v >= 0
+        res[dom] = np.sqrt(v[dom])
+        out[valid] = res
     elif op == "logit":
         p = out[valid]
         valid_p = (p > 0) & (p < 1)
@@ -67,7 +95,7 @@ def probit_transform(y: np.ndarray) -> np.ndarray:
     For p = 0.5 -> 5.0; p = 0.025 -> 3.04 (approx).
     Accepts fractions (0 < p < 1) or percentages (0 < p < 100).
     """
-    out = np.copy(y).astype(np.float64)
+    out = np.array(y, dtype=np.float64, copy=True)
     valid = ~np.isnan(out)
     vals = out[valid]
 
@@ -75,7 +103,7 @@ def probit_transform(y: np.ndarray) -> np.ndarray:
     if np.any(vals > 1.0) and np.all(vals[vals > 0] <= 100.0):
         p = vals / 100.0
     else:
-        p = np.copy(vals)
+        p = vals
 
     res = np.full(len(p), np.nan)
     within_bounds = (p > 0) & (p < 1)
@@ -86,7 +114,7 @@ def probit_transform(y: np.ndarray) -> np.ndarray:
 
 def rank_transform(y: np.ndarray) -> np.ndarray:
     """Computes fractional ranks for Y values, preserving NaNs."""
-    out = np.copy(y).astype(np.float64)
+    out = np.array(y, dtype=np.float64, copy=True)
     valid = ~np.isnan(out)
     if not np.any(valid):
         return out
@@ -97,7 +125,7 @@ def rank_transform(y: np.ndarray) -> np.ndarray:
 
 def zscore_transform(y: np.ndarray) -> np.ndarray:
     """Computes sample Z-scores: (Y - mean) / sd."""
-    out = np.copy(y).astype(np.float64)
+    out = np.array(y, dtype=np.float64, copy=True)
     valid = ~np.isnan(out)
     vals = out[valid]
     if len(vals) < 2:
@@ -114,7 +142,7 @@ def zscore_transform(y: np.ndarray) -> np.ndarray:
 
 def trig_transform(y: np.ndarray, func: str) -> np.ndarray:
     """Computes trigonometric functions in radians."""
-    out = np.copy(y).astype(np.float64)
+    out = np.array(y, dtype=np.float64, copy=True)
     valid = ~np.isnan(out)
     v = out[valid]
     func_l = func.lower()
@@ -125,9 +153,15 @@ def trig_transform(y: np.ndarray, func: str) -> np.ndarray:
     elif func_l == "tan":
         out[valid] = np.tan(v)
     elif func_l == "arcsin":
-        out[valid] = np.where((v >= -1) & (v <= 1), np.arcsin(v), np.nan)
+        res = np.full(len(v), np.nan, dtype=np.float64)
+        dom = (v >= -1) & (v <= 1)
+        res[dom] = np.arcsin(v[dom])
+        out[valid] = res
     elif func_l == "arccos":
-        out[valid] = np.where((v >= -1) & (v <= 1), np.arccos(v), np.nan)
+        res = np.full(len(v), np.nan, dtype=np.float64)
+        dom = (v >= -1) & (v <= 1)
+        res[dom] = np.arccos(v[dom])
+        out[valid] = res
     elif func_l == "arctan":
         out[valid] = np.arctan(v)
     else:
@@ -144,7 +178,7 @@ def gaussian_noise(y: np.ndarray, sigma: float = 1.0, seed: Optional[int] = None
     """Adds Gaussian noise Y + N(0, sigma^2)."""
     rng = np.random.default_rng(seed)
     noise = rng.normal(0.0, sigma, size=y.shape)
-    out = np.copy(y).astype(np.float64)
+    out = np.array(y, dtype=np.float64, copy=True)
     valid = ~np.isnan(out)
     out[valid] = out[valid] + noise[valid]
     return out
@@ -158,9 +192,11 @@ def cross_transform(x: np.ndarray, y: np.ndarray, op: str, k: float = 1.0) -> np
     valid = (~np.isnan(x)) & (~np.isnan(y))
 
     if op == "X/Y":
-        out[valid] = np.where(y[valid] != 0, x[valid] / y[valid], np.nan)
+        dom = valid & (y != 0)
+        out[dom] = x[dom] / y[dom]
     elif op == "Y/X":
-        out[valid] = np.where(x[valid] != 0, y[valid] / x[valid], np.nan)
+        dom = valid & (x != 0)
+        out[dom] = y[dom] / x[dom]
     elif op == "Y-X":
         out[valid] = y[valid] - x[valid]
     elif op == "Y+X":
@@ -172,9 +208,11 @@ def cross_transform(x: np.ndarray, y: np.ndarray, op: str, k: float = 1.0) -> np
     elif op == "K-Y":
         out[valid] = k - y[valid]
     elif op == "K/Y":
-        out[valid] = np.where(y[valid] != 0, k / y[valid], np.nan)
+        dom = valid & (y != 0)
+        out[dom] = k / y[dom]
     elif op == "log2":
-        out[valid] = np.where(y[valid] > 0, np.log2(y[valid]), np.nan)
+        dom = valid & (y > 0)
+        out[dom] = np.log2(y[dom])
     elif op == "2^Y":
         out[valid] = np.power(2.0, y[valid])
     elif op == "round":
@@ -249,7 +287,7 @@ def concentration_x_transform(
     - Multiplies by unit scaling multiplier
     - Computes log10 or ln
     """
-    out = np.copy(x).astype(np.float64)
+    out = np.array(x, dtype=np.float64, copy=True)
     valid = ~np.isnan(out)
 
     pos_x = out[valid & (out > 0)]
@@ -264,10 +302,26 @@ def concentration_x_transform(
     scaled[valid & (out == 0)] = zero_baseline
 
     if log_base == "log10":
-        return np.where(scaled > 0, np.log10(scaled), np.nan)
+        res = np.full(scaled.shape, np.nan, dtype=np.float64)
+        dom = scaled > 0
+        res[dom] = np.log10(scaled[dom])
+        return res
     elif log_base == "ln":
-        return np.where(scaled > 0, np.log(scaled), np.nan)
+        res = np.full(scaled.shape, np.nan, dtype=np.float64)
+        dom = scaled > 0
+        res[dom] = np.log(scaled[dom])
+        return res
     return scaled
+
+
+def _safe_unary(func: Any, min_val: float, strict: bool = False) -> Any:
+    def _wrapper(arg: Any) -> Any:
+        arr = np.asarray(arg, dtype=np.float64)
+        out = np.full(arr.shape, np.nan, dtype=np.float64)
+        dom = (arr > min_val) if strict else (arr >= min_val)
+        out[dom] = func(arr[dom])
+        return float(out) if arr.ndim == 0 else out
+    return _wrapper
 
 
 class SafeTransformEvaluator(ast.NodeVisitor):
@@ -308,12 +362,12 @@ class SafeTransformEvaluator(ast.NodeVisitor):
         self.y = y
         self.k = k
         self.math_funcs = {
-            "log": np.log,
-            "ln": np.log,
-            "log10": np.log10,
-            "log2": np.log2,
+            "log": _safe_unary(np.log, 0.0, strict=True),
+            "ln": _safe_unary(np.log, 0.0, strict=True),
+            "log10": _safe_unary(np.log10, 0.0, strict=True),
+            "log2": _safe_unary(np.log2, 0.0, strict=True),
             "exp": np.exp,
-            "sqrt": np.sqrt,
+            "sqrt": _safe_unary(np.sqrt, 0.0, strict=False),
             "abs": np.abs,
             "sin": np.sin,
             "cos": np.cos,
@@ -359,9 +413,29 @@ class SafeTransformEvaluator(ast.NodeVisitor):
             elif isinstance(node.op, ast.Mult):
                 return left * right
             elif isinstance(node.op, ast.Div):
-                return np.where(right != 0, left / right, np.nan)
+                l_arr, r_arr = np.broadcast_arrays(
+                    np.asarray(left, dtype=np.float64),
+                    np.asarray(right, dtype=np.float64),
+                )
+                out = np.full(l_arr.shape, np.nan, dtype=np.float64)
+                np.divide(l_arr, r_arr, out=out, where=(r_arr != 0))
+                return float(out) if out.ndim == 0 else out
             elif isinstance(node.op, ast.Pow):
-                return np.power(left, right)
+                l_arr, r_arr = np.broadcast_arrays(
+                    np.asarray(left, dtype=np.float64),
+                    np.asarray(right, dtype=np.float64),
+                )
+                out = np.full(l_arr.shape, np.nan, dtype=np.float64)
+                valid_lr = np.isfinite(l_arr) & np.isfinite(r_arr)
+                is_int_exp = valid_lr & (np.floor(r_arr) == r_arr)
+                dom = valid_lr & (
+                    (l_arr > 0)
+                    | ((l_arr == 0) & (r_arr > 0))
+                    | ((l_arr == 0) & (r_arr == 0))
+                    | ((l_arr < 0) & is_int_exp & ((r_arr >= 0) | (l_arr != 0)))
+                )
+                out[dom] = np.power(l_arr[dom], r_arr[dom])
+                return float(out) if out.ndim == 0 else out
 
         elif isinstance(node, ast.UnaryOp):
             operand = self._eval_node(node.operand)

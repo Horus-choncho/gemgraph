@@ -216,25 +216,17 @@ class SurvivalEngine:
 
             w_gw = n_total  # Gehan-Breslow weight
 
-            for i in range(k):
-                e_i = n_ig[i] * (d_total / n_total)
-                O_lr[i] += d_ig[i]
-                E_lr[i] += e_i
+            e_vec = n_ig * (d_total / n_total)
+            O_lr += d_ig
+            E_lr += e_vec
 
-                O_gw[i] += w_gw * d_ig[i]
-                E_gw[i] += w_gw * e_i
+            O_gw += w_gw * d_ig
+            E_gw += w_gw * e_vec
 
-                for j in range(k):
-                    if i == j:
-                        v = (n_ig[i] * (n_total - n_ig[i]) * d_total * (n_total - d_total)) / (
-                            (n_total ** 2) * (n_total - 1.0)
-                        )
-                    else:
-                        v = -(n_ig[i] * n_ig[j] * d_total * (n_total - d_total)) / (
-                            (n_total ** 2) * (n_total - 1.0)
-                        )
-                    V_lr[i, j] += v
-                    V_gw[i, j] += (w_gw ** 2) * v
+            factor = (d_total * (n_total - d_total)) / ((n_total ** 2) * (n_total - 1.0))
+            v_mat = (np.diag(n_ig * n_total) - np.outer(n_ig, n_ig)) * factor
+            V_lr += v_mat
+            V_gw += (w_gw ** 2) * v_mat
 
         df = k - 1
         # Invert (k-1) x (k-1) submatrix
@@ -502,7 +494,8 @@ class SurvivalEngine:
         if np.any(np.isnan(se)) or np.any(se > 30.0) or np.any(np.abs(beta) >= 15.0):
             raise ValueError("Perfect separation or non-convergence detected in Cox regression.")
 
-        z_scores = np.where(se > 0, beta / se, 0.0)
+        z_scores = np.zeros_like(beta, dtype=np.float64)
+        np.divide(beta, se, out=z_scores, where=(se > 0))
         p_values = float(2.0) * stats.norm.sf(np.abs(z_scores))
         hazard_ratios = np.exp(beta)
 
