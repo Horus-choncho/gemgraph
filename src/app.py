@@ -4,7 +4,6 @@ Application Entry Point and Lifecycle Manager for GemGraph.
 
 from __future__ import annotations
 import sys
-import os
 from typing import Tuple
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
