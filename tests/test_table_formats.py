@@ -5,8 +5,7 @@ Multiple Variables typed metadata, level reordering, and cell color coding.
 """
 
 import unittest
-import numpy as np
-from src.core.table import DataTable, TableType, VariableType, VariableMetadata, XFormat, YFormat
+from src.core.table import DataTable, TableType, VariableType
 
 
 class TestScientificTableFormats(unittest.TestCase):

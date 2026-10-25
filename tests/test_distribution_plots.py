@@ -11,7 +11,7 @@ import numpy as np
 from PyQt6.QtWidgets import QApplication
 
 from src.core.document import PrismDocument
-from src.core.sheet import DataSheet, GraphSheet, SheetType, GraphType
+from src.core.sheet import GraphSheet, GraphType
 from src.core.table import TableType, DataTable
 from src.io.prism_io import PrismIO
 from src.math.distributions import five_number_summary, gaussian_kde_profile

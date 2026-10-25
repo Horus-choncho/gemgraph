@@ -11,14 +11,14 @@ import zipfile
 import xml.etree.ElementTree as ET
 import numpy as np
 
-from PyQt6.QtCore import Qt, QPoint
-from PyQt6.QtGui import QKeyEvent, QTextCursor, QTextListFormat
-from PyQt6.QtWidgets import QApplication, QTreeWidgetItem, QMenu
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QKeyEvent, QTextCursor
+from PyQt6.QtWidgets import QApplication
 
 from src.core.document import PrismDocument
-from src.core.sheet import DataSheet, GraphSheet, InfoSheet, ResultSheet, SheetType, GraphType
+from src.core.sheet import DataSheet, GraphSheet, InfoSheet, SheetType, GraphType
 from src.core.table import TableType, DataTable
-from src.core.office_exporter import OfficeExporter, ExportFormat, render_graph_to_png_bytes
+from src.core.office_exporter import OfficeExporter, ExportFormat
 from src.ui.export_dialog import ExportProjectDialog
 from src.ui.rich_text_editor import RichTextEditor
 from src.ui.info_sheet_view import InfoSheetView

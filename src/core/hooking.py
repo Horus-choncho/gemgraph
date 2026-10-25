@@ -7,21 +7,10 @@ to graph lines, dynamic text labels, and downstream analysis parameters.
 
 from __future__ import annotations
 import enum
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any
 import numpy as np
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
-    QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QLabel,
-    QPushButton,
-    QDialogButtonBox,
-    QLineEdit,
-    QHeaderView,
-)
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QLabel, QDialogButtonBox, QLineEdit, QHeaderView
 from src.core.sheet import ResultSheet
 from src.core.table import DataTable
 

@@ -4,7 +4,7 @@ Derived from prism.exe outlier routines (REA-PRISM-ALGO-314).
 """
 
 from __future__ import annotations
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 import numpy as np
 from scipy import stats
 
@@ -32,6 +32,9 @@ class OutlierEngine:
         valid_mask = np.isfinite(vals)
         vals_clean = vals[valid_mask]
         n = len(vals_clean)
+
+        if not np.isfinite(q_fdr) or not (0.0 < q_fdr <= 1.0):
+            raise ValueError(f"q_fdr must satisfy 0 < Q <= 1, got {q_fdr}")
 
         if n < 3:
             return {

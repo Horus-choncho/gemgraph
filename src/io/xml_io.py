@@ -5,7 +5,6 @@ Derived from PrismXMLSchema.xml analysis (REA-CORE-SCHEMA-208).
 
 from __future__ import annotations
 import xml.etree.ElementTree as ET
-from typing import Optional
 import numpy as np
 from src.core.document import PrismDocument
 from src.core.sheet import DataSheet, SheetType

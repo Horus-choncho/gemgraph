@@ -5,12 +5,11 @@ and parameter registry binding.
 """
 
 import unittest
-import numpy as np
 from src.core.document import PrismDocument
 from src.core.table import DataTable, TableType
-from src.core.sheet import DataSheet, ResultSheet, SheetType
-from src.core.hooking import ConstantRegistry, HookedConstant, GLOBAL_REGISTRY
-from src.math.nonlinear import STANDARD_MODELS, ConvergencePreset
+from src.core.sheet import ResultSheet
+from src.core.hooking import ConstantRegistry
+from src.math.nonlinear import ConvergencePreset
 
 
 class TestHookingAndAnalysisChain(unittest.TestCase):

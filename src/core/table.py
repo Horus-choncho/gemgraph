@@ -560,6 +560,12 @@ class DataTable:
 
     def insert_x_column_at(self, col_idx: int, position: str = "left", title: Optional[str] = None) -> int:
         """Inserts an X column to the left or right of visual column col_idx."""
+        before = self._xy_snapshot()
+        res = self._insert_x_column_at_impl(col_idx, position, title)
+        self._remap_xy_mapping(before)
+        return res
+
+    def _insert_x_column_at_impl(self, col_idx: int, position: str = "left", title: Optional[str] = None) -> int:
         cols = self.get_columns()
         if not cols:
             return self.add_x_column(title=title)
@@ -735,8 +741,79 @@ class DataTable:
                     return True
         return False
 
+    def _xy_snapshot(self) -> list:
+        if self.table_type == TableType.MULTIPLE_VARIABLES:
+            return []
+        return [(c.role, c.group_idx, c.title, c.subcol_idx) for c in self.get_columns()]
+
+    def _remap_xy_mapping(self, before: list, removed_start: Optional[int] = None) -> None:
+        """Re-targets visual-index based xy_mapping entries after columns were inserted/removed.
+
+        Mutates the dict in place (it is shared with the spreadsheet model).
+        """
+        mapping = getattr(self, "xy_mapping", None)
+        if not mapping:
+            return
+        after = self._xy_snapshot()
+        delta = len(after) - len(before)
+        if delta == 0:
+            return
+        if delta > 0:
+            p = 0
+            while p < len(before) and p < len(after) and (
+                before[p][0], before[p][2], before[p][3]
+            ) == (after[p][0], after[p][2], after[p][3]):
+                p += 1
+
+            def remap(i: int) -> Optional[int]:
+                return i if i < p else i + delta
+        else:
+            start = removed_start if removed_start is not None else 0
+            gone = -delta
+
+            def remap(i: int) -> Optional[int]:
+                if i < start:
+                    return i
+                if i < start + gone:
+                    return None
+                return i + delta
+
+        def as_visual(v: Any) -> Optional[int]:
+            if isinstance(v, bool):
+                return None
+            if isinstance(v, (int, np.integer)):
+                return int(v)
+            if isinstance(v, str) and v.isdigit():
+                return int(v)
+            return None
+
+        new_map: Dict[Any, Any] = {}
+        for k, v in mapping.items():
+            ki = as_visual(k)
+            new_k = k
+            if ki is not None:
+                nk = remap(ki)
+                if nk is None:
+                    continue
+                new_k = str(nk) if isinstance(k, str) else nk
+            new_v = v
+            if isinstance(v, (int, np.integer)) and not isinstance(v, bool):
+                nv = remap(int(v))
+                if nv is None:
+                    continue
+                new_v = nv
+            new_map[new_k] = new_v
+        mapping.clear()
+        mapping.update(new_map)
+
     def insert_column(self, col_idx: int, position: str = "right", title: Optional[str] = None) -> int:
         """Inserts a Y column group to the left or right of col_idx."""
+        before = self._xy_snapshot()
+        res = self._insert_column_impl(col_idx, position, title)
+        self._remap_xy_mapping(before)
+        return res
+
+    def _insert_column_impl(self, col_idx: int, position: str = "right", title: Optional[str] = None) -> int:
         if self.table_type == TableType.MULTIPLE_VARIABLES:
             target = col_idx + 1 if position == "right" else col_idx
             return self.insert_variable(target, name=title)
@@ -768,6 +845,17 @@ class DataTable:
 
     def delete_column(self, col_idx: int) -> bool:
         """Deletes column at col_idx. Returns False if operation disallowed."""
+        before = self._xy_snapshot()
+        start = None
+        if 0 <= col_idx < len(before):
+            role, g_idx = before[col_idx][0], before[col_idx][1]
+            start = next(i for i, b in enumerate(before) if b[0] == role and b[1] == g_idx)
+        res = self._delete_column_impl(col_idx)
+        if res:
+            self._remap_xy_mapping(before, removed_start=start)
+        return res
+
+    def _delete_column_impl(self, col_idx: int) -> bool:
         if self.table_type == TableType.MULTIPLE_VARIABLES:
             return self.remove_variable(col_idx)
 

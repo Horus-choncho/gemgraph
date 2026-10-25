@@ -9,23 +9,8 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QPoint, QPointF, QRectF, QSizeF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import (
-    QBrush,
-    QColor,
-    QCursor,
-    QFont,
-    QImage,
-    QKeyEvent,
-    QMouseEvent,
-    QPainter,
-    QPainterPath,
-    QPen,
-    QPixmap,
-    QTextCharFormat,
-    QTextCursor,
-    QWheelEvent,
-)
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QCursor, QFont, QImage, QKeyEvent, QMouseEvent, QPainter, QPen, QPixmap, QTextCharFormat, QTextCursor, QWheelEvent
 from PyQt6.QtWidgets import (
     QGraphicsItem,
     QGraphicsRectItem,

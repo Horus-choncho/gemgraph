@@ -5,13 +5,11 @@ Tests InfoSheet data model, GLP fields, JSON serialization, and interactive Info
 
 from __future__ import annotations
 import unittest
-import numpy as np
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 
-from src.core.info_sheet import InfoSheet, GLP_FIELD_DEFINITIONS
+from src.core.info_sheet import InfoSheet
 from src.core.sheet import SheetType
-from src.core.document import PrismDocument
 from src.ui.info_sheet_view import InfoSheetView
 from src.ui.main_window import MainWindow
 

@@ -9,8 +9,8 @@ import tempfile
 import os
 import numpy as np
 from src.core.document import PrismDocument
-from src.core.sheet import DataSheet, InfoSheet, ResultSheet, GraphSheet, SheetType, GraphType
-from src.core.table import DataTable, TableType, XFormat, YFormat
+from src.core.sheet import DataSheet, InfoSheet, GraphSheet, SheetType
+from src.core.table import DataTable, TableType
 from src.core.undo import UndoStack, CellEditCommand, CellExcludeCommand
 from src.io.prism_io import PrismIO
 from src.io.xml_io import PrismXMLIO

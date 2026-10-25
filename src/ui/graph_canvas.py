@@ -12,28 +12,16 @@ Includes:
 """
 
 from __future__ import annotations
-from typing import Optional, List, Dict, Any, Tuple, Set
+from typing import Optional, List, Dict, Any, Set
 import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
-from PyQt6.QtGui import QColor, QFont, QBrush, QPolygonF, QPen
-from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QToolButton,
-    QMenu,
-    QComboBox,
-    QLabel,
-    QTableWidget,
-    QGraphicsProxyWidget,
-    QGraphicsPolygonItem,
-)
+from PyQt6.QtGui import QColor, QFont, QBrush, QPolygonF
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QToolButton, QMenu, QComboBox, QLabel, QGraphicsPolygonItem
 import pyqtgraph as pg
 import pyqtgraph.exporters
 from src.core.table import DataTable, TableType
 from src.core.sheet import BaseSheet, GraphSheet, GraphType, ResultSheet
-from src.core.hooking import GLOBAL_REGISTRY, HookedConstant
+from src.core.hooking import GLOBAL_REGISTRY
 from src.ui.mediator import WorkspaceMediator
 from src.ui.dialogs import FormatSeriesDialog
 from src.math.distributions import five_number_summary, gaussian_kde_profile
@@ -232,6 +220,16 @@ class ScientificPlotCanvas(QWidget):
         self.btn_autoscale = QPushButton("Auto Range")
         self.btn_autoscale.clicked.connect(self.plot_widget.autoRange)
         top_bar.addWidget(self.btn_autoscale)
+
+        # Consistent padding and uniform control heights so the toolbar never clips/misaligns
+        top_bar.setContentsMargins(6, 4, 6, 4)
+        top_bar.setSpacing(6)
+        for ctrl in (
+            self.type_combo, self.palette_combo, self.whisker_dir_combo,
+            self.btn_toggle_scatter, self.btn_pin, self.btn_freeze,
+            self.btn_clear_analysis, self.btn_autoscale,
+        ):
+            ctrl.setMinimumHeight(26)
 
         self.layout.addLayout(top_bar)
         self.layout.addWidget(self.plot_widget)

@@ -11,43 +11,17 @@ import numpy as np
 import scipy.stats
 from PyQt6.QtCore import Qt, QDir, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QDragEnterEvent, QDropEvent, QDragMoveEvent
-from PyQt6.QtWidgets import (
-    QMainWindow,
-    QApplication,
-    QWidget,
-    QSplitter,
-    QStackedWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QTableWidget,
-    QTableWidgetItem,
-    QTextEdit,
-    QLabel,
-    QFileDialog,
-    QMessageBox,
-    QToolBar,
-    QStatusBar,
-    QHeaderView,
-    QMenu,
-    QInputDialog,
-    QTreeWidgetItem,
-)
+from PyQt6.QtWidgets import QMainWindow, QApplication, QWidget, QSplitter, QStackedWidget, QHBoxLayout, QTableWidget, QTextEdit, QLabel, QFileDialog, QMessageBox, QToolBar, QStatusBar, QMenu, QInputDialog, QTreeWidgetItem
 from src.core.document import PrismDocument
 from src.core.sheet import DataSheet, InfoSheet, ResultSheet, GraphSheet, SheetType, GraphType
 from src.core.table import TableType, DataTable
 from src.core.undo import UndoStack
 from src.io.prism_io import PrismIO
 from src.io.xml_io import PrismXMLIO
-from src.math.nonlinear import NonlinearEngine, STANDARD_MODELS, ConvergencePreset
+from src.math.nonlinear import NonlinearEngine, STANDARD_MODELS
 from src.math.outlier import OutlierEngine
 from src.math.anova import AnovaEngine
-from src.math.transforms import (
-    transform_data_table,
-    arithmetic_transform,
-    pharmacological_transform,
-    probit_transform,
-    concentration_x_transform,
-)
+from src.math.transforms import transform_data_table, pharmacological_transform
 from src.math.manipulation import (
     normalize_table,
     prune_rows,
@@ -61,7 +35,7 @@ from src.math.manipulation import (
     BaselineOperation,
     NormalizeScale,
 )
-from src.core.hooking import HookConstantDialog, GLOBAL_REGISTRY, HookedConstant
+from src.core.hooking import HookConstantDialog, GLOBAL_REGISTRY
 from src.ui.sidebar import PrismNavigator
 from src.ui.spreadsheet import ScientificSpreadsheetModel, ScientificSpreadsheetView
 from src.ui.graph_canvas import GraphCanvasWidget

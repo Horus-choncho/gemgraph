@@ -9,9 +9,9 @@ Implements:
 """
 
 from __future__ import annotations
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QColor, QBrush, QAction
+from PyQt6.QtGui import QColor, QBrush, QAction
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,

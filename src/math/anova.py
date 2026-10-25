@@ -4,10 +4,9 @@ Derived from prism.exe group comparison routines (REA-PRISM-STAT-325).
 """
 
 from __future__ import annotations
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 import numpy as np
 from scipy import stats
-from scipy import integrate
 
 
 class AnovaEngine:

@@ -7,15 +7,7 @@ formatting toolbar and keyboard auto-formatting (- + Space auto-bullet, Tab/Shif
 from __future__ import annotations
 from typing import Optional, Dict, List
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import (
-    QFont,
-    QTextCursor,
-    QTextCharFormat,
-    QTextBlockFormat,
-    QTextListFormat,
-    QKeySequence,
-    QShortcut,
-)
+from PyQt6.QtGui import QFont, QTextCursor, QTextCharFormat, QTextListFormat, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,

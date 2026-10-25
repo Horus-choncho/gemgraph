@@ -5,10 +5,10 @@ Derived from GraphPad Prism standard and pharmacological transformation librarie
 
 from __future__ import annotations
 import ast
-from typing import Optional, Tuple, List, Dict, Any, Union
+from typing import Optional, Tuple, Any
 import numpy as np
 import scipy.stats
-from src.core.table import DataTable, TableType, XFormat, YFormat
+from src.core.table import DataTable
 
 
 def arithmetic_transform(y: np.ndarray, op: str, k: float = 1.0) -> np.ndarray:

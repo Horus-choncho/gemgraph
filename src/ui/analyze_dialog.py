@@ -6,7 +6,7 @@ Includes the Interpret Analysis Checklist.
 """
 
 from __future__ import annotations
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Tuple
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,

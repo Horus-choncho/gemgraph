@@ -20,7 +20,6 @@ from src.core.sheet import GraphType, GraphSheet, SheetType
 from src.ui.spreadsheet import ScientificSpreadsheetModel, ScientificSpreadsheetView
 from src.ui.graph_canvas import ScientificPlotCanvas
 from src.ui.dialogs import FormatSeriesDialog
-from src.ui.mediator import WorkspaceMediator
 import pyqtgraph as pg
 
 # Headless application

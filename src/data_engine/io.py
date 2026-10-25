@@ -5,7 +5,6 @@ Supports dual native .bigo and .prism project archives with full bi-directional 
 
 from __future__ import annotations
 import os
-from typing import Optional
 from src.core.document import PrismDocument
 from src.io.prism_io import PrismIO
 from src.io.xml_io import PrismXMLIO

@@ -6,10 +6,10 @@ Transpose, and Extract/Rearrange Multiple Variables.
 
 from __future__ import annotations
 import enum
-from typing import Optional, Tuple, List, Dict, Any, Union
+from typing import Optional, Tuple, List, Dict, Any
 import numpy as np
 import scipy.stats
-from src.core.table import DataTable, TableType, VariableType
+from src.core.table import DataTable, TableType
 
 
 class Baseline0Method(enum.Enum):

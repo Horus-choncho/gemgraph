@@ -5,7 +5,7 @@ and variable types (Categorical, Continuous, Label) with level reordering.
 """
 
 from __future__ import annotations
-from typing import Optional, List, Dict
+from typing import Optional, List
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,
@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QAbstractItemView,
 )
-from src.core.table import DataTable, TableType, VariableType, VariableMetadata, XFormat, YFormat
+from src.core.table import DataTable, TableType, VariableType, VariableMetadata
 
 
 class FormatDataTableDialog(QDialog):

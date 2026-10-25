@@ -6,9 +6,9 @@ Derived from BridgeCLR SheetNavigator hierarchy (REA-CLR-VM-102).
 from __future__ import annotations
 from typing import Dict, Optional
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QMenu, QInputDialog, QMessageBox
+from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem
 from src.core.document import PrismDocument
-from src.core.sheet import BaseSheet, SheetType
+from src.core.sheet import SheetType
 
 
 class PrismNavigator(QTreeWidget):

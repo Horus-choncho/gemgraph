@@ -15,8 +15,8 @@ from unittest.mock import MagicMock, patch
 import zipfile
 
 import numpy as np
-from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QEvent
-from PyQt6.QtGui import QColor, QFont, QImage, QMouseEvent, QKeyEvent, QFocusEvent, QPainter, QTextCursor, QWheelEvent
+from PyQt6.QtCore import QPoint, QPointF, Qt, QEvent
+from PyQt6.QtGui import QFont, QImage, QMouseEvent, QKeyEvent, QFocusEvent, QPainter, QTextCursor, QWheelEvent
 from PyQt6.QtWidgets import QApplication, QGraphicsItem, QWidget
 
 from src.core.document import PrismDocument
@@ -32,8 +32,8 @@ from src.core.layout import (
     render_layout_to_png_bytes,
     render_layout_to_svg,
 )
-from src.core.office_exporter import OfficeExporter, ExportFormat, render_graph_to_png_bytes
-from src.core.sheet import DataSheet, GraphSheet, GraphType, SheetType
+from src.core.office_exporter import OfficeExporter, render_graph_to_png_bytes
+from src.core.sheet import GraphType, SheetType
 from src.core.table import TableType
 from src.io.prism_io import PrismIO
 from src.ui.graph_canvas import ScientificPlotCanvas

@@ -5,7 +5,7 @@ Gaussian KDE profiles for Box and Violin plots.
 """
 
 from __future__ import annotations
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 import numpy as np
 from scipy import stats
 

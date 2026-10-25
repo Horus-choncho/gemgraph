@@ -5,36 +5,13 @@ dimension equalization, page setup controls, rich text boxes, global undo/redo, 
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QAction, QIcon, QUndoCommand, QUndoStack
-from PyQt6.QtWidgets import (
-    QComboBox,
-    QFileDialog,
-    QHBoxLayout,
-    QInputDialog,
-    QLabel,
-    QMenu,
-    QMessageBox,
-    QPushButton,
-    QSizePolicy,
-    QToolBar,
-    QToolButton,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtGui import QUndoCommand, QUndoStack
+from PyQt6.QtWidgets import QComboBox, QFileDialog, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton, QSizePolicy, QToolBar, QToolButton, QVBoxLayout, QWidget
 
-from src.core.layout import (
-    PageLayout,
-    Placeholder,
-    align_placeholders,
-    create_template_placeholders,
-    equalize_placeholders,
-    render_layout_to_pdf,
-    render_layout_to_png_bytes,
-    render_layout_to_svg,
-)
+from src.core.layout import PageLayout, Placeholder, align_placeholders, create_template_placeholders, equalize_placeholders, render_layout_to_pdf, render_layout_to_svg
 from src.ui.layout_canvas import LayoutCanvas
 
 
@@ -359,6 +336,13 @@ class LayoutView(QWidget):
         self.lbl_zoom = QLabel(" 100% ", self)
         self.lbl_zoom.setStyleSheet("color: #666; font-weight: bold; padding: 2px 6px;")
         self.toolbar.addWidget(self.lbl_zoom)
+
+        for ctrl in (
+            self.btn_templates, self.btn_align, self.btn_equalize, self.btn_add_text,
+            self.combo_format, self.combo_orientation, self.btn_fit, self.btn_refresh,
+            self.btn_export,
+        ):
+            ctrl.setMinimumHeight(26)
 
         main_layout.addWidget(self.toolbar)
 

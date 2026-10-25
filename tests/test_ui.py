@@ -16,7 +16,7 @@ import pandas as pd
 
 from src.ui.main_window import MainWindow
 from src.core.table import DataTable, TableType
-from src.ui.spreadsheet import ScientificSpreadsheetModel, ScientificSpreadsheetView
+from src.ui.spreadsheet import ScientificSpreadsheetView
 from src.ui.mediator import WorkspaceMediator
 from src.data_engine.table_model import ScientificTableModel
 

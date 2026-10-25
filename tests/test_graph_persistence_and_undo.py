@@ -14,18 +14,16 @@ import tempfile
 import unittest
 import numpy as np
 
-from PyQt6.QtCore import Qt, QPoint, QItemSelection, QItemSelectionRange
+from PyQt6.QtCore import Qt, QPoint, QItemSelection
 from PyQt6.QtGui import QKeyEvent, QTextCursor
-from PyQt6.QtWidgets import QApplication, QTextEdit, QLineEdit, QTreeWidgetItem
+from PyQt6.QtWidgets import QApplication, QTextEdit, QTreeWidgetItem
 
-from src.core.document import PrismDocument
-from src.core.sheet import DataSheet, GraphSheet, InfoSheet, ResultSheet, SheetType, GraphType, format_pinned_graph_name
+from src.core.sheet import DataSheet, GraphSheet, SheetType, GraphType, format_pinned_graph_name
 from src.core.table import TableType, DataTable
 from src.core.office_exporter import render_graph_to_png_bytes
 from src.io.prism_io import PrismIO
 from src.ui.main_window import MainWindow
 from src.ui.spreadsheet import ScientificSpreadsheetView, ScientificSpreadsheetModel, BatchClearCellsCommand
-from src.ui.rich_text_editor import RichTextEditor
 from src.ui.graph_canvas import GraphCanvasWidget
 
 app = QApplication.instance() or QApplication([])

@@ -6,7 +6,7 @@ Data Tables, Analysis Results, Graphs) and target format selector (.docx, .odt, 
 
 from __future__ import annotations
 import os
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
 
 from src.core.document import PrismDocument
 from src.core.office_exporter import ExportFormat, OfficeExporter
-from src.core.sheet import DataSheet, GraphSheet, InfoSheet, ResultSheet, SheetType
+from src.core.sheet import SheetType
 
 
 class ExportProjectDialog(QDialog):

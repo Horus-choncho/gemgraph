@@ -13,9 +13,8 @@ from PyQt6.QtWidgets import QApplication, QFileDialog
 from PyQt6.QtCore import Qt, QDir, QUrl, QMimeData, QPointF
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QDragMoveEvent
 
-from src.core.document import PrismDocument
 from src.core.sheet import DataSheet, ResultSheet, SheetType
-from src.core.table import TableType, DataTable, VariableType
+from src.core.table import TableType
 from src.core.hooking import GLOBAL_REGISTRY
 from src.ui.main_window import MainWindow
 

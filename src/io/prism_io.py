@@ -12,14 +12,14 @@ import os
 import re
 import struct
 import zipfile
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 import numpy as np
 import pandas as pd
 
 from src.core.document import PrismDocument
-from src.core.sheet import BaseSheet, DataSheet, GraphSheet, GraphType, InfoSheet, ResultSheet, SheetType
-from src.core.table import DataTable, TableType, XFormat, YFormat
+from src.core.sheet import DataSheet, GraphSheet, GraphType, InfoSheet, ResultSheet, SheetType
+from src.core.table import DataTable, TableType
 
 
 class PrismIO:

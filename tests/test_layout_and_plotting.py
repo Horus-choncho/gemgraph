@@ -16,7 +16,7 @@ from src.core.table import DataTable, TableType
 from src.core.sheet import ResultSheet
 from src.ui.main_window import MainWindow
 from src.main import init_interface_shell
-from src.ui.plot_canvas import ScientificPlotCanvas, GraphCanvasWidget
+from src.ui.plot_canvas import ScientificPlotCanvas
 from src.ui.mediator import WorkspaceMediator
 
 app = QApplication.instance()

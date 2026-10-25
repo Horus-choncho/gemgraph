@@ -12,7 +12,7 @@ import numpy as np
 import scipy.stats as stats
 from PyQt6.QtCore import Qt, QUrl, QMimeData, QPointF
 from PyQt6.QtWidgets import QApplication, QInputDialog, QMenu
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import QDragEnterEvent
 
 from src.core.document import PrismDocument
 from src.core.sheet import DataSheet, SheetType
@@ -30,7 +30,7 @@ from src.ui.table_view import (
     ScientificTableWidget as AliasTableWidget,
 )
 from src.ui.main_window import MainWindow
-from src.data_engine.sample_generator import build_textbook_sample_document, generate_textbook_sample
+from src.data_engine.sample_generator import generate_textbook_sample
 
 app = QApplication.instance()
 if app is None:

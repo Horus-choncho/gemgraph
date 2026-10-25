@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QBrush, QKeyEvent, QUndoCommand
-from PyQt6.QtWidgets import QAbstractItemView, QTableView, QMenu, QInputDialog, QMessageBox
+from PyQt6.QtWidgets import QAbstractItemView, QTableView, QMenu, QInputDialog
 import re
 from src.core.table import DataTable, TableType
 from src.core.undo import UndoStack, CellEditCommand, CellExcludeCommand, VariableCellEditCommand

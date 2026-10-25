@@ -14,13 +14,12 @@ from PyQt6.QtWidgets import QApplication, QMenu
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtCore import Qt
 
-from src.core.table import DataTable, TableType, ColumnInfo
-from src.core.sheet import GraphSheet, GraphType, ResultSheet, DataSheet
+from src.core.table import DataTable, TableType
+from src.core.sheet import GraphType, DataSheet
 from src.core.document import PrismDocument
 from src.io.xml_io import PrismXMLIO
 from src.ui.spreadsheet import ScientificSpreadsheetModel, ScientificSpreadsheetView
 from src.ui.graph_canvas import ScientificPlotCanvas
-from src.ui.mediator import WorkspaceMediator
 import pyqtgraph as pg
 
 

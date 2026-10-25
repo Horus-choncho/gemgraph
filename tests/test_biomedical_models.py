@@ -7,7 +7,6 @@ Extra-Sum-of-Squares F-tests, parameter confidence intervals, and diagnostic tra
 import unittest
 import numpy as np
 
-from src.core.table import DataTable, TableType
 from src.math.nonlinear import NonlinearEngine, STANDARD_MODELS, ConvergencePreset
 from src.math.transforms import pharmacological_transform
 

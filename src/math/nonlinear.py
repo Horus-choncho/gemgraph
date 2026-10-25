@@ -5,7 +5,7 @@ Derived from prism.exe Levenberg-Marquardt solver (REA-PRISM-NUM-301).
 
 from __future__ import annotations
 import enum
-from typing import Callable, Dict, List, Optional, Tuple, Any
+from typing import Callable, Dict, List, Optional, Any
 import numpy as np
 from scipy import optimize
 from scipy import stats
@@ -259,10 +259,19 @@ class NonlinearEngine:
                 f"Too few points ({n_pts}) to fit model with {n_params} parameters"
             )
 
+        if not (0.0 < confidence_level < 1.0):
+            raise ValueError(f"confidence_level must be in (0, 1), got {confidence_level}")
+
         if initial_params is None:
-            p0 = model.heuristic(x_valid, y_valid)
+            p0 = np.asarray(model.heuristic(x_valid, y_valid), dtype=np.float64)
         else:
             p0 = np.asarray(initial_params, dtype=np.float64)
+        if p0.shape != (n_params,):
+            raise ValueError(
+                f"initial_params must have {n_params} values for model '{model.name}', got shape {p0.shape}"
+            )
+        if not np.all(np.isfinite(p0)):
+            raise ValueError("initial parameter estimates are not finite")
 
         # Set tolerance according to recovered Prism presets
         ftol = 1e-4 if preset == ConvergencePreset.STANDARD else 1e-6
