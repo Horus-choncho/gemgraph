@@ -220,6 +220,7 @@ class PrismDocument:
             sheet.table.table_id = sheet.sheet_id
             sheet.table.title = sheet.title
         elif t == "remove_baseline":
+            import numpy as np
             new_table = DataTable(
                 table_id=sheet.sheet_id,
                 title=sheet.title,

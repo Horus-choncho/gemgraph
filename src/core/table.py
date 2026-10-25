@@ -295,33 +295,42 @@ class DataTable:
     def get_y_associated_x_idx(self, group_idx: int) -> int:
         """Finds designated or preceding X column for a given Y group index, falling back to 0."""
         if hasattr(self, "xy_mapping") and self.xy_mapping:
+            cols = self.get_columns()
             target = None
-            if group_idx in self.xy_mapping:
-                target = self.xy_mapping[group_idx]
-            elif str(group_idx) in self.xy_mapping:
-                target = self.xy_mapping[str(group_idx)]
-            elif 0 <= group_idx < len(self.y_group_titles):
+            for v_idx, c in enumerate(cols):
+                if c.role == "Y" and c.group_idx == group_idx:
+                    if v_idx in self.xy_mapping:
+                        target = self.xy_mapping[v_idx]
+                        break
+                    elif str(v_idx) in self.xy_mapping:
+                        target = self.xy_mapping[str(v_idx)]
+                        break
+
+            if target is None and 0 <= group_idx < len(self.y_group_titles):
                 title = self.y_group_titles[group_idx]
                 if title in self.xy_mapping:
                     target = self.xy_mapping[title]
 
             if target is None:
-                for v_idx, c in enumerate(self.get_columns()):
-                    if c.role == "Y" and c.group_idx == group_idx:
-                        if v_idx in self.xy_mapping:
-                            target = self.xy_mapping[v_idx]
-                            break
-                        elif str(v_idx) in self.xy_mapping:
-                            target = self.xy_mapping[str(v_idx)]
-                            break
+                is_other_col = (
+                    0 <= group_idx < len(cols)
+                    and (cols[group_idx].role != "Y" or cols[group_idx].group_idx != group_idx)
+                )
+                if not is_other_col:
+                    if group_idx in self.xy_mapping:
+                        target = self.xy_mapping[group_idx]
+                    elif str(group_idx) in self.xy_mapping:
+                        target = self.xy_mapping[str(group_idx)]
 
             if target is not None:
-                if isinstance(target, int):
-                    if 0 <= target < len(self.x_columns):
-                        return target
-                    cols = self.get_columns()
-                    if 0 <= target < len(cols) and cols[target].role == "X":
-                        return cols[target].group_idx
+                if isinstance(target, str) and target.isdigit():
+                    target = int(target)
+                if isinstance(target, (int, np.integer)) and not isinstance(target, bool):
+                    t_int = int(target)
+                    if 0 <= t_int < len(cols) and cols[t_int].role == "X":
+                        return cols[t_int].group_idx
+                    if 0 <= t_int < len(self.x_columns):
+                        return t_int
                 elif isinstance(target, str):
                     for x_i, x_col in enumerate(self.x_columns):
                         if x_col["title"] == target:
@@ -731,13 +740,23 @@ class DataTable:
         cols = self.get_columns()
         if 0 <= col_idx < len(cols):
             target_col = cols[col_idx]
+            old_title = target_col.title
             if target_col.role == "X":
                 if 0 <= target_col.group_idx < len(self.x_columns):
                     self.x_columns[target_col.group_idx]["title"] = new_title
+                    if hasattr(self, "xy_mapping") and isinstance(self.xy_mapping, dict) and old_title:
+                        for k, v in list(self.xy_mapping.items()):
+                            if v == old_title:
+                                self.xy_mapping[k] = new_title
                     return True
             else:
                 if 0 <= target_col.group_idx < len(self.y_group_titles):
+                    old_g_title = self.y_group_titles[target_col.group_idx]
                     self.rename_group(target_col.group_idx, new_title)
+                    if hasattr(self, "xy_mapping") and isinstance(self.xy_mapping, dict):
+                        for old_key in (old_title, old_g_title):
+                            if old_key and old_key in self.xy_mapping and old_key != new_title:
+                                self.xy_mapping[new_title] = self.xy_mapping.pop(old_key)
                     return True
         return False
 

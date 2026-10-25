@@ -2131,10 +2131,7 @@ class ScientificPlotCanvas(QWidget):
 
             for pos, name in enumerate(names):
                 raw_vals = group_data[name]
-                vals = []
-                for r_idx, val in enumerate(raw_vals):
-                    if not table.is_excluded(r_idx, "Y", pos, 0) and not np.isnan(val):
-                        vals.append(float(val))
+                vals = [float(val) for val in raw_vals if not np.isnan(val)]
 
                 if len(vals) == 0:
                     continue
@@ -2393,10 +2390,7 @@ class ScientificPlotCanvas(QWidget):
 
             for pos, name in enumerate(names):
                 raw_vals = group_data[name]
-                vals = []
-                for r_idx, val in enumerate(raw_vals):
-                    if not table.is_excluded(r_idx, "Y", pos, 0) and not np.isnan(val):
-                        vals.append(float(val))
+                vals = [float(val) for val in raw_vals if not np.isnan(val)]
 
                 if len(vals) == 0:
                     continue

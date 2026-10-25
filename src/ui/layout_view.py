@@ -88,7 +88,6 @@ class AssignGraphCommand(QUndoCommand):
         self.placeholder.custom_scale = self.new_scale
         self.view.canvas.rebuild_scene()
         self.view.canvas.placeholderAssigned.emit(self.placeholder.slot_id)
-        self.view.layoutModified.emit()
 
     def undo(self) -> None:
         if self.old_graph_id:
@@ -99,7 +98,6 @@ class AssignGraphCommand(QUndoCommand):
         self.placeholder.custom_scale = self.old_scale
         self.view.canvas.rebuild_scene()
         self.view.canvas.placeholderAssigned.emit(self.placeholder.slot_id)
-        self.view.layoutModified.emit()
 
 
 class MoveResizePlaceholderCommand(QUndoCommand):

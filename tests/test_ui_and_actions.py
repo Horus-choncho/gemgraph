@@ -811,6 +811,81 @@ class TestMainWindowAndActions(unittest.TestCase):
         # Verify hooked constants extracted
         self.assertIsNotNone(GLOBAL_REGISTRY.get(f"{active_sheet.sheet_id}_treatment_hr"))
 
+    def test_data_processing_actions_and_fdr_monotonicity(self) -> None:
+        """Verifies remove_baseline, fraction_of_total, extract_and_rearrange, and BH-FDR monotonicity."""
+        sheet = self.window.document.create_data_sheet(
+            title="BaselineRaw",
+            table_type=TableType.COLUMN,
+            num_rows=4,
+            num_replicates=1,
+            y_group_titles=["G1", "G2"],
+        )
+        self.window.on_sheet_selected(sheet.sheet_id)
+        for r, v in enumerate([10.0, 20.0, 30.0, 40.0]):
+            sheet.table.set_cell_value(r, "Y", 0, 0, v)
+            sheet.table.set_cell_value(r, "Y", 1, 0, v * 2.0)
+
+        # 1. Remove Baseline
+        self.window.action_run_remove_baseline()
+        bl_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(bl_sheet, DataSheet)
+        self.assertAlmostEqual(bl_sheet.table.get_cell_value(0, "Y", 0, 0), 0.0, places=4)
+        self.assertAlmostEqual(bl_sheet.table.get_cell_value(3, "Y", 0, 0), 30.0, places=4)
+
+        # 2. Fraction of Total
+        self.window.on_sheet_selected(sheet.sheet_id)
+        self.window.action_run_fraction_of_total()
+        ft_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(ft_sheet, DataSheet)
+        # Sum of [10, 20, 30, 40] = 100 -> percentages equal [10, 20, 30, 40]
+        self.assertAlmostEqual(ft_sheet.table.get_cell_value(0, "Y", 0, 0), 10.0, places=4)
+        self.assertAlmostEqual(ft_sheet.table.get_cell_value(3, "Y", 0, 0), 40.0, places=4)
+
+        # 3. Extract and Rearrange on Multiple Variables sheet
+        self.window.action_load_sample_datasets()
+        mv_sheet = [s for s in self.window.document.get_sheets_by_type(SheetType.DATA) if s.table.table_type == TableType.MULTIPLE_VARIABLES][0]
+        self.window.on_sheet_selected(mv_sheet.sheet_id)
+        self.window.action_run_extract_and_rearrange()
+        ext_sheet = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(ext_sheet, DataSheet)
+        self.assertEqual(ext_sheet.table.table_type, TableType.COLUMN)
+
+        # 4. Multiple t-tests BH-FDR monotonicity & excluded cell filtering
+        mt_sheet = self.window.document.create_data_sheet(
+            title="FDRTest",
+            table_type=TableType.GROUPED,
+            num_rows=3,
+            num_replicates=3,
+            y_group_titles=["Ctrl", "Trt"],
+        )
+        self.window.on_sheet_selected(mt_sheet.sheet_id)
+        # Row 0: p ~ very small, Row 1: p ~ 0.04, Row 2: p ~ 0.045 (where naive p*m/rank could violate monotonicity)
+        for s, v in enumerate([10.0, 10.1, 9.9]):
+            mt_sheet.table.set_cell_value(0, "Y", 0, s, v)
+            mt_sheet.table.set_cell_value(1, "Y", 0, s, v)
+            mt_sheet.table.set_cell_value(2, "Y", 0, s, v)
+        for s, v in enumerate([20.0, 20.1, 19.9]):
+            mt_sheet.table.set_cell_value(0, "Y", 1, s, v)
+        for s, v in enumerate([11.0, 12.0, 11.5]):
+            mt_sheet.table.set_cell_value(1, "Y", 1, s, v)
+        for s, v in enumerate([10.9, 11.8, 11.4]):
+            mt_sheet.table.set_cell_value(2, "Y", 1, s, v)
+        # Add an outlier in Row 0 and exclude it
+        mt_sheet.table.set_cell_value(0, "Y", 1, 2, 1000.0)
+        mt_sheet.table.set_excluded(0, "Y", 1, 2, True)
+
+        self.window.action_run_multiple_t_tests()
+        res_mt = self.window.document.get_sheet(self.window.document.active_sheet_id or "")
+        self.assertIsInstance(res_mt, ResultSheet)
+        rows = res_mt.tabs[0]["rows"]
+        p_vals = [float(r[3]) for r in rows]
+        q_vals = [float(r[4]) for r in rows]
+        # Verify q_vals are monotonic with respect to p_vals
+        order = np.argsort(p_vals)
+        sorted_q = [q_vals[i] for i in order]
+        for i in range(len(sorted_q) - 1):
+            self.assertLessEqual(sorted_q[i], sorted_q[i + 1] + 1e-12)
+
 
 if __name__ == "__main__":
     unittest.main()

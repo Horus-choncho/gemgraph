@@ -125,17 +125,18 @@ class WorkspaceMediator(QObject):
             elif series_name in xy_map:
                 assigned_x = xy_map[series_name]
 
-            # Also check group_idx or group title if table info is available
+            # Also check group title or non-colliding group_idx if table info is available
             if assigned_x is None and cols_info is not None and 0 <= y_idx < len(cols_info):
                 g_idx = cols_info[y_idx].group_idx
-                if g_idx in xy_map:
-                    assigned_x = xy_map[g_idx]
-                elif str(g_idx) in xy_map:
-                    assigned_x = xy_map[str(g_idx)]
-                elif hasattr(table, "y_group_titles") and 0 <= g_idx < len(table.y_group_titles):
+                if hasattr(table, "y_group_titles") and 0 <= g_idx < len(table.y_group_titles):
                     g_title = table.y_group_titles[g_idx]
                     if g_title in xy_map:
                         assigned_x = xy_map[g_title]
+                if assigned_x is None and g_idx == y_idx:
+                    if g_idx in xy_map:
+                        assigned_x = xy_map[g_idx]
+                    elif str(g_idx) in xy_map:
+                        assigned_x = xy_map[str(g_idx)]
 
             if assigned_x is not None:
                 if isinstance(assigned_x, (np.ndarray, list, pd.Series)):

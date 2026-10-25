@@ -55,7 +55,18 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
     def dataframe(self, df: pd.DataFrame) -> None:
         """Updates the table from a pandas DataFrame."""
         self.beginResetModel()
-        # If columns match, populate cells
+        if isinstance(df, pd.DataFrame) and self.table is not None:
+            cols = self.table.get_columns()
+            n_rows = min(len(df), self.table.num_rows)
+            for c_idx in range(min(len(df.columns), len(cols))):
+                col_info = cols[c_idx]
+                for r_idx in range(n_rows):
+                    val = df.iloc[r_idx, c_idx]
+                    try:
+                        fval = float(val) if pd.notna(val) else np.nan
+                    except (ValueError, TypeError):
+                        fval = np.nan
+                    self.table.set_cell_value(r_idx, col_info.role, col_info.group_idx, col_info.subcol_idx, fval)
         self.endResetModel()
         self.layoutChanged.emit()
         self.dataChangedSignal.emit()
@@ -851,7 +862,6 @@ class ScientificSpreadsheetView(QTableView):
             indexes[0], indexes[-1],
             [Qt.ItemDataRole.FontRole, Qt.ItemDataRole.ForegroundRole]
         )
-        model.dataChangedSignal.emit()
         self.cellExclusionToggled.emit()
 
     def _add_rows(self, count: int) -> None:

@@ -238,7 +238,6 @@ class MainWindow(QMainWindow):
         self.spreadsheet_model.dataChangedSignal.connect(self._on_table_data_modified)
         self.spreadsheet_model.dataChanged.connect(self.mark_as_modified)
         self.spreadsheet_view.cellExclusionToggled.connect(self._on_table_data_modified)
-        self.spreadsheet_view.cellExclusionToggled.connect(self.mark_as_modified)
         self.center_stack.addWidget(self.spreadsheet_view)
 
         # Result Sheet View (Multi-Tab and Green/Red Grid Semantics)
@@ -252,7 +251,6 @@ class MainWindow(QMainWindow):
         # Info Sheet View
         self.info_widget = InfoSheetView()
         self.info_widget.infoModified.connect(self._on_table_data_modified)
-        self.info_widget.infoModified.connect(self.mark_as_modified)
         self.center_stack.addWidget(self.info_widget)
 
         # Page Layout Presentation View
@@ -1418,12 +1416,6 @@ class MainWindow(QMainWindow):
         self.navigator.populate(self.document)
         self.on_sheet_selected(sheet.sheet_id)
 
-    def action_add_info(self) -> None:
-        sheet = self.document.create_info_sheet()
-        self.document.active_sheet_id = sheet.sheet_id
-        self.navigator.populate(self.document)
-        self.on_sheet_selected(sheet.sheet_id)
-
     def action_add_graph(self) -> None:
         active_sheet = self.document.get_sheet(self.document.active_sheet_id or "")
         src_id = active_sheet.sheet_id if isinstance(active_sheet, DataSheet) else ""
@@ -1487,7 +1479,15 @@ class MainWindow(QMainWindow):
                 source_sheet_id=active_sheet.sheet_id,
                 summary_tables=[{"title": "Parameter Estimates", "headers": headers, "rows": rows}],
                 raw_result_data=fit_result,
+                calc_spec={
+                    "type": "nonlinear",
+                    "model_name": model_name,
+                    "group_idx": group_idx,
+                    "preset": preset.value,
+                },
             )
+            self.document.register_dependency(active_sheet.sheet_id, res_sheet.sheet_id)
+            GLOBAL_REGISTRY.extract_from_result(res_sheet)
 
             self.navigator.populate(self.document)
             self.on_sheet_selected(res_sheet.sheet_id)
@@ -1927,11 +1927,30 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Remove Baseline", "Please select a Data Sheet.")
             return
 
-        new_table = remove_baseline(
-            active_sheet.table,
-            method=BaselineMethod.FIRST_ROW,
-            operation=BaselineOperation.SUBTRACT,
+        parent_table = active_sheet.table
+        new_table = DataTable(
+            table_id=f"{parent_table.table_id}_baseline",
+            title=f"Baseline Subtracted of {active_sheet.title}",
+            table_type=parent_table.table_type,
+            num_rows=parent_table.num_rows,
+            num_replicates=parent_table.num_replicates,
+            y_group_titles=list(parent_table.y_group_titles),
         )
+        new_table.row_titles = list(parent_table.row_titles)
+        if parent_table.x_data is not None:
+            new_table.x_data = np.copy(parent_table.x_data)
+            new_table.x_title = parent_table.x_title
+
+        for g in range(len(parent_table.y_group_titles)):
+            for s in range(parent_table.num_replicates):
+                new_table.y_data[g, :, s] = remove_baseline(
+                    parent_table.y_data[g, :, s],
+                    x=parent_table.x_data,
+                    method=BaselineMethod.FIRST_ROW,
+                    operation=BaselineOperation.SUBTRACT,
+                    k_rows=1,
+                )
+
         new_sheet = self.document.create_data_sheet(
             title=f"Baseline Subtracted of {active_sheet.title}",
             table_type=new_table.table_type,
@@ -1945,6 +1964,7 @@ class MainWindow(QMainWindow):
                 "k_rows": 1,
             },
         )
+        new_table.table_id = new_sheet.sheet_id
         new_sheet.table = new_table
         self.document.register_dependency(active_sheet.sheet_id, new_sheet.sheet_id)
         self.navigator.populate(self.document)
@@ -1957,7 +1977,22 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Fraction of Total", "Please select a Data Sheet.")
             return
 
-        new_table = fraction_of_total(active_sheet.table, scale_percent=True, ci_method="wilson")
+        parent_table = active_sheet.table
+        res = fraction_of_total(parent_table, total_type="column", scale=NormalizeScale.PERCENT)
+        new_table = DataTable(
+            table_id=f"{parent_table.table_id}_frac",
+            title=f"Fraction of Total of {active_sheet.title}",
+            table_type=parent_table.table_type,
+            num_rows=parent_table.num_rows,
+            num_replicates=parent_table.num_replicates,
+            y_group_titles=list(parent_table.y_group_titles),
+        )
+        new_table.row_titles = list(parent_table.row_titles)
+        if parent_table.x_data is not None:
+            new_table.x_data = np.copy(parent_table.x_data)
+            new_table.x_title = parent_table.x_title
+        new_table.y_data = res["fractions"]
+
         new_sheet = self.document.create_data_sheet(
             title=f"Fraction of Total of {active_sheet.title}",
             table_type=new_table.table_type,
@@ -1965,6 +2000,7 @@ class MainWindow(QMainWindow):
             num_replicates=new_table.num_replicates,
             y_group_titles=new_table.y_group_titles,
         )
+        new_table.table_id = new_sheet.sheet_id
         new_sheet.table = new_table
         self.document.register_dependency(active_sheet.sheet_id, new_sheet.sheet_id)
         self.navigator.populate(self.document)
@@ -1999,11 +2035,12 @@ class MainWindow(QMainWindow):
             return
 
         table = active_sheet.table
-        if table.table_type == TableType.MULTIPLE_VARIABLES and table.variable_metadata:
-            num_vars = len(table.variable_metadata)
-            y_var = table.variable_metadata[0].name
-            group_var = table.variable_metadata[1].name if num_vars > 1 else None
-            new_table = extract_and_rearrange(table, y_var=y_var, group_var=group_var)
+        if table.table_type == TableType.MULTIPLE_VARIABLES and len(table.variables) >= 2:
+            new_table = extract_and_rearrange(
+                table,
+                target_type=TableType.COLUMN,
+                mapping={"val_var": 0, "group_var": 1},
+            )
         else:
             new_table = DataTable(
                 table_id=f"{table.table_id}_rearranged",
@@ -2401,13 +2438,23 @@ class MainWindow(QMainWindow):
         rows = []
         raw_pvals = []
         for r in range(table.num_rows):
-            g1_reps = [table.get_cell_value(r, "Y", 0, s) for s in range(table.num_replicates) if not np.isnan(table.get_cell_value(r, "Y", 0, s))]
-            g2_reps = [table.get_cell_value(r, "Y", 1, s) for s in range(table.num_replicates) if not np.isnan(table.get_cell_value(r, "Y", 1, s))]
+            g1_reps = [
+                table.get_cell_value(r, "Y", 0, s)
+                for s in range(table.num_replicates)
+                if not table.is_excluded(r, "Y", 0, s) and not np.isnan(table.get_cell_value(r, "Y", 0, s))
+            ]
+            g2_reps = [
+                table.get_cell_value(r, "Y", 1, s)
+                for s in range(table.num_replicates)
+                if not table.is_excluded(r, "Y", 1, s) and not np.isnan(table.get_cell_value(r, "Y", 1, s))
+            ]
             if len(g1_reps) >= 2 and len(g2_reps) >= 2:
                 t_stat, p_val = scipy.stats.ttest_ind(g1_reps, g2_reps)
+                if np.isnan(p_val):
+                    p_val = 1.0 if np.mean(g1_reps) == np.mean(g2_reps) else 0.0
                 diff = np.mean(g1_reps) - np.mean(g2_reps)
-                rows.append([f"Row {r+1}", f"{diff:.4f}", f"{t_stat:.4f}", p_val])
-                raw_pvals.append(p_val)
+                rows.append([f"Row {r+1}", f"{diff:.4f}", f"{t_stat:.4f}", float(p_val)])
+                raw_pvals.append(float(p_val))
 
         if not rows:
             QMessageBox.warning(self, "Multiple t-tests", "Not enough replicate data per row.")
@@ -2416,8 +2463,11 @@ class MainWindow(QMainWindow):
         sorted_indices = np.argsort(raw_pvals)
         m = len(raw_pvals)
         adj_pvals = np.zeros(m)
-        for rank, idx in enumerate(sorted_indices, 1):
-            adj_pvals[idx] = min(raw_pvals[idx] * m / rank, 1.0)
+        running_min = 1.0
+        for rank in range(m, 0, -1):
+            idx = sorted_indices[rank - 1]
+            running_min = min(running_min, raw_pvals[idx] * m / rank)
+            adj_pvals[idx] = running_min
 
         fmt_rows = []
         for i, row in enumerate(rows):
