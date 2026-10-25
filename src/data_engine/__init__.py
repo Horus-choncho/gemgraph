@@ -9,6 +9,7 @@ from src.io.prism_io import PrismIO
 from src.io.xml_io import PrismXMLIO
 from src.core.table import DataTable, TableType
 from src.core.document import PrismDocument
+from src.ui.spreadsheet import ScientificTableModel
 
 SUPPORTED_EXTENSIONS = [".bigo", ".prism", ".pzfx", ".xml", ".csv"]
 PRIMARY_EXTENSION = ".bigo"
@@ -25,6 +26,7 @@ __all__ = [
     "DataTable",
     "TableType",
     "PrismDocument",
+    "ScientificTableModel",
     "SUPPORTED_EXTENSIONS",
     "PRIMARY_EXTENSION",
     "FILE_FILTERS",

@@ -39,6 +39,15 @@ from src.ui.dialogs import FormatSeriesDialog
 from src.math.distributions import five_number_summary, gaussian_kde_profile
 
 
+class ClickablePlotDataItem(pg.PlotDataItem):
+    """
+    Plot item representing a data series with click metadata and styling support.
+    """
+    def __init__(self, *args: Any, series_name: str = "", **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.series_name = series_name
+
+
 class ScientificPlotCanvas(QWidget):
     """
     High-performance scientific plot widget rendering publication-grade vector graphs.
@@ -799,8 +808,12 @@ class ScientificPlotCanvas(QWidget):
                     self.type_combo.setCurrentIndex(idx)
             self.refresh_plot()
 
-    def refresh_plot(self, preserve_range: bool = False) -> None:
+    def refresh_plot(self, series_data: Optional[Any] = None, preserve_range: bool = False) -> None:
         """Clears and redraws graph according to current data, hooked elements, and settings."""
+        if isinstance(series_data, bool):
+            preserve_range = series_data
+            series_data = None
+
         self._update_scatter_button_visibility()
         range_before = None
         if preserve_range:
@@ -815,6 +828,61 @@ class ScientificPlotCanvas(QWidget):
 
         # Reset active overlay item references before redrawing
         self.analysis_layers.clear()
+        self.clickable_items: List[ClickablePlotDataItem] = []
+
+        if series_data is not None:
+            series_list = []
+            if isinstance(series_data, dict):
+                for s_name, data in series_data.items():
+                    if isinstance(data, (tuple, list)) and len(data) >= 2:
+                        series_list.append((np.asarray(data[0], dtype=np.float64), np.asarray(data[1], dtype=np.float64), str(s_name)))
+                    else:
+                        series_list.append((None, np.asarray(data, dtype=np.float64), str(s_name)))
+            elif isinstance(series_data, (list, tuple)):
+                for item in series_data:
+                    if isinstance(item, (tuple, list)):
+                        if len(item) == 3:
+                            series_list.append((np.asarray(item[0], dtype=np.float64), np.asarray(item[1], dtype=np.float64), str(item[2])))
+                        elif len(item) == 2:
+                            series_list.append((np.asarray(item[0], dtype=np.float64), np.asarray(item[1], dtype=np.float64), "Series"))
+
+            for idx, (x_arr, y_arr, s_name) in enumerate(series_list):
+                if x_arr is None:
+                    x_arr = np.arange(len(y_arr), dtype=np.float64)
+                color = self.COLOR_PALETTE[idx % len(self.COLOR_PALETTE)]
+                pen = pg.mkPen(color, width=1.5)
+                brush = pg.mkBrush(color)
+
+                scatter = pg.ScatterPlotItem(
+                    x=x_arr,
+                    y=y_arr,
+                    pen=pen,
+                    brush=brush,
+                    symbol="o",
+                    size=8,
+                    name=s_name,
+                )
+                self.plot_widget.addItem(scatter)
+
+                plot_item = ClickablePlotDataItem(
+                    x=x_arr,
+                    y=y_arr,
+                    pen=pen,
+                    symbol="o",
+                    symbolBrush=brush,
+                    symbolPen=pen,
+                    symbolSize=8,
+                    name=s_name,
+                    series_name=s_name,
+                )
+                self.clickable_items.append(plot_item)
+
+            if preserve_range and range_before is not None:
+                try:
+                    self.plot_widget.setRange(xRange=range_before[0], yRange=range_before[1], padding=0)
+                except Exception:
+                    pass
+            return
 
         if self.current_table is None:
             self._rebuild_analysis_menu()
@@ -1081,6 +1149,19 @@ class ScientificPlotCanvas(QWidget):
             scatter.opts["name"] = g_title
 
             self.plot_widget.addItem(scatter)
+
+            plot_item = ClickablePlotDataItem(
+                x=xs,
+                y=ys,
+                pen=pen,
+                symbol=symbol,
+                symbolBrush=brush,
+                symbolPen=pen,
+                symbolSize=8,
+                name=g_title,
+                series_name=g_title,
+            )
+            self.clickable_items.append(plot_item)
 
         self._render_analysis_overlays()
 

@@ -5,7 +5,9 @@ vector graph canvas, project navigator, and document model.
 """
 
 from __future__ import annotations
-from typing import Optional, Any
+from typing import Optional, Any, List, Tuple, Dict
+import numpy as np
+import pandas as pd
 from PyQt6.QtCore import QObject, pyqtSignal
 
 
@@ -28,7 +30,122 @@ class WorkspaceMediator(QObject):
     def __init__(self, main_window: Optional[Any] = None, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self.main_window = main_window
+        self._model: Optional[Any] = None
         WorkspaceMediator._instance = self
+
+    @property
+    def model(self) -> Optional[Any]:
+        if getattr(self, "_model", None) is not None:
+            return self._model
+        if self.main_window is not None:
+            return getattr(self.main_window, "spreadsheet_model", None)
+        return None
+
+    @model.setter
+    def model(self, value: Optional[Any]) -> None:
+        self._model = value
+
+    def sync_data_to_visualization(
+        self,
+        model: Optional[Any] = None,
+        df: Optional[Any] = None,
+        canvas: Optional[Any] = None,
+    ) -> List[Tuple[np.ndarray, np.ndarray, str]]:
+        """
+        Synchronizes data from spreadsheet model/DataFrame to visualization.
+        Inspects xy_mapping to pair each Y column with its designated X column,
+        falling back to Column 0 if unassigned.
+        Packages and returns data as a list of (x_data, y_data, series_name) tuples.
+        """
+        target_model = model if model is not None else self.model
+        xy_map: Dict[Any, Any] = {}
+        if target_model is not None and hasattr(target_model, "xy_mapping"):
+            xy_map = getattr(target_model, "xy_mapping", {}) or {}
+
+        if df is None:
+            if target_model is not None:
+                if hasattr(target_model, "dataframe"):
+                    df = target_model.dataframe
+                elif hasattr(target_model, "to_dataframe"):
+                    df = target_model.to_dataframe()
+
+        if df is None:
+            return []
+
+        if not isinstance(df, pd.DataFrame):
+            df = pd.DataFrame(df)
+
+        if df.empty or len(df.columns) == 0:
+            return []
+
+        y_col_indices: List[int] = []
+        table = getattr(target_model, "table", None)
+        if table is not None and hasattr(table, "get_columns"):
+            cols_info = table.get_columns()
+            if len(cols_info) == len(df.columns):
+                for idx, c in enumerate(cols_info):
+                    if c.role == "Y":
+                        y_col_indices.append(idx)
+
+        if not y_col_indices:
+            for i, col_name in enumerate(df.columns):
+                if i == 0:
+                    continue
+                col_str = str(col_name)
+                if i in xy_map or col_name in xy_map or col_str in xy_map:
+                    y_col_indices.append(i)
+                elif col_str.upper().startswith("X") and not col_str.upper().startswith("XY"):
+                    pass
+                else:
+                    y_col_indices.append(i)
+
+            if not y_col_indices and len(df.columns) > 1:
+                y_col_indices = list(range(1, len(df.columns)))
+
+        packaged_data: List[Tuple[np.ndarray, np.ndarray, str]] = []
+
+        for y_idx in y_col_indices:
+            y_col_name = df.columns[y_idx]
+            series_name = str(y_col_name)
+
+            assigned_x = None
+            if y_idx in xy_map:
+                assigned_x = xy_map[y_idx]
+            elif y_col_name in xy_map:
+                assigned_x = xy_map[y_col_name]
+            elif str(y_idx) in xy_map:
+                assigned_x = xy_map[str(y_idx)]
+            elif series_name in xy_map:
+                assigned_x = xy_map[series_name]
+
+            if assigned_x is not None:
+                if isinstance(assigned_x, (np.ndarray, list, pd.Series)):
+                    x_data = np.asarray(assigned_x, dtype=np.float64)
+                elif isinstance(assigned_x, int) and 0 <= assigned_x < len(df.columns):
+                    x_data = pd.to_numeric(df.iloc[:, assigned_x], errors="coerce").to_numpy(dtype=np.float64)
+                elif assigned_x in df.columns:
+                    x_data = pd.to_numeric(df[assigned_x], errors="coerce").to_numpy(dtype=np.float64)
+                elif str(assigned_x) in df.columns:
+                    x_data = pd.to_numeric(df[str(assigned_x)], errors="coerce").to_numpy(dtype=np.float64)
+                else:
+                    x_data = pd.to_numeric(df.iloc[:, 0], errors="coerce").to_numpy(dtype=np.float64)
+            else:
+                x_data = pd.to_numeric(df.iloc[:, 0], errors="coerce").to_numpy(dtype=np.float64)
+
+            y_data = pd.to_numeric(df.iloc[:, y_idx], errors="coerce").to_numpy(dtype=np.float64)
+            packaged_data.append((x_data, y_data, series_name))
+
+        target_canvas = canvas
+        if target_canvas is None and self.main_window is not None:
+            target_canvas = getattr(self.main_window, "graph_canvas", None)
+
+        if target_canvas is not None and hasattr(target_canvas, "refresh_plot"):
+            try:
+                target_canvas.refresh_plot(packaged_data)
+            except TypeError:
+                target_canvas.refresh_plot()
+
+        return packaged_data
 
     @classmethod
     def get_instance(cls, main_window: Optional[Any] = None) -> WorkspaceMediator:

@@ -168,6 +168,44 @@ class MainWindow(QMainWindow):
             if self.center_stack.currentWidget() == self.layout_view:
                 self.layout_view.refresh_hot_placeholders()
 
+    def closeEvent(self, event: Any) -> None:
+        """
+        Intercepts window close event to guard against unsaved changes.
+        """
+        if not getattr(self, "_is_modified", False):
+            event.accept()
+            return
+
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Unsaved Changes")
+        msg_box.setText("The project has unsaved changes. Do you want to save your changes before closing?")
+        msg_box.setStandardButtons(
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel
+        )
+
+        save_btn = msg_box.button(QMessageBox.StandardButton.Save)
+        if save_btn:
+            save_btn.setText("Save project & close")
+        discard_btn = msg_box.button(QMessageBox.StandardButton.Discard)
+        if discard_btn:
+            discard_btn.setText("Close without saving")
+
+        reply = msg_box.exec()
+
+        if reply == QMessageBox.StandardButton.Save:
+            saved = self.action_save_project()
+            if (saved or not self._is_modified) and not self._is_modified:
+                event.accept()
+            else:
+                event.ignore()
+        elif reply == QMessageBox.StandardButton.Discard:
+            event.accept()
+        else:
+            event.ignore()
+
     def _create_blank_project(self) -> None:
         """Initializes a pristine, blank XY table (columns X, Y1) with empty placeholder rows."""
         sheet = self.document.create_data_sheet(
@@ -1244,20 +1282,20 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     QMessageBox.critical(self, "Error Loading Project", str(e))
 
-    def action_save_project(self) -> None:
+    def action_save_project(self) -> bool:
         if self.current_file_path:
             try:
                 PrismIO.save(self.document, self.current_file_path)
                 self._is_modified = False
                 self._update_window_title()
                 self.status.showMessage(f"Saved: {self.current_file_path}")
-                return
+                return True
             except Exception as e:
                 QMessageBox.critical(self, "Error Saving Project", str(e))
-                return
-        self.action_save_project_as()
+                return False
+        return bool(self.action_save_project_as())
 
-    def action_save_project_as(self) -> None:
+    def action_save_project_as(self) -> bool:
         initial_dir = self.get_smart_initial_dir()
         default_path = self.current_file_path or os.path.join(initial_dir, f"{self.document.title}.bigo")
         file_path, _ = QFileDialog.getSaveFileName(
@@ -1273,8 +1311,11 @@ class MainWindow(QMainWindow):
                 self._is_modified = False
                 self._update_window_title()
                 self.status.showMessage(f"Saved: {file_path}")
+                return True
             except Exception as e:
                 QMessageBox.critical(self, "Error Saving Project", str(e))
+                return False
+        return False
 
     def action_import_xml(self) -> None:
         initial_dir = self.get_smart_initial_dir()

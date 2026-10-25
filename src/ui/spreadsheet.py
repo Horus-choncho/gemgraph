@@ -38,6 +38,14 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
         self.is_frozen: bool = bool(is_frozen or getattr(table, "is_frozen", False) or getattr(table, "is_snapshot", False))
         self.is_frozen_snapshot: bool = self.is_frozen
 
+        # Multi-X column mapping tracking Y-column index/name -> designated X-column index/name
+        if hasattr(table, "xy_mapping") and isinstance(table.xy_mapping, dict):
+            self.xy_mapping = table.xy_mapping
+        else:
+            self.xy_mapping = {}
+            if table is not None:
+                table.xy_mapping = self.xy_mapping
+
     @property
     def dataframe(self) -> pd.DataFrame:
         """Exposes the underlying pandas DataFrame representation."""
@@ -125,7 +133,31 @@ class ScientificSpreadsheetModel(QAbstractTableModel):
         else:
             self.is_frozen = bool(getattr(table, "is_frozen", False) or getattr(table, "is_snapshot", False))
         self.is_frozen_snapshot = self.is_frozen
+        if hasattr(table, "xy_mapping") and isinstance(table.xy_mapping, dict):
+            self.xy_mapping = table.xy_mapping
+        else:
+            self.xy_mapping = {}
+            if table is not None:
+                table.xy_mapping = self.xy_mapping
         self.endResetModel()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes model and table state to JSON-compatible dictionary."""
+        d = self.table.to_dict() if self.table else {}
+        d["xy_mapping"] = {str(k): v for k, v in self.xy_mapping.items()}
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ScientificSpreadsheetModel":
+        """Deserializes ScientificSpreadsheetModel from dictionary."""
+        tbl = DataTable.from_dict(data)
+        model = cls(tbl)
+        model.xy_mapping = {
+            int(k) if isinstance(k, str) and k.isdigit() else k: v
+            for k, v in data.get("xy_mapping", {}).items()
+        }
+        tbl.xy_mapping = model.xy_mapping
+        return model
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return self.table.num_rows
@@ -650,22 +682,59 @@ class ScientificSpreadsheetView(QTableView):
         act_rename = menu.addAction("✏️ Rename Column...")
         act_delete = menu.addAction("🗑️ Delete Column")
 
+        model = self.get_model()
+        is_y_column = False
+        x_columns = []
+        if model and getattr(model, "table", None):
+            cols = model.table.get_columns()
+            if 0 <= col_idx < len(cols):
+                is_y_column = (cols[col_idx].role == "Y")
+            for idx, c in enumerate(cols):
+                if c.role == "X":
+                    title = c.title or f"X{c.group_idx + 1}"
+                    x_columns.append((idx, title))
+
+        assign_x_actions = {}
+        if is_y_column:
+            assign_menu = menu.addMenu("Assign to X Column ➔")
+            if not x_columns:
+                x_columns.append((0, "X (Column 1)"))
+            for x_idx, x_title in x_columns:
+                act_assign = assign_menu.addAction(f"{x_title} (Column {x_idx + 1})")
+                assign_x_actions[act_assign] = (x_idx, x_title)
+
         def on_action(act):
-            model = self.get_model()
-            if getattr(model, "is_frozen", False) or getattr(model, "is_frozen_snapshot", False) or getattr(getattr(model, "table", None), "is_frozen", False):
+            m = self.get_model()
+            if getattr(m, "is_frozen", False) or getattr(m, "is_frozen_snapshot", False) or getattr(getattr(m, "table", None), "is_frozen", False):
                 return
             if act == act_add_x_left:
-                model.insert_x_column(col_idx, position="left")
+                m.insert_x_column(col_idx, position="left")
             elif act == act_add_x_right:
-                model.insert_x_column(col_idx, position="right")
+                m.insert_x_column(col_idx, position="right")
             elif act in (act_add_y, act_ins_right):
-                model.insert_column(col_idx, position="right")
+                m.insert_column(col_idx, position="right")
             elif act == act_ins_left:
-                model.insert_column(col_idx, position="left")
+                m.insert_column(col_idx, position="left")
             elif act == act_rename:
                 self._prompt_rename_column(col_idx)
             elif act == act_delete:
-                model.delete_column(col_idx)
+                m.delete_column(col_idx)
+            elif act in assign_x_actions:
+                x_i, x_t = assign_x_actions[act]
+                m.xy_mapping[col_idx] = x_i
+                m.xy_mapping[str(col_idx)] = x_i
+                col_title = m.get_column_title(col_idx)
+                if col_title:
+                    m.xy_mapping[col_title] = x_t
+                if hasattr(m, "table") and m.table is not None:
+                    m.table.xy_mapping[col_idx] = x_i
+                m.layoutChanged.emit()
+                m.dataChangedSignal.emit()
+                mediator = getattr(m, "mediator", None) or WorkspaceMediator.get_instance()
+                if mediator:
+                    mediator.notify_data_changed()
+                    if hasattr(mediator, "sync_data_to_visualization"):
+                        mediator.sync_data_to_visualization(model=m)
 
         act_add_x_left.triggered.connect(lambda: on_action(act_add_x_left))
         act_add_x_right.triggered.connect(lambda: on_action(act_add_x_right))
@@ -674,6 +743,8 @@ class ScientificSpreadsheetView(QTableView):
         act_ins_left.triggered.connect(lambda: on_action(act_ins_left))
         act_rename.triggered.connect(lambda: on_action(act_rename))
         act_delete.triggered.connect(lambda: on_action(act_delete))
+        for a_act in assign_x_actions:
+            a_act.triggered.connect(lambda checked=False, act_ref=a_act: on_action(act_ref))
 
     def contextMenuEvent(self, event) -> None:
         model = self.get_model()

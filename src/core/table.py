@@ -194,6 +194,9 @@ class DataTable:
         if self.table_type == TableType.MULTIPLE_VARIABLES:
             self._init_default_variables()
 
+        # Multi-X column mapping: map Y-column index/name -> designated X-column index/name
+        self.xy_mapping: Dict[Any, Any] = {}
+
     @property
     def x_title(self) -> str:
         if self.x_columns:
@@ -290,7 +293,40 @@ class DataTable:
         return None
 
     def get_y_associated_x_idx(self, group_idx: int) -> int:
-        """Finds preceding X column for a given Y group index, falling back to 0."""
+        """Finds designated or preceding X column for a given Y group index, falling back to 0."""
+        if hasattr(self, "xy_mapping") and self.xy_mapping:
+            target = None
+            if group_idx in self.xy_mapping:
+                target = self.xy_mapping[group_idx]
+            elif str(group_idx) in self.xy_mapping:
+                target = self.xy_mapping[str(group_idx)]
+            elif 0 <= group_idx < len(self.y_group_titles):
+                title = self.y_group_titles[group_idx]
+                if title in self.xy_mapping:
+                    target = self.xy_mapping[title]
+
+            if target is None:
+                for v_idx, c in enumerate(self.get_columns()):
+                    if c.role == "Y" and c.group_idx == group_idx:
+                        if v_idx in self.xy_mapping:
+                            target = self.xy_mapping[v_idx]
+                            break
+                        elif str(v_idx) in self.xy_mapping:
+                            target = self.xy_mapping[str(v_idx)]
+                            break
+
+            if target is not None:
+                if isinstance(target, int):
+                    if 0 <= target < len(self.x_columns):
+                        return target
+                    cols = self.get_columns()
+                    if 0 <= target < len(cols) and cols[target].role == "X":
+                        return cols[target].group_idx
+                elif isinstance(target, str):
+                    for x_i, x_col in enumerate(self.x_columns):
+                        if x_col["title"] == target:
+                            return x_i
+
         current_x = 0
         for block_type, idx in self.column_order:
             if block_type == "X":
@@ -1225,6 +1261,7 @@ class DataTable:
             },
             "variables": [v.to_dict() for v in self.variables],
             "multi_var_data": self.multi_var_data,
+            "xy_mapping": {str(k): v for k, v in self.xy_mapping.items()},
         }
 
     def copy(self) -> DataTable:
@@ -1289,6 +1326,11 @@ class DataTable:
             tbl.variables = [VariableMetadata.from_dict(v) for v in data["variables"]]
         if "multi_var_data" in data and data["multi_var_data"]:
             tbl.multi_var_data = data["multi_var_data"]
+        # Restore xy_mapping
+        tbl.xy_mapping = {
+            int(k) if isinstance(k, str) and k.isdigit() else k: v
+            for k, v in data.get("xy_mapping", {}).items()
+        }
         return tbl
 
     def clone(self) -> DataTable:
