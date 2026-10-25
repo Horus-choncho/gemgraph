@@ -59,8 +59,17 @@ class WorkspaceMediator(QObject):
         """
         target_model = model if model is not None else self.model
         xy_map: Dict[Any, Any] = {}
-        if target_model is not None and hasattr(target_model, "xy_mapping"):
-            xy_map = getattr(target_model, "xy_mapping", {}) or {}
+        table = None
+        if target_model is not None:
+            if hasattr(target_model, "table"):
+                table = getattr(target_model, "table", None)
+            elif hasattr(target_model, "x_columns") and hasattr(target_model, "get_columns"):
+                table = target_model
+
+            if table is not None and hasattr(table, "xy_mapping") and isinstance(table.xy_mapping, dict):
+                xy_map.update(table.xy_mapping)
+            if hasattr(target_model, "xy_mapping") and isinstance(target_model.xy_mapping, dict):
+                xy_map.update(target_model.xy_mapping)
 
         if df is None:
             if target_model is not None:
@@ -79,13 +88,11 @@ class WorkspaceMediator(QObject):
             return []
 
         y_col_indices: List[int] = []
-        table = getattr(target_model, "table", None)
-        if table is not None and hasattr(table, "get_columns"):
-            cols_info = table.get_columns()
-            if len(cols_info) == len(df.columns):
-                for idx, c in enumerate(cols_info):
-                    if c.role == "Y":
-                        y_col_indices.append(idx)
+        cols_info = table.get_columns() if (table is not None and hasattr(table, "get_columns")) else None
+        if cols_info is not None and len(cols_info) == len(df.columns):
+            for idx, c in enumerate(cols_info):
+                if c.role == "Y":
+                    y_col_indices.append(idx)
 
         if not y_col_indices:
             for i, col_name in enumerate(df.columns):
@@ -118,19 +125,78 @@ class WorkspaceMediator(QObject):
             elif series_name in xy_map:
                 assigned_x = xy_map[series_name]
 
+            # Also check group_idx or group title if table info is available
+            if assigned_x is None and cols_info is not None and 0 <= y_idx < len(cols_info):
+                g_idx = cols_info[y_idx].group_idx
+                if g_idx in xy_map:
+                    assigned_x = xy_map[g_idx]
+                elif str(g_idx) in xy_map:
+                    assigned_x = xy_map[str(g_idx)]
+                elif hasattr(table, "y_group_titles") and 0 <= g_idx < len(table.y_group_titles):
+                    g_title = table.y_group_titles[g_idx]
+                    if g_title in xy_map:
+                        assigned_x = xy_map[g_title]
+
             if assigned_x is not None:
                 if isinstance(assigned_x, (np.ndarray, list, pd.Series)):
                     x_data = np.asarray(assigned_x, dtype=np.float64)
-                elif isinstance(assigned_x, int) and 0 <= assigned_x < len(df.columns):
-                    x_data = pd.to_numeric(df.iloc[:, assigned_x], errors="coerce").to_numpy(dtype=np.float64)
+                elif isinstance(assigned_x, int):
+                    # Check if assigned_x is directly a valid visual column index
+                    if 0 <= assigned_x < len(df.columns):
+                        if cols_info is not None and 0 <= assigned_x < len(cols_info) and cols_info[assigned_x].role == "X":
+                            x_data = pd.to_numeric(df.iloc[:, assigned_x], errors="coerce").to_numpy(dtype=np.float64)
+                        elif cols_info is not None and hasattr(table, "x_columns") and assigned_x < len(table.x_columns):
+                            # It could be an X column index (e.g. 0 for X1, 1 for X2)
+                            found_v_idx = None
+                            for v_i, c_info in enumerate(cols_info):
+                                if c_info.role == "X" and c_info.group_idx == assigned_x:
+                                    found_v_idx = v_i
+                                    break
+                            if found_v_idx is not None:
+                                x_data = pd.to_numeric(df.iloc[:, found_v_idx], errors="coerce").to_numpy(dtype=np.float64)
+                            else:
+                                x_data = pd.to_numeric(df.iloc[:, assigned_x], errors="coerce").to_numpy(dtype=np.float64)
+                        else:
+                            x_data = pd.to_numeric(df.iloc[:, assigned_x], errors="coerce").to_numpy(dtype=np.float64)
+                    elif table is not None and hasattr(table, "x_columns") and 0 <= assigned_x < len(table.x_columns):
+                        x_data = table.x_columns[assigned_x]["data"]
+                    else:
+                        x_data = pd.to_numeric(df.iloc[:, 0], errors="coerce").to_numpy(dtype=np.float64)
                 elif assigned_x in df.columns:
                     x_data = pd.to_numeric(df[assigned_x], errors="coerce").to_numpy(dtype=np.float64)
                 elif str(assigned_x) in df.columns:
                     x_data = pd.to_numeric(df[str(assigned_x)], errors="coerce").to_numpy(dtype=np.float64)
+                elif table is not None and hasattr(table, "x_columns"):
+                    found_arr = None
+                    for x_col in table.x_columns:
+                        if x_col.get("title") == str(assigned_x):
+                            found_arr = x_col.get("data")
+                            break
+                    if found_arr is not None:
+                        x_data = np.asarray(found_arr, dtype=np.float64)
+                    else:
+                        x_data = pd.to_numeric(df.iloc[:, 0], errors="coerce").to_numpy(dtype=np.float64)
                 else:
                     x_data = pd.to_numeric(df.iloc[:, 0], errors="coerce").to_numpy(dtype=np.float64)
             else:
-                x_data = pd.to_numeric(df.iloc[:, 0], errors="coerce").to_numpy(dtype=np.float64)
+                # Unassigned: fallback to preceding X column or Column 0
+                preceding_x_idx = None
+                if cols_info is not None and len(cols_info) == len(df.columns):
+                    for prev_i in range(y_idx - 1, -1, -1):
+                        if cols_info[prev_i].role == "X":
+                            preceding_x_idx = prev_i
+                            break
+                if preceding_x_idx is None:
+                    for prev_i in range(y_idx - 1, -1, -1):
+                        c_str = str(df.columns[prev_i]).upper()
+                        if c_str.startswith("X") and not c_str.startswith("XY"):
+                            preceding_x_idx = prev_i
+                            break
+
+                if preceding_x_idx is not None and 0 <= preceding_x_idx < len(df.columns):
+                    x_data = pd.to_numeric(df.iloc[:, preceding_x_idx], errors="coerce").to_numpy(dtype=np.float64)
+                else:
+                    x_data = pd.to_numeric(df.iloc[:, 0], errors="coerce").to_numpy(dtype=np.float64)
 
             y_data = pd.to_numeric(df.iloc[:, y_idx], errors="coerce").to_numpy(dtype=np.float64)
             packaged_data.append((x_data, y_data, series_name))

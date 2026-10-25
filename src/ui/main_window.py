@@ -193,16 +193,19 @@ class MainWindow(QMainWindow):
         if discard_btn:
             discard_btn.setText("Close without saving")
 
-        import unittest.mock
-        is_mocked = (
-            isinstance(getattr(QMessageBox, "exec", None), (unittest.mock.Mock, unittest.mock.MagicMock))
-            or isinstance(getattr(msg_box, "exec", None), (unittest.mock.Mock, unittest.mock.MagicMock))
-            or hasattr(getattr(QMessageBox, "exec", None), "mock_calls")
-            or hasattr(getattr(msg_box, "exec", None), "mock_calls")
-        )
+        # In headless offscreen environments without an interactive display,
+        # unmocked modal dialogs block the event loop indefinitely.
         is_offscreen = (
             os.environ.get("QT_QPA_PLATFORM") == "offscreen"
             or (QApplication.instance() is not None and QApplication.instance().platformName() == "offscreen")
+        )
+        exec_func = getattr(msg_box, "exec", None)
+        qmsg_exec = getattr(QMessageBox, "exec", None)
+        is_mocked = (
+            hasattr(exec_func, "mock_calls")
+            or hasattr(qmsg_exec, "mock_calls")
+            or "mock" in type(exec_func).__name__.lower()
+            or "mock" in type(qmsg_exec).__name__.lower()
         )
 
         if is_offscreen and not is_mocked:

@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QMenu
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtCore import Qt
 import numpy as np
+import pandas as pd
 
 from src.ui.main_window import MainWindow
 from src.core.table import DataTable, TableType
@@ -29,7 +30,9 @@ class TestUIUnsavedChangesIndicator(unittest.TestCase):
         self.window = MainWindow()
 
     def tearDown(self) -> None:
-        self.window.close()
+        if hasattr(self, "window") and self.window:
+            self.window._is_modified = False
+            self.window.close()
 
     def test_window_title_unsaved_changes_lifecycle(self) -> None:
         """Verifies triggering a data modification updates window title to include '*', and saving clears it."""
@@ -317,26 +320,40 @@ class TestUIUnsavedChangesIndicator(unittest.TestCase):
         mediator = WorkspaceMediator.get_instance()
         mediator.model = model
 
-        # Default unassigned: Y2 falls back to Column 0 (X1)
+        # Default unassigned: Y1 falls back to preceding X1, Y2 falls back to preceding X2
         packaged = mediator.sync_data_to_visualization(model=model)
         self.assertEqual(len(packaged), 2)
         np.testing.assert_array_equal(packaged[0][0], np.array([1.0, 2.0, 3.0]))
-        np.testing.assert_array_equal(packaged[1][0], np.array([1.0, 2.0, 3.0]))
+        np.testing.assert_array_equal(packaged[1][0], np.array([100.0, 200.0, 300.0]))
+        np.testing.assert_array_equal(packaged[1][1], np.array([40.0, 50.0, 60.0]))
+        self.assertEqual(packaged[1][2], "Y2")
 
-        # Now assign Y2 (visual col 3) to X2 (visual col 2)
-        model.xy_mapping[3] = 2
+        # Explicitly assign Y2 (col 3) to X1 (col 0)
+        model.xy_mapping[3] = 0
         packaged_mapped = mediator.sync_data_to_visualization(model=model)
         np.testing.assert_array_equal(packaged_mapped[0][0], np.array([1.0, 2.0, 3.0]))
-        np.testing.assert_array_equal(packaged_mapped[1][0], np.array([100.0, 200.0, 300.0]))
-        np.testing.assert_array_equal(packaged_mapped[1][1], np.array([40.0, 50.0, 60.0]))
-        self.assertEqual(packaged_mapped[1][2], "Y2")
+        np.testing.assert_array_equal(packaged_mapped[1][0], np.array([1.0, 2.0, 3.0]))
+
+        # Re-assign Y1 (col 1) to X2 (col 2)
+        model.xy_mapping[1] = 2
+        packaged_mapped2 = mediator.sync_data_to_visualization(model=model)
+        np.testing.assert_array_equal(packaged_mapped2[0][0], np.array([100.0, 200.0, 300.0]))
+
+        # Verify fallback to Column 0 when no preceding X exists
+        df_no_prec = pd.DataFrame({
+            "Z": [10.0, 20.0, 30.0],
+            "Y_Lone": [5.0, 6.0, 7.0],
+        })
+        packaged_lone = mediator.sync_data_to_visualization(df=df_no_prec)
+        self.assertEqual(len(packaged_lone), 1)
+        np.testing.assert_array_equal(packaged_lone[0][0], np.array([10.0, 20.0, 30.0]))
 
         # Verify serialization and deserialization of xy_mapping
         data_dict = model.to_dict()
         self.assertIn("xy_mapping", data_dict)
         restored_model = ScientificTableModel.from_dict(data_dict)
         self.assertIn(3, restored_model.xy_mapping)
-        self.assertEqual(restored_model.xy_mapping[3], 2)
+        self.assertEqual(restored_model.xy_mapping[3], 0)
 
     def test_spreadsheet_header_context_menu_assigns_x_column(self) -> None:
         """Verifies right-clicking a Y header presents Assign to X Column and updates model.xy_mapping."""

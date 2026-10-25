@@ -30,7 +30,9 @@ class TestMainWindowAndActions(unittest.TestCase):
         self.window = MainWindow()
 
     def tearDown(self) -> None:
-        self.window.close()
+        if hasattr(self, "window") and self.window:
+            self.window._is_modified = False
+            self.window.close()
 
     def test_initial_state_and_contextual_toolbar(self) -> None:
         """Verifies initial window state and contextual toolbar configuration."""
