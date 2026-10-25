@@ -298,7 +298,7 @@ class TestUIUnsavedChangesIndicator(unittest.TestCase):
 
     def test_mediator_multi_x_extraction_with_xy_mapping(self) -> None:
         """Verifies that xy_mapping dictates the correct x_data extraction in WorkspaceMediator."""
-        table = DataTable(table_id="multi_x_tbl", title="Multi-X Test", table_type=TableType.XY, num_rows=3, num_replicates=1)
+        table = DataTable(table_id="multi_x_tbl", title="Multi-X Test", table_type=TableType.XY, num_rows=3, num_replicates=1, y_group_titles=["Y1"])
         table.x_columns[0]["title"] = "X1"
         table.x_columns[0]["data"] = np.array([1.0, 2.0, 3.0])
         table.set_cell_value(0, "Y", 0, 0, 10.0)

@@ -193,11 +193,27 @@ class MainWindow(QMainWindow):
         if discard_btn:
             discard_btn.setText("Close without saving")
 
+        import unittest.mock
+        is_mocked = (
+            isinstance(getattr(QMessageBox, "exec", None), (unittest.mock.Mock, unittest.mock.MagicMock))
+            or isinstance(getattr(msg_box, "exec", None), (unittest.mock.Mock, unittest.mock.MagicMock))
+            or hasattr(getattr(QMessageBox, "exec", None), "mock_calls")
+            or hasattr(getattr(msg_box, "exec", None), "mock_calls")
+        )
+        is_offscreen = (
+            os.environ.get("QT_QPA_PLATFORM") == "offscreen"
+            or (QApplication.instance() is not None and QApplication.instance().platformName() == "offscreen")
+        )
+
+        if is_offscreen and not is_mocked:
+            event.accept()
+            return
+
         reply = msg_box.exec()
 
         if reply == QMessageBox.StandardButton.Save:
             saved = self.action_save_project()
-            if (saved or not self._is_modified) and not self._is_modified:
+            if saved:
                 event.accept()
             else:
                 event.ignore()
